@@ -202,6 +202,12 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     address is the TEB offset and the existing TEB-relative emulation runs
     (logged `[x18-derived]`, first 8). Only a previously fatal path changes.
     Crysis Remastered memory at that point: footprint 4.8 GB.
+  - **32-bit Crysis D3D10, build 262 (log Crysis.exe-2026-09-30_21-09-08.txt,
+    2.5 min, no crash, footprint ~3 GB):** all three tree fixes fire --
+    `[vfetch-bounds] ... on for SM 4.x vertex shaders` + bounded attributes,
+    `[idx-align] ... encode: realigned`, `[cb-short] ... encode: zero-padded
+    copy bound` (e.g. cb0 declared 80 vec4, bound 74). The owner has not yet
+    said whether the trees still streak; asked.
 
 ---
 
