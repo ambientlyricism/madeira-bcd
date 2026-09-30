@@ -236,6 +236,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     that trampoline shape and branches back to the fault, and checks the ADD
     inside it (unit-tested with the logged words: rn 8 -> derived, rn 9 -> not).
     Build 265 (vb-align) was superseded by 266 (vb-align + this).
+  - **Build 266 green** (run 36758343731, head 72517a8; main fast-forwarded):
+    i386 farm rebuilt with the [vb-align] census (725 files, exit 0, cached),
+    all patch steps applied, OTA mailed ("install link for 0.1.266 e-mailed").
+    Waiting on the owner: Crysis Remastered ([x18-derived]) and 32-bit Crysis
+    D3D10 trees ([vfetch-align], [vb-align]).
 
 ---
 
