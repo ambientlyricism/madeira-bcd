@@ -189,7 +189,8 @@ EOF
 s3 cp "$W/kurulum-$VERSION.html" "s3://$B2_SIGN_BUCKET/kurulum-$VERSION.html" --content-type "text/html; charset=utf-8" --cache-control no-cache
 
 # Keep the last ten builds (IPA + manifest + install page); older ones stay in the Actions artifacts.
-s3 ls "$B/" | awk '{print $4}' | python3 -c '
+# (no s3() here: `aws s3 ls` rejects --only-show-errors, which silently skipped this through build 262)
+aws s3 ls "$B/" --endpoint-url "$EP" | awk '{print $4}' | python3 -c '
 import re, sys
 names = [l.strip() for l in sys.stdin if re.match(r"^Madeira-.*[.]ipa$", l.strip())]
 key = lambda n: [int(x) for x in re.findall(r"[0-9]+", n)]

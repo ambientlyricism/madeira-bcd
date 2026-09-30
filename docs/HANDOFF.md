@@ -179,6 +179,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     dispatched ~17:12 UTC as the first build with the secrets.
     (Correction to an earlier chat reply: 261 already contained the mail code;
     only the secrets were missing.)
+  - **Build 262 green** (run 36749588085, head 29c32ad; main fast-forwarded,
+    the duplicate push run 263 on main cancelled): Steam-game session logs,
+    shared textures, vfetch bounds. **First e-mail went out**: log 17:29:06
+    "OTA: install link for 0.1.262 e-mailed to the owner". Same log showed
+    `aws: [ERROR] ... Unknown options: --only-show-errors` -- `aws s3 ls` does
+    not take that flag, so the keep-the-last-10 cleanup silently never ran
+    (builds 256-262 all still in the bucket). Fixed in sign-and-publish-ota.sh
+    (plain `aws s3 ls --endpoint-url`); takes effect with the next build.
 
 ---
 
@@ -273,7 +281,8 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   Repository secrets: `B2_KEY_ID` (the keyID, not the key name), `B2_APP_KEY`,
   `B2_S3_ENDPOINT` (`s3.eu-central-003.backblazeb2.com`), `B2_SIGN_BUCKET`
   (`Github-BCD`), `SIGN_P12_PASSWORD`. The key is limited to that bucket.
-* Output: `ota/Madeira-<ver>.ipa` + `ota/manifest-<ver>.plist` (last 10 kept)
+* Output: `ota/Madeira-<ver>.ipa` + `ota/manifest-<ver>.plist` (last 10 kept;
+  the cleanup only works from the build after 262, see section 0)
   and `kurulum-<ver>.html` at the bucket root with a "Yükle" button (owner
   asked for the version in the name, 2026-09-30; the last 10 are kept); links
   are 7-day pre-signed URLs. The owner opens the newest `kurulum-<ver>.html`
