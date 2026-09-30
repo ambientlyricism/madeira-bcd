@@ -255,6 +255,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `[bcd] library launch` line now also prints `metalfx=`. The committed
     64-bit d3d11.dll does contain DXMT's MetalFX spatial swapchain strings.
     Not compiled here (no Swift toolchain); CI is the check.
+  - **Backblaze mail 2026-09-30 22:57 UTC+3: "Download Bandwidth Cap Reached
+    75%"** of the free daily download allowance (1 GB/day on a free B2
+    account). Every OTA install downloads the whole IPA (~150 MB) from the
+    bucket; the owner installed about six builds today. Agents should have
+    warned about this when the OTA was set up (not done). Facts for the owner:
+    at 100% B2 blocks further downloads until the daily reset (00:00 UTC =
+    03:00 UTC+3) -- with caps at the free level it does not charge; raising
+    the cap (Caps & Alerts, needs a payment method) costs about $0.01/GB,
+    i.e. ~0.15 cents per install. Longer term option: Cloudflare R2
+    (S3-compatible, presigned URLs, no egress fees, 10 GB free storage) would
+    need only endpoint/region/secret changes in sign-and-publish-ota.sh.
+    Pending the owner's choice; nothing changed.
 
 ---
 
