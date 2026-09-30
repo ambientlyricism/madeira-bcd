@@ -916,6 +916,11 @@ jobs:
       - name: Patch DXMT vertex fetch bounds
         run: python3 tools/patch-dxmt-vfetch-bounds.py
 
+      # 32-bit Crysis may bind vertex buffers at offsets that are not 4-aligned;
+      # SM 4.x vertex pulls use byte-aligned loads, and [vb-align] counts them.
+      - name: Patch DXMT byte-aligned vertex fetch
+        run: python3 tools/patch-dxmt-vb-align.py
+
       # iOS cannot bootstrap-register a shared texture's mach port; without a
       # port DXMT keeps the texture unshared instead of failing its creation
       # (Crysis Remastered died on ClearRenderTargetView(NULL) after that).

@@ -207,7 +207,22 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `[vfetch-bounds] ... on for SM 4.x vertex shaders` + bounded attributes,
     `[idx-align] ... encode: realigned`, `[cb-short] ... encode: zero-padded
     copy bound` (e.g. cb0 declared 80 vec4, bound 74). The owner has not yet
-    said whether the trees still streak; asked.
+    said whether the trees still streak; asked. **Owner: unchanged, no
+    improvement at all.**
+  - **Build 264 green** (run 36755719496, head 88e1d6d, main fast-forwarded):
+    x18-derived emulation; OTA mailed ("install link for 0.1.264 e-mailed"),
+    the aws cleanup error is gone (8 builds in the bucket, nothing to delete).
+  - **Next tree lead (build 265):** Crysis packs index data at 2-byte
+    granularity; if its vertex buffers are bound at offsets/strides that are
+    not multiples of 4, airconv's attribute loads (which claim natural
+    alignment, 4 bytes for floats) read from rounded-down addresses on the
+    GPU. tools/patch-dxmt-vb-align.py (new): SM 4.x vertex attribute pulls use
+    alignment-1 loads (thread_local `madeira_vfetch_align1` set around the
+    pull in pull_vertex_input, honoured in load_from_device_buffer;
+    MADEIRA_VFETCH_ALIGN1=0 off, =1 all shaders; `[vfetch-align]` once);
+    PE-side census `[vb-align]` of IASetVertexBuffers offsets/strides not
+    4-aligned; shader cache version 16 -> 17. God of War (SM 5.0) unchanged.
+    If `[vb-align]` stays silent, the theory is dead and this change is inert.
 
 ---
 
