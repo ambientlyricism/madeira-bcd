@@ -267,6 +267,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (S3-compatible, presigned URLs, no egress fees, 10 GB free storage) would
     need only endpoint/region/secret changes in sign-and-publish-ota.sh.
     Pending the owner's choice; nothing changed.
+  - **Build 268 green** (run 36767022535, head 6e574ab, main fast-forwarded):
+    Steam games get their game options. **Owner: MetalFX now works in Crysis
+    Remastered.** Owner's decision: **move the OTA store to Cloudflare R2 in
+    the morning** (2026-10-01). Prepared, not yet built: sign-and-publish-ota.sh
+    uses R2 when R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY /
+    R2_BUCKET all exist (endpoint <account>.r2.cloudflarestorage.com, region
+    auto, same layout: Development.p12 + Development.mobileprovision at the
+    bucket root, ota/ for builds, kurulum-<ver>.html at the root), else B2
+    as before; logs `OTA: store R2|B2`. Owner's steps: create a private R2
+    bucket, an R2 API token with Object Read & Write on that bucket only,
+    upload the two signing files, add the four secrets. After the first R2
+    build mails a working link, B2 secrets can be removed.
 
 ---
 
@@ -383,6 +395,9 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   `kurulum-<ver>.html` (smtp.gmail.com:587, STARTTLS); it opens in Safari with
   no login, "Yükle" installs. The address stays in secrets (public repo); the
   log only says "install link ... e-mailed". A mail failure is a warning only.
+* **Cloudflare R2** (prepared 2026-09-30, owner switches 2026-10-01): with the
+  four `R2_*` secrets the same script uses R2 instead of B2 (no egress fees;
+  B2's free plan allows 1 GB of downloads a day, ~6 installs).
 * Signing keeps the IPA's own bundle ids (`com.willfaust.mythicemu`, extension
   `.MemoryHost`), like the owner's Feather install, so an OTA install updates
   the installed app in place. `SIGN_USE_PROFILE_BUNDLE_ID=1` would rename to

@@ -39,17 +39,34 @@ set -euo pipefail
 IPA_IN="$1"
 BUILD="$2"
 
+# Cloudflare R2 instead of B2 (owner's decision 2026-09-30: B2's free plan
+# allows 1 GB of downloads a day, ~6 installs; R2 charges no egress). When all
+# four R2 secrets exist they win; the bucket layout is the same.
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+if [ -n "${R2_ACCOUNT_ID:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${R2_SECRET_ACCESS_KEY:-}" ] && [ -n "${R2_BUCKET:-}" ]; then
+  STORE=R2
+  B2_KEY_ID="$R2_ACCESS_KEY_ID" B2_APP_KEY="$R2_SECRET_ACCESS_KEY" B2_SIGN_BUCKET="$R2_BUCKET"
+  B2_S3_ENDPOINT="$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+else
+  STORE=B2
+fi
+
 for v in B2_KEY_ID B2_APP_KEY B2_S3_ENDPOINT B2_SIGN_BUCKET SIGN_P12_PASSWORD; do
   if [ -z "${!v:-}" ]; then
     echo "::notice::OTA signing skipped: secret $v is not set (see tools/sign-and-publish-ota.sh)"
     exit 0
   fi
 done
+echo "OTA: store $STORE"
 
 W="$RUNNER_TEMP/ota"
 rm -rf "$W"; mkdir -p "$W"
-REGION="$(echo "$B2_S3_ENDPOINT" | sed -n 's/^s3\.\([a-z0-9-]*\)\.backblazeb2\.com$/\1/p')"
-[ -n "$REGION" ] || { echo "::error::OTA: B2_S3_ENDPOINT is not s3.<region>.backblazeb2.com"; exit 1; }
+if [ "$STORE" = R2 ]; then
+  REGION=auto
+else
+  REGION="$(echo "$B2_S3_ENDPOINT" | sed -n 's/^s3\.\([a-z0-9-]*\)\.backblazeb2\.com$/\1/p')"
+  [ -n "$REGION" ] || { echo "::error::OTA: B2_S3_ENDPOINT is not s3.<region>.backblazeb2.com"; exit 1; }
+fi
 export AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_APP_KEY" AWS_DEFAULT_REGION="$REGION"
 EP="https://$B2_S3_ENDPOINT"
 s3() { aws s3 "$@" --endpoint-url "$EP" --only-show-errors; }
@@ -203,7 +220,7 @@ for n in sorted(names, key=key)[:-10]:
     s3 rm "s3://$B2_SIGN_BUCKET/kurulum-$v.html" || true
   done || true
 
-echo "::notice::OTA: Madeira $VERSION signed (profile expires $EXPIRES); kurulum-$VERSION.html written to the private bucket (links valid until $UNTIL)"
+echo "::notice::OTA: Madeira $VERSION signed (profile expires $EXPIRES); kurulum-$VERSION.html written to the private $STORE bucket (links valid until $UNTIL)"
 
 # --- e-mail the install page's link (optional) -----------------------------------
 if [ -n "${OTA_MAIL_USER:-}" ] && [ -n "${OTA_MAIL_APP_PASSWORD:-}" ] && [ -n "${OTA_MAIL_TO:-}" ]; then

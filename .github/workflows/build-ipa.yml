@@ -1371,6 +1371,10 @@ jobs:
           OTA_MAIL_USER: ${{ secrets.OTA_MAIL_USER }}
           OTA_MAIL_APP_PASSWORD: ${{ secrets.OTA_MAIL_APP_PASSWORD }}
           OTA_MAIL_TO: ${{ secrets.OTA_MAIL_TO }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: bash tools/sign-and-publish-ota.sh build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa ${{ github.run_number }}
 
       # Update packs (tools/pack-index.py): record this build's native ABI in
