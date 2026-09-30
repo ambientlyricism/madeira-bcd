@@ -171,6 +171,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     chat must not be used), and CI cannot hand the link over through the public
     Actions log. Pointed the owner to setting up the OTA_MAIL_* secrets from the
     phone (app password page + GitHub website in Safari) instead.
+  - **Build 261 green** (run 36745357839, head 74ad830): all patch steps ran
+    (vfetch bounds, winemetal shared textures), i386 farm rebuilt and saved,
+    OTA notice "Madeira 0.1.261 signed ... kurulum-0.1.261.html ... valid until
+    2026-10-07 17:04 UTC". Mail: "no OTA_MAIL_* secrets" -- the owner added
+    them after the step ran. Build 262 (29c32ad: + Steam-game session logs)
+    dispatched ~17:12 UTC as the first build with the secrets.
+    (Correction to an earlier chat reply: 261 already contained the mail code;
+    only the secrets were missing.)
 
 ---
 
