@@ -59,7 +59,10 @@ enum BCDLaunch {
     /// A start from upstream's library: the update pack, this game's
     /// madeira-bcd options and its own session log. The FPS limit is the
     /// entry's (upstream's FPS picker, which offers 40 FPS too).
-    static func applyLibrary(_ entry: LibraryEntry) {
+    /// `sessionLog: false` for a Steam game started through Madeira Dock: the
+    /// native side names that log after the program Valve's client starts
+    /// (process_ios.c, madeira_steam_session_log).
+    static func applyLibrary(_ entry: LibraryEntry, sessionLog: Bool = true) {
         ExperimentalSettings.exportToEnvironment()
         if entry.desktop == true {
             applyExtras(avx: false, wineVCRT: false, nvidia: false, profile: nil)
@@ -74,8 +77,8 @@ enum BCDLaunch {
         let program = path.split(separator: "\\").last.map(String.init) ?? path
         LogStore.shared.log("[bcd] library launch \(program): avx=\(LibraryPrefs.avx(path) ? 1 : 0) "
                             + "wine-vcrt=\(LibraryPrefs.wineVCRT(path) ? 1 : 0) nvidia=\(LibraryPrefs.nvidia(path) ? 1 : 0) "
-                            + "game-config=\(profile.hasSettings ? 1 : 0)")
-        LogStore.shared.startSessionLog(program: program)
+                            + "game-config=\(profile.hasSettings ? 1 : 0) metalfx=\(profile.metalFXFactor.map { String($0) } ?? "off")")
+        if sessionLog { LogStore.shared.startSessionLog(program: program) }
     }
 
     /// The size that MetalFX 1.5x brings back to this screen's shape at 720

@@ -241,6 +241,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     all patch steps applied, OTA mailed ("install link for 0.1.266 e-mailed").
     Waiting on the owner: Crysis Remastered ([x18-derived]) and 32-bit Crysis
     D3D10 trees ([vfetch-align], [vb-align]).
+  - **Crysis Remastered RUNS on build 266** (owner, 2026-09-30 ~22:12-22:35
+    UTC+3, four logs, "harika çalışıyor"): `[x18-derived] ... base x8 from x18
+    -> TEB+0x1490 emulated` fired 7x in the long run (6 min, no crash); none of
+    the four logs has an access-violation exit. Open: **MetalFX upscaling did
+    not engage** -- no MetalFX line in any log. Cause: a Steam game started
+    with the Steam licence goes launchLibraryEntry -> startDock and returned
+    before BCDLaunch.applyLibrary, so MADEIRA_CFG_GAME, DXMT_METALFX_SPATIAL_
+    SWAPCHAIN / d3d11.metalSpatialUpscaleFactor, AVX, wine-vcrt and NVIDIA
+    were never set for Steam games. **Fix (next build):** the Steam branch
+    calls `BCDLaunch.applyLibrary(entry, sessionLog: false)` before startDock
+    (the native side already names that session log after the exe); the
+    `[bcd] library launch` line now also prints `metalfx=`. The committed
+    64-bit d3d11.dll does contain DXMT's MetalFX spatial swapchain strings.
+    Not compiled here (no Swift toolchain); CI is the check.
 
 ---
 

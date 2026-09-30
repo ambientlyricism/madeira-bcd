@@ -2550,6 +2550,9 @@ struct ContentView: View {
                 library.error = "Steam no longer lists this game as installed. Refresh the library and try again."; return
             }
             LogStore.shared.log("[steam-games] play app=\(appID)")
+            // madeira-bcd: the game's own options (MetalFX, AVX, NVIDIA, game config) --
+            // this path never reached BCDLaunch, so a Steam game ran without them.
+            BCDLaunch.applyLibrary(entry, sessionLog: false)
             startDock(game, compactPool: MadeiraDockModel.shared.compactPool, profile: entry)
             return
         }
