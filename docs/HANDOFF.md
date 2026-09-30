@@ -223,6 +223,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     PE-side census `[vb-align]` of IASetVertexBuffers offsets/strides not
     4-aligned; shader cache version 16 -> 17. God of War (SM 5.0) unchanged.
     If `[vb-align]` stays silent, the theory is dead and this change is inert.
+  - **Crysis Remastered, build 264 (log CrysisRemastered.exe-2026-09-30_21-19-06):**
+    got further -- the owner saw the rendered scene for 5-6 s for the first
+    time -- then the SAME TlsGetValue fault (pc pool+..358, addr 0x1570, x18=0,
+    tid 00a8 "Main" this time) and `[x18-decline]`: the `[x18-derived]` path
+    never fired, because the x18 patcher (virtual_ios.c, "via x18" form) had
+    moved the `add x8, x18, w0, uxtw #3` into a trampoline (`mrs x18,
+    TPIDRRO_EL0; and; ldr x18,[x18,#slot]; add; b back`), leaving `b tramp` at
+    pc-4. TlsGetValue is hot enough that a preemption between the trampoline's
+    ldr and its add (iOS zeroes x18) happens within seconds. **Fix (build 266):**
+    ios_x18_derived_base follows a `b` at pc-4 when its target has exactly
+    that trampoline shape and branches back to the fault, and checks the ADD
+    inside it (unit-tested with the logged words: rn 8 -> derived, rn 9 -> not).
+    Build 265 (vb-align) was superseded by 266 (vb-align + this).
 
 ---
 

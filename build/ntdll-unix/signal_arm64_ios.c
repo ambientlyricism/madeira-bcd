@@ -1390,6 +1390,22 @@ static int ios_x18_derived_base( uint64_t fault_pc, int rn )
     int rd, pn, pm;
 
     if (rn == 18 || rn >= 29 || !ios_fault_read_insn( fault_pc - 4, &p )) return 0;
+    /* The x18 patcher (virtual_ios.c, "via x18" form) moves such an ADD into a
+     * trampoline -- `mrs x18, TPIDRRO_EL0; and x18, x18, #~7; ldr x18, [x18,
+     * #slot]; <ADD>; b back` -- and leaves `b tramp` at pc-4. TlsGetValue is
+     * hot enough that a preemption between that ldr and the ADD (iOS zeroes
+     * x18) does happen: build 264 died exactly there again. Follow the branch
+     * when the trampoline has that shape and branches back to the fault. */
+    if ((p & 0xfc000000u) == 0x14000000u)
+    {
+        int64_t imm = (int64_t)(int32_t)((p & 0x03ffffffu) << 6) >> 4;   /* sign-extended imm26 * 4 */
+        uint64_t t = fault_pc - 4 + imm;
+        uint32_t t0, t4;
+        if (!ios_fault_read_insn( t, &t0 ) || t0 != (0xd53bd060u | 18)) return 0;
+        if (!ios_fault_read_insn( t + 16, &t4 ) || (t4 & 0xfc000000u) != 0x14000000u) return 0;
+        if (t + 16 + ((int64_t)(int32_t)((t4 & 0x03ffffffu) << 6) >> 4) != fault_pc) return 0;
+        if (!ios_fault_read_insn( t + 12, &p )) return 0;
+    }
     rd = p & 31; pn = (p >> 5) & 31; pm = (p >> 16) & 31;
     if (rd != rn) return 0;
     if ((p & 0xffe00000u) == 0x8b200000u) return pn == 18 && pm != rd;           /* ADD Xd, X18, Wm/Xm, ext */
