@@ -187,6 +187,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     not take that flag, so the keep-the-last-10 cleanup silently never ran
     (builds 256-262 all still in the bucket). Fixed in sign-and-publish-ota.sh
     (plain `aws s3 ls --endpoint-url`); takes effect with the next build.
+  - **Owner, build 262 (log CrysisRemastered.exe-2026-09-30_20-43-04.txt):** the
+    mail arrived and worked; the Steam session log was named by exe (the new
+    `[session-log]` line); `[shared-tex]` fired 4x and the game now gets past
+    the load -- then dies "a few seconds later". Cause: JobSystem_Worker_0
+    (tid 00a8) in kernelbase.dll rva 0x6d358 = **TlsGetValue** (`add x8, x18,
+    w0, uxtw #3; ldr x0, [x8, #0x1480]`) with x18 == 0 (iOS zeroes x18):
+    fault at 0x1570 (TLS slot 30). The mach handler's x18 emulation only
+    handled Rn == 18 and printed `[x18-decline]`, so the AV killed the process
+    (the xtajit64 faults after it are teardown fallout, as before). **Fix
+    (next build):** `ios_x18_derived_base` in build/ntdll-unix/signal_arm64_ios.c
+    -- when the instruction right before the fault is ADD (ext/shifted reg,
+    imm) or MOV that wrote the faulting base register from x18, the fault
+    address is the TEB offset and the existing TEB-relative emulation runs
+    (logged `[x18-derived]`, first 8). Only a previously fatal path changes.
+    Crysis Remastered memory at that point: footprint 4.8 GB.
 
 ---
 
