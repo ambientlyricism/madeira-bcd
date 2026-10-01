@@ -1120,6 +1120,17 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Expect `[WineProc] madeira-bcd: the main process exited but 1 child
     process(es) ... (playgtav.exe)` and later only gta5_enhanced.exe in the
     "still running" lines.
+  - **DualSense / HID pad, first device test: WORKS in God of War (owner,
+    build 286, screenshots 2026-10-01 ~17:40 UTC+3).** Session menu >
+    Controller > Controller API = "DirectInput / HID", status "Live in this
+    session" ("This session: DualSense (HID)"). God of War's settings and
+    View Controls now show PlayStation prompts (Cross SELECT / Circle BACK,
+    a DualSense drawing) instead of Xbox ones; menu navigation works. Same
+    session, unchanged otherwise: 1280x720, ~53-56 FPS in the settings menu,
+    App 5.4 GB, available 3.2 GB, thermal nominal. Owner: do not call it done
+    before more games are tested. Still open: a DirectInput-only game, Ghost
+    of Tsushima (libScePad), phase 2 (rumble / adaptive triggers /
+    lightbar), phase 3 (touchpad coordinates, gyro).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
