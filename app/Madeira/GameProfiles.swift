@@ -121,6 +121,9 @@ struct GameProfile {
     /// env.MADEIRA_FRAMEGEN: MetalFX frame interpolation in the present path
     /// (tools/patch-dxmt-framegen.py), D3D11 and D3D12 alike.
     static let frameGenChoices: [(String, String)] = [("", "Off"), ("1", "MetalFX 2× (experimental)")]
+    /// ml2100 env.MADEIRA_PAD_MODE (GamepadInput.configuredPadMode): player 1 as an
+    /// XInput pad (default) or as a HID controller -- a DualSense when it is one.
+    static let padModeChoices: [(String, String)] = [("", "XInput (default)"), ("hid", "DirectInput / HID")]
 
     var frameLimit: FrameLimit? {
         switch get("fps-limit") {
