@@ -490,6 +490,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     7644 < 8192), base the reported RAM / video budget / trim thresholds on
     hw.memsize instead of the limit (virtual_ios.c ml992 only clamps the
     other way today).
+  - **Owner's decision (2026-10-01): (a) -- unsigned IPA artifacts stay as
+    they are** (downloadable from Actions). Do not change the artifact
+    upload. Setup steps for the iPad user given to the owner to relay
+    (Library long-press -> Game settings -> MetalFX/Frame generation Off,
+    "Advanced: this game's config" lines, Settings -> Memory pool Off).
 
 ---
 
