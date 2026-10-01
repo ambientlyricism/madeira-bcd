@@ -641,6 +641,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Done: main fast-forwarded to 9607361 (duplicate push run 278
     cancelled), cleanup run 36851915094 "deleted 83 IPA artifacts ... (5.59
     GB)". IPA artifacts left: 261-273, 275, 277 (12); 227 artifacts in all.
+  - Owner (2026-10-01), after learning upstream ships no VC++ DLLs: keep the
+    unsigned IPA artifacts as they are (decision (a) confirmed). He will not
+    try upstream's v0.1.0: it has nothing ours lacks except the liquid-metal
+    UI, and lacks the lean SM50 fix God of War needs.
 
 ---
 
