@@ -1344,6 +1344,38 @@ static void *wine_process_thread(void *arg) {
                 }
             }
 
+            /* madeira-bcd: env.MADEIRA_DXGI_SRC = 1 (the game's own file) runs the
+             * 64-bit dxgi.dll built from the dxmt submodule source
+             * (tools/build-dxgi-dll.sh ships it as dxgi-src.dll): upstream's committed
+             * DXMT dxgi.dll -- the CI checks the unpatched source build reproduces
+             * it -- plus IDXGIFactory7 and EnumAdapterByLuid. GTA V Enhanced asks
+             * for IDXGIFactory7 and stops with ERR_GFX_D3D_NOD3D12 without it. Off
+             * by default: every other game keeps upstream's binary, and dropping
+             * the line restores it at the next start (the farms above are relinked
+             * from the bundle every session). sysx64 is relinked in any session, an
+             * x64 child of an aarch64 session loads from there. */
+            {
+                const char *dxgiSrc = getenv("MADEIRA_DXGI_SRC");
+                if (dxgiSrc && dxgiSrc[0] == '1') {
+                    NSString *ecDir = [bundlePath stringByAppendingPathComponent:@"arm64ec-windows"];
+                    NSString *srcDll = madeira_pe_source(ecDir, "arm64ec-windows", @"dxgi-src.dll");
+                    if ([fm fileExistsAtPath:srcDll]) {
+                        NSMutableArray *dirs = [NSMutableArray arrayWithObject:
+                            [prefix stringByAppendingPathComponent:@"drive_c/windows/sysx64"]];
+                        if (use_arm64ec) [dirs addObject:sys32Dir];
+                        for (NSString *dir in dirs) {
+                            NSString *dst = [dir stringByAppendingPathComponent:@"dxgi.dll"];
+                            [fm removeItemAtPath:dst error:nil];
+                            [fm createSymbolicLinkAtPath:dst withDestinationPath:srcDll error:nil];
+                        }
+                        dprintf(STDERR_FILENO, "[WineProc] MADEIRA_DXGI_SRC=1: dxgi.dll -> dxgi-src.dll (DXMT source build with IDXGIFactory7; %s)\n",
+                                use_arm64ec ? "system32 + sysx64" : "sysx64 only");
+                    } else {
+                        dprintf(STDERR_FILENO, "[WineProc] MADEIRA_DXGI_SRC=1 but this build has no dxgi-src.dll -- upstream's dxgi.dll stays\n");
+                    }
+                }
+            }
+
             /* ml719: REPAIR THE SHELL FOLDERS. They ship as symlinks to the BUILD
              * MACHINE's home directory.
              *

@@ -502,6 +502,20 @@ jobs:
           path: toolchains/llvm-mingw-20260421-ucrt-macos-universal
           key: llvm-mingw-20260421-ucrt-macos-universal
 
+      # madeira-bcd: DXMT's 64-bit dxgi.dll compiled from the dxmt submodule
+      # with IDXGIFactory7 + EnumAdapterByLuid (tools/patch-dxgi-factory7.py, on
+      # a copy). The committed arm64ec dxgi.dll stops at IDXGIFactory6 and GTA V
+      # Enhanced aborts with ERR_GFX_D3D_NOD3D12 without Factory7 (build 296).
+      # Shipped as arm64ec-windows/dxgi-src.dll NEXT TO upstream's dxgi.dll,
+      # which stays the default; a game opts in with env.MADEIRA_DXGI_SRC = 1
+      # (WineProcessBridge.m). Runs before every DXMT patch step, so it compiles
+      # the pristine pin, and it reports whether the unpatched build reproduces
+      # upstream's binary. A failure only warns: nothing is shipped and
+      # upstream's dxgi.dll goes out alone, as before.
+      - name: Build dxgi-src.dll (DXMT dxgi from source, IDXGIFactory7)
+        continue-on-error: true
+        run: bash tools/build-dxgi-dll.sh
+
       # The Xcode project links 7 archives out of FEX/build-ios/ -- FEXCore,
       # FEXCore_Base, JemallocLibs plus the External deps. Nothing built them
       # before, so archiving could never have linked.
@@ -1148,6 +1162,13 @@ jobs:
             exit 1
           fi
           echo "::notice::all PE DLLs present"
+          # The opt-in source build of dxgi.dll (tools/build-dxgi-dll.sh) is not
+          # required: without it env.MADEIRA_DXGI_SRC = 1 keeps upstream's.
+          if [ -f app/Madeira/arm64ec-windows/dxgi-src.dll ]; then
+            echo "::notice::dxgi-src.dll present ($(wc -c < app/Madeira/arm64ec-windows/dxgi-src.dll | tr -d ' ') bytes): env.MADEIRA_DXGI_SRC = 1 selects it"
+          else
+            echo "::warning::dxgi-src.dll missing: this IPA has only upstream's dxgi.dll (no IDXGIFactory7); env.MADEIRA_DXGI_SRC = 1 does nothing"
+          fi
 
       # tools/fetch-vcruntime.md: the twelve VC++ runtime DLLs are Microsoft's
       # and are not redistributable under this project's license, so they are
