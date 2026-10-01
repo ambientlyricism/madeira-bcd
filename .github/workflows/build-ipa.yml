@@ -981,6 +981,14 @@ jobs:
       - name: Patch winemetal readback census
         run: python3 tools/patch-winemetal-readback-census.py
 
+      # Is God of War at 1080p GPU-bound? The logs had no GPU timing. The
+      # [frame] instrument (server_ios.c, MADEIRA_FRAME_STATS=1, off by
+      # default) gets each command buffer's GPU start/end, so it can print the
+      # GPU's busy time per second. No effect while the switch is unset.
+      # Native only, so the i386 farm cache key is not touched.
+      - name: Patch winemetal GPU timeline for [frame]
+        run: python3 tools/patch-winemetal-gpu-span.py
+
       # WoW64's 32-bit Windows farm (app/Madeira/i386-windows), which upstream
       # builds from the pinned wine and DXMT (build/wine-i386) and does not
       # commit. Cached per wine/DXMT revision; a failure only leaves 32-bit

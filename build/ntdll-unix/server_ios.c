@@ -798,6 +798,130 @@ static void ios_thread_sampler_pass(int burst)
     vm_deallocate(mach_task_self(), (vm_address_t)tlist, tcount * sizeof(*tlist));
 }
 
+/* madeira-bcd ml1112b: NAME what a hot IAT call calls.
+ *
+ * ml1112 printed `call [slot] -> target` as two numbers, and the God of War
+ * 1080p log (2026-10-01 15:06:44, build 279) needed the game binary and the
+ * shipped kernel32.dll by hand to learn that 0x71fe7074f0 is kernel32!Sleep
+ * and 0x71fe7109a0 kernel32!GetCurrentThreadId (an x64 fast-forward thunk in
+ * .hexpthk). These two helpers do that on the device:
+ *   - ios_rp_export_name: the nearest export at or below an RVA of a PE image
+ *     ("kernel32.dll!Sleep", "+0x.." when not exact);
+ *   - ios_rp_import_name: which import an IAT slot of the CALLING image holds
+ *     ("KERNEL32.dll!Sleep"), from its import directory.
+ * Read-only and bounded: every read is ios_ts_read (vm_read_overwrite, which
+ * fails instead of faulting on an unmapped page), into fixed buffers on the
+ * stack -- no allocation, no lock -- and every loop has a cap. They run on the
+ * thread sampler's own thread (ios_thread_sampler_main), never in a signal or
+ * exception context, and only for the <= 6 hottest buckets of a profile. */
+static int ios_rp_read_str( uint64_t a, char *out, size_t cap )
+{
+    size_t n;
+    if (!cap) return 0;
+    out[0] = 0;
+    /* a name can end right before an unmapped page: try shorter windows */
+    for (n = cap - 1; n >= 8; n /= 2)
+        if (ios_ts_read( a, out, n )) { out[n] = 0; return out[0] != 0; }
+    return 0;
+}
+
+static int ios_rp_pe_dir( uint64_t base, int index, uint32_t dir[2] )
+{
+    uint32_t lfanew = 0, sig = 0; uint16_t magic = 0;
+    dir[0] = dir[1] = 0;
+    if (!ios_ts_read( base + 0x3c, &lfanew, 4 ) || lfanew < 0x40 || lfanew > 0x1000) return 0;
+    if (!ios_ts_read( base + lfanew, &sig, 4 ) || sig != 0x00004550) return 0;          /* "PE\0\0" */
+    if (!ios_ts_read( base + lfanew + 24, &magic, 2 ) || magic != 0x20b) return 0;       /* PE32+ */
+    return ios_ts_read( base + lfanew + 24 + 112 + 8 * index, dir, 8 ) && dir[0] && dir[1];
+}
+
+static int ios_rp_export_name( uint64_t base, const char *mod, uint32_t rva, char *out, size_t cap )
+{
+    uint32_t dir[2], ed[10], nfunc, nname, i, j, best = ~0u, bestrva = 0, chunk32[256];
+    uint16_t chunk16[256];
+    char nm[64];
+    if (!ios_rp_pe_dir( base, 0, dir ) || dir[1] < 40) return 0;
+    if (!ios_ts_read( base + dir[0], ed, sizeof(ed) )) return 0;
+    nfunc = ed[5] > 16384 ? 16384 : ed[5];
+    nname = ed[6] > 16384 ? 16384 : ed[6];
+    for (i = 0; i < nfunc; i += 256)
+    {
+        uint32_t n = nfunc - i < 256 ? nfunc - i : 256, k;
+        if (!ios_ts_read( base + ed[7] + (uint64_t)i * 4, chunk32, n * 4 )) return 0;
+        for (k = 0; k < n; k++)
+        {
+            uint32_t f = chunk32[k];
+            if (!f || f > rva || (f >= dir[0] && f < dir[0] + dir[1])) continue;   /* empty, above, forwarder string */
+            if (best == ~0u || f > bestrva) { best = i + k; bestrva = f; }
+        }
+    }
+    if (best == ~0u) return 0;
+    for (j = 0; j < nname; j += 256)
+    {
+        uint32_t n = nname - j < 256 ? nname - j : 256, k, name_rva = 0;
+        if (!ios_ts_read( base + ed[9] + (uint64_t)j * 2, chunk16, n * 2 )) break;
+        for (k = 0; k < n; k++)
+        {
+            if (chunk16[k] != best) continue;
+            if (!ios_ts_read( base + ed[8] + (uint64_t)(j + k) * 4, &name_rva, 4 ) ||
+                !ios_rp_read_str( base + name_rva, nm, sizeof(nm) )) break;
+            if (rva == bestrva) snprintf( out, cap, "%s!%s", mod, nm );
+            else snprintf( out, cap, "%s!%s+0x%x", mod, nm, rva - bestrva );
+            return 1;
+        }
+    }
+    snprintf( out, cap, "%s!#%u+0x%x", mod, ed[4] + best, rva - bestrva );   /* exported by ordinal only */
+    return 1;
+}
+
+static int ios_rp_import_name( uint64_t base, uint64_t slot, char *out, size_t cap )
+{
+    uint32_t dir[2], desc[5], srva, best_ft = 0, best_oft = 0, best_name = 0, idx, k;
+    uint64_t ents[64], ent;
+    char dll[48], fn[64];
+    int d;
+    if (slot < base || slot - base >= 0x80000000ull || !ios_rp_pe_dir( base, 1, dir )) return 0;
+    srva = (uint32_t)(slot - base);
+    for (d = 0; d < 512; d++)   /* the descriptor whose IAT starts closest below the slot */
+    {
+        if (!ios_ts_read( base + dir[0] + (uint64_t)d * 20, desc, sizeof(desc) )) return 0;
+        if (!desc[3] && !desc[4]) break;
+        if (desc[4] <= srva && desc[4] > best_ft) { best_ft = desc[4]; best_oft = desc[0]; best_name = desc[3]; }
+    }
+    if (!best_ft || !best_oft || (srva - best_ft) % 8) return 0;
+    idx = (srva - best_ft) / 8;
+    if (idx > 8192) return 0;
+    for (k = 0; k <= idx; k += 64)   /* inside this descriptor's array: no terminator before the slot */
+    {
+        uint32_t n = idx + 1 - k < 64 ? idx + 1 - k : 64, q;
+        if (!ios_ts_read( base + best_oft + (uint64_t)k * 8, ents, n * 8 )) return 0;
+        for (q = 0; q < n; q++) if (!ents[q]) return 0;
+    }
+    ent = ents[(idx % 64)];
+    if (!ios_rp_read_str( base + best_name, dll, sizeof(dll) )) strcpy( dll, "?" );
+    if (ent >> 63) snprintf( out, cap, "%s!#%u", dll, (unsigned)(ent & 0xffff) );
+    else if (ios_rp_read_str( base + (ent & 0x7fffffff) + 2, fn, sizeof(fn) )) snprintf( out, cap, "%s!%s", dll, fn );
+    else return 0;
+    return 1;
+}
+
+/* "kernel32.dll!Sleep" for a call target: a pool-copy address goes back to its
+ * PE address first (ARM64EC code runs from the JIT pool), then the module comes
+ * from the sampled process's own loader list (ios_ts_map_for_teb). */
+static void ios_rp_name_target( uint64_t teb, uint64_t target, char *out, size_t cap )
+{
+    extern int ios_jit_pool_image_pc( uintptr_t pc, uintptr_t *pe_addr_out );
+    struct ios_ts_map *mp = ios_ts_map_for_teb( teb );
+    uintptr_t pe = 0;
+    uint64_t rva = 0;
+    const char *mn;
+    out[0] = 0;
+    if (ios_jit_pool_image_pc( (uintptr_t)target, &pe ) && pe) target = pe;
+    if (!(mn = ios_ts_mod_for( mp, target, &rva ))) return;
+    if (!ios_rp_export_name( target - rva, mn, (uint32_t)rva, out, cap ))
+        snprintf( out, cap, "%s+0x%llx", mn, (unsigned long long)rva );
+}
+
 /* ml979: is the guest looping tightly, or grinding forward slowly?
  *
  * rdr48/rdr49 plateau with four guest threads at ~35% CPU each, all with RIPs
@@ -832,6 +956,7 @@ static void ios_guest_rip_profile( int gen )
     int nb = 0, pass, i;
     thread_act_t tg[ML979_MAXTHREADS];
     int ntg = 0;
+    uint64_t rp_teb = 0;   /* ml1112b: a sampled guest thread's TEB, for the module list */
 
     /* ml980 FIX: the state read MUST be bracketed by thread_suspend/resume.
      *
@@ -857,11 +982,13 @@ static void ios_guest_rip_profile( int gen )
             /* ml981: a guest thread is one whose frame yields a plausible RIP at
              * x28+0x18 -- the same test the sampling loop uses, so a thread can
              * never be selected here and then fail to resolve below. */
+            uint64_t teb_k = 0;
             if (thread_get_state( tl[k], ARM_THREAD_STATE64, (thread_state_t)&st, &cnt ) == KERN_SUCCESS
                 && ios_ts_read( st.__x[28] + 0x18, &bb, 8 )
                 && bb > 0x10000 && bb < 0x8000000000ull
-                && ios_ts_teb( pthread_from_mach_thread_np( tl[k] ) ))   /* ml1116: a Wine thread (has a TEB); native threads passed the x28 test by accident */
+                && (teb_k = ios_ts_teb( pthread_from_mach_thread_np( tl[k] ) )))   /* ml1116: a Wine thread (has a TEB); native threads passed the x28 test by accident */
             {
+                if (!rp_teb) rp_teb = teb_k;
                 tg[ntg] = tl[k];
                 mach_port_mod_refs( mach_task_self(), tl[k], MACH_PORT_RIGHT_SEND, 1 ); /* keep it */
                 ntg++;
@@ -1063,18 +1190,39 @@ static void ios_guest_rip_profile( int gen )
          * (ff 15) in the bucket: the IAT slot and the pointer in it name the import
          * the game is inside (the RIP of a thread in an ARM64EC callee stays at the
          * call site). */
+        /* ml1112b: once per run, how to read the RUNNING histogram -- the 2026-10-01
+         * God of War log was first read as "43 % of the CPU inside Sleep and
+         * GetCurrentThreadId"; [cpu-split] of the same profiles put only 1-6 % of
+         * the host pcs in ARM64EC images and most of the rest in sched_yield. */
+        {
+            static int said;
+            if (!said++)
+                wine_log_write( "[rip-profile] ml1112b note: RUNNING = Mach TH_STATE_RUNNING, i.e. on a core OR queued for one; "
+                                "the guest RIP is FEX's last synchronised RIP (it moves at calls into ARM64EC code and dispatcher "
+                                "exits, not per x64 instruction), so a bucket at an IAT call means 'last left the JIT there'. "
+                                "[cpu-split] gives where the host pc really was." );
+        }
         for (i = 0; i < nrb && i < 6; i++) {
             unsigned char code[80]; int k;
+            uint64_t img_rva = 0, img_base = 0;
             if (rb[i].base < 0x140000000ull || rb[i].base >= 0x148000000ull) continue;
             if (!ios_ts_read( rb[i].base, code, sizeof(code) )) continue;
+            if (ios_ts_mod_for( ios_ts_map_for_teb( rp_teb ), rb[i].base, &img_rva )) img_base = rb[i].base - img_rva;
             for (k = 0; k + 6 <= 64; k++) {
                 if (code[k] == 0xff && code[k + 1] == 0x15) {
                     int32_t disp; uint64_t slot, target = 0;
+                    char callee[160] = "", imp[120] = "";
                     memcpy( &disp, code + k + 2, 4 );
                     slot = rb[i].base + k + 6 + (int64_t)disp;
                     ios_ts_read( slot, &target, 8 );
-                    wine_log_write( "[rip-profile] ml1112 bucket %#llx: call [%#llx] -> %#llx (%u%% of running)",
-                                    (unsigned long long)rb[i].base, (unsigned long long)slot, (unsigned long long)target, rtotal ? (rb[i].n * 100) / rtotal : 0 );
+                    /* ml1112b: what the slot imports (the caller's import table) and
+                     * what the pointer in it is (the callee's export table) */
+                    if (target) ios_rp_name_target( rp_teb, target, callee, sizeof(callee) );
+                    if (img_base) ios_rp_import_name( img_base, slot, imp, sizeof(imp) );
+                    wine_log_write( "[rip-profile] ml1112 bucket %#llx: call [%#llx] -> %#llx%s%s%s%s%s (%u%% of running)",
+                                    (unsigned long long)rb[i].base, (unsigned long long)slot, (unsigned long long)target,
+                                    callee[0] ? " = " : "", callee, imp[0] ? " (import " : "", imp, imp[0] ? ")" : "",
+                                    rtotal ? (rb[i].n * 100) / rtotal : 0 );
                 }
             }
         }
@@ -1158,6 +1306,52 @@ static struct ios_xp_mod ios_xp_mods[160];
 static int ios_xp_nmods;
 static uint64_t ios_xp_peb, ios_xp_heap, ios_xp_fex_addr, ios_xp_nt_addr;
 static volatile uint64_t ios_xp_game_teb;   /* set by the xprobe loop from a P/E role thread */
+
+/* madeira-bcd ml1131c: the game process for a title with no D3D12 roles.
+ *
+ * ios_xp_game_teb came only from a thread madeira_d3d12 registered as P or E,
+ * so for a D3D11 game (God of War through DXMT) the module map was never built
+ * and [xp-api] printed "x64->EC 0/s" with no [xp-api-top] / -qpc / -cs lines:
+ * FEX's x64->EC counters and ntdll's QPC / critical-section / WaitOnAddress
+ * counters existed but were never found. Without roles, every ~10 s the Wine
+ * process (PEB) whose threads used the most CPU in that window supplies the
+ * TEB; when that process changes (boot helpers first, then the game), the
+ * counter blocks are looked up again in the new one. Measurement only: this
+ * runs on the xprobe thread, which is also the only reader of these globals. */
+static struct { uint64_t peb, teb; double ms; } ios_xp_fb[8];
+static int ios_xp_nfb;
+static uint64_t ios_xp_fb_peb;        /* the process the fallback currently follows */
+static volatile unsigned ios_xp_rebind;   /* bumped on a switch; the reporter restarts its deltas */
+static void ios_xp_fallback_add( uint64_t teb, double ms )
+{
+    uint64_t peb = 0; int i;
+    if (!ios_ts_read( teb + 0x60, &peb, 8 ) || !peb) return;
+    for (i = 0; i < ios_xp_nfb; i++) if (ios_xp_fb[i].peb == peb) break;
+    if (i == ios_xp_nfb)
+    {
+        if (ios_xp_nfb >= 8) return;
+        ios_xp_fb[i].peb = peb; ios_xp_fb[i].ms = 0; ios_xp_fb[i].teb = teb; ios_xp_nfb++;
+    }
+    ios_xp_fb[i].ms += ms;
+    ios_xp_fb[i].teb = teb;   /* any live thread of that process will do */
+}
+static void ios_xp_fallback_pick( void )
+{
+    int i, best = -1;
+    for (i = 0; i < ios_xp_nfb; i++) if (best < 0 || ios_xp_fb[i].ms > ios_xp_fb[best].ms) best = i;
+    if (best >= 0 && !ios_xp_nroles && ios_xp_fb[best].peb != ios_xp_fb_peb)
+    {
+        ios_xp_fb_peb = ios_xp_fb[best].peb;
+        ios_xp_game_teb = ios_xp_fb[best].teb;
+        ios_xp_fex_addr = ios_xp_nt_addr = 0;
+        ios_xp_rebind++;
+        wine_log_write( "[xp-api] ml1131c no D3D12 role threads: counters follow the busiest Wine process "
+                        "(peb 0x%llx via teb 0x%llx, %.0f ms CPU in the last 10 s)",
+                        (unsigned long long)ios_xp_fb_peb, (unsigned long long)ios_xp_game_teb, ios_xp_fb[best].ms );
+    }
+    else if (best >= 0 && !ios_xp_nroles) ios_xp_game_teb = ios_xp_fb[best].teb;   /* same process, a thread that is alive now */
+    ios_xp_nfb = 0;
+}
 
 struct ios_xp_expc { uint64_t base; uint32_t exp_rva, exp_size, nfunc, nname; uint32_t *funcs, *names; uint16_t *ords; };
 static struct ios_xp_expc ios_xp_expcache[32];
@@ -1286,6 +1480,10 @@ static void ios_xp_api_report( const char *wall, double wall_s )
 
     if (!fex) { fex = calloc( IOS_XP_FEX_WORDS, 8 ); fex_prev = calloc( IOS_XP_FEX_WORDS, 8 ); nt = calloc( 1, sizeof(*nt) ); nt_prev = calloc( 1, sizeof(*nt) ); }
     if (!fex || !fex_prev || !nt || !nt_prev) return;
+    {   /* ml1131c: the fallback moved to another process: its counters start a new series */
+        static unsigned seen_rebind;
+        if (seen_rebind != ios_xp_rebind) { seen_rebind = ios_xp_rebind; have_fex = have_nt = 0; map_age = 1000; }
+    }
     if (++map_age > 10 || !ios_xp_fex_addr || !ios_xp_nt_addr)   /* every ~10 s, or until both are found */
     {
         struct ios_xp_mod *m;
@@ -1553,6 +1751,7 @@ static void ios_xprobe_main( void )
                                 r->role = NULL;
                                 for (i = 0; i < ios_xp_nroles; i++) if (ios_xp_roles[i].tid == idi.thread_id) { r->role = ios_xp_roles[i].role; break; }
                                 if (r->role && teb && (strchr( r->role, 'P' ) || strchr( r->role, 'E' ))) ios_xp_game_teb = teb;   /* ml1131 */
+                                if (teb && !ios_xp_nroles) ios_xp_fallback_add( teb, pt + et );   /* ml1131c */
                                 sum_thr_ms += pt + et; nrows++;
                             }
                         }
@@ -1563,6 +1762,7 @@ static void ios_xprobe_main( void )
             }
             vm_deallocate( mach_task_self(), (vm_address_t)th, nth * sizeof(*th) );
         }
+        if (!(gen % 40)) ios_xp_fallback_pick();   /* ml1131c: every ~10 s */
 
         /* process counters + PE counters */
         memset( &ru, 0, sizeof(ru) );
@@ -1775,6 +1975,153 @@ static void ios_wprof_main( void )
         ios_wp_print( "d3d12-inclusive", inc, ninc, total, 45 );
         ios_wp_print( "unix-inclusive", unx, nunx, total, 30 );
     }
+}
+
+/* ============================================================================
+ * madeira-bcd [frame]: per-second frame anatomy for DXMT titles, opt-in.
+ *
+ * Question it answers: is a D3D11 game GPU-bound, CPU-bound or held by the
+ * display? The God of War logs of 2026-10-01 had no frame or GPU timing at all
+ * (only a Metal HUD screenshot), because DXMT's winemetal_unix.c reports into
+ * hooks (ios_frame_*, ml1050) whose instrument was not part of this port: they
+ * were empty stubs in virtual_ios.c. They are implemented here, behind
+ * MADEIRA_FRAME_STATS (unset or 0: off, exactly as before -- ios_frame_stats_on
+ * stays 0 and winemetal makes no hook call and adds no completion handler; any
+ * other value: on for every caller, 64-bit included). Once a second:
+ *
+ *   [frame] madeira-bcd 1.00 s: present 30.0/s (skipped 0) game 30.0/s |
+ *     GPU busy 948 ms = 95% (31.6 ms/frame) | cmdbufs 124, span sum 1010 ms,
+ *     in flight max 3 | nextDrawable wait 12.0 ms (max 4.1) | per frame:
+ *     render 41.0 compute 9.0 blit 6.0 passes, attachments load 22.0 store
+ *     63.0 clear 19.0 | panel 120 Hz intent 60 mode 1 | limiter 0.0 ms
+ *
+ * "GPU busy" is the union of the command buffers' GPUStartTime..GPUEndTime
+ * (ios_frame_gpu_span, fed by tools/patch-winemetal-gpu-span.py); "span sum"
+ * adds the spans and over-counts when buffers overlap. Busy near 100 % = the
+ * GPU is the limit; a large nextDrawable wait = the display/compositor holds
+ * the producer; neither = the CPU side. Accumulators are relaxed atomics, the
+ * busy union takes one uncontended mutex per command buffer, and the line is
+ * printed by whichever per-frame hook first sees a second elapsed. */
+int ios_frame_stats_on = 0;
+static uint64_t ios_fr_t0;
+static uint64_t ios_fr_ticks, ios_fr_presents, ios_fr_skipped, ios_fr_cmdbufs, ios_fr_span_ns, ios_fr_busy_ns;
+static uint64_t ios_fr_dw_ns, ios_fr_dw_max_ns, ios_fr_lim_ns, ios_fr_qmax, ios_fr_pass[3], ios_fr_att[3];
+static volatile int ios_fr_panel_hz, ios_fr_intent_hz, ios_fr_mode;
+static pthread_mutex_t ios_fr_gpu_lock = PTHREAD_MUTEX_INITIALIZER;
+static double ios_fr_gpu_end;   /* GPU timeline high-water mark (s), under ios_fr_gpu_lock */
+
+#define IOS_FR_ADD(v, x) __atomic_fetch_add( &(v), (uint64_t)(x), __ATOMIC_RELAXED )
+#define IOS_FR_TAKE(v)   __atomic_exchange_n( &(v), 0, __ATOMIC_RELAXED )
+
+static void ios_fr_max( uint64_t *v, uint64_t x )
+{
+    uint64_t c = __atomic_load_n( v, __ATOMIC_RELAXED );
+    while (x > c && !__atomic_compare_exchange_n( v, &c, x, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED )) ;
+}
+
+static void ios_fr_maybe_report( void )
+{
+    static mach_timebase_info_data_t tb;
+    uint64_t now = mach_absolute_time(), t0 = __atomic_load_n( &ios_fr_t0, __ATOMIC_RELAXED ), one_s;
+    double secs, frames, busy, span, dw, dwmax, lim;
+    uint64_t ticks, pres, skip, cmdbufs, qmax, pass[3], att[3];
+    int i;
+
+    if (!tb.denom) mach_timebase_info( &tb );
+    one_s = (uint64_t)(1e9 * tb.denom / tb.numer);
+    if (!t0) { __atomic_compare_exchange_n( &ios_fr_t0, &t0, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED ); return; }
+    if (now - t0 < one_s) return;
+    if (!__atomic_compare_exchange_n( &ios_fr_t0, &t0, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED )) return;   /* another thread reports */
+
+    secs = (double)(now - t0) * tb.numer / tb.denom / 1e9;
+    ticks = IOS_FR_TAKE( ios_fr_ticks ); pres = IOS_FR_TAKE( ios_fr_presents ); skip = IOS_FR_TAKE( ios_fr_skipped );
+    cmdbufs = IOS_FR_TAKE( ios_fr_cmdbufs ); qmax = IOS_FR_TAKE( ios_fr_qmax );
+    busy = IOS_FR_TAKE( ios_fr_busy_ns ) / 1e6; span = IOS_FR_TAKE( ios_fr_span_ns ) / 1e6;
+    dw = IOS_FR_TAKE( ios_fr_dw_ns ) / 1e6; dwmax = IOS_FR_TAKE( ios_fr_dw_max_ns ) / 1e6; lim = IOS_FR_TAKE( ios_fr_lim_ns ) / 1e6;
+    for (i = 0; i < 3; i++) { pass[i] = IOS_FR_TAKE( ios_fr_pass[i] ); att[i] = IOS_FR_TAKE( ios_fr_att[i] ); }
+    frames = pres ? (double)pres : ticks ? (double)ticks : 1.0;
+    wine_log_write( "[frame] madeira-bcd %.2f s: present %.1f/s (skipped %llu) game %.1f/s | GPU busy %.0f ms = %.0f%% (%.1f ms/frame) | "
+                    "cmdbufs %llu, span sum %.0f ms, in flight max %llu | nextDrawable wait %.1f ms (max %.1f) | per frame: render %.1f "
+                    "compute %.1f blit %.1f passes, attachments load %.1f store %.1f clear %.1f | panel %d Hz intent %d mode %d | limiter %.1f ms",
+                    secs, pres / secs, (unsigned long long)skip, ticks / secs, busy, secs > 0 ? busy / (secs * 10.0) : 0.0, busy / frames,
+                    (unsigned long long)cmdbufs, span, (unsigned long long)qmax, dw, dwmax,
+                    pass[0] / frames, pass[2] / frames, pass[1] / frames, att[0] / frames, att[1] / frames, att[2] / frames,
+                    ios_fr_panel_hz, ios_fr_intent_hz, ios_fr_mode, lim );
+}
+
+/* Called once at process init (the sampler arming site): reads the switch. */
+static void ios_frame_stats_arm( void )
+{
+    const char *e = getenv( "MADEIRA_FRAME_STATS" );   /* [frame] once a second: unset/0 off (default), anything else on */
+    if (!e || !*e || !strcmp( e, "0" )) return;
+    ios_frame_stats_on = 1;
+    wine_log_write( "[frame] madeira-bcd instrument on (MADEIRA_FRAME_STATS=%s): one line per second with presents, GPU busy "
+                    "and nextDrawable wait; unset it for timing-sensitive runs", e );
+}
+
+/* The game's Present: once per Present on the presenting thread (winemetal's
+ * QueryDisplaySettingForLayer, ml1050). */
+void ios_frame_game_tick( void )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_ticks, 1 );
+    ios_fr_maybe_report();
+}
+
+/* presentDrawable on the encode thread (skipped: RAW mode dropped the frame) */
+void ios_frame_encode_present( int skipped )
+{
+    if (!ios_frame_stats_on) return;
+    if (skipped) IOS_FR_ADD( ios_fr_skipped, 1 ); else IOS_FR_ADD( ios_fr_presents, 1 );
+    ios_fr_maybe_report();
+}
+
+void ios_frame_drawable_wait( unsigned long long ns )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_dw_ns, ns );
+    ios_fr_max( &ios_fr_dw_max_ns, ns );
+}
+
+/* a command buffer completed: its GPU span and how many were in flight */
+void ios_frame_gpu( unsigned long long gpu_ns, unsigned long long inflight )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_cmdbufs, 1 );
+    IOS_FR_ADD( ios_fr_span_ns, gpu_ns );
+    ios_fr_max( &ios_fr_qmax, inflight );
+}
+
+/* the same buffer on the GPU timeline (seconds, CACurrentMediaTime base):
+ * the union of these is the time the GPU had work */
+void ios_frame_gpu_span( double start_s, double end_s )
+{
+    double from, add = 0;
+    if (!ios_frame_stats_on || !(start_s > 0.0) || !(end_s > start_s)) return;
+    pthread_mutex_lock( &ios_fr_gpu_lock );
+    from = start_s > ios_fr_gpu_end ? start_s : ios_fr_gpu_end;
+    if (end_s > from) add = end_s - from;
+    if (end_s > ios_fr_gpu_end) ios_fr_gpu_end = end_s;
+    pthread_mutex_unlock( &ios_fr_gpu_lock );
+    if (add > 0) IOS_FR_ADD( ios_fr_busy_ns, add * 1e9 );
+}
+
+void ios_frame_note_display( int panel_hz, int intent_hz, int mode )
+{
+    ios_fr_panel_hz = panel_hz; ios_fr_intent_hz = intent_hz; ios_fr_mode = mode;
+}
+
+void ios_frame_limiter( unsigned long long ns )
+{
+    if (ios_frame_stats_on) IOS_FR_ADD( ios_fr_lim_ns, ns );
+}
+
+/* kind 0 render, 1 blit, 2 compute; attachments of a render pass */
+void ios_frame_pass( unsigned kind, unsigned loads, unsigned stores, unsigned clears )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_pass[kind < 3 ? kind : 0], 1 );
+    IOS_FR_ADD( ios_fr_att[0], loads ); IOS_FR_ADD( ios_fr_att[1], stores ); IOS_FR_ADD( ios_fr_att[2], clears );
 }
 
 static void ios_thread_sampler_main(void)
@@ -4412,9 +4759,22 @@ void server_init_process_done(void)
          * ios_thread_sampler_main() above. */
         if (__sync_bool_compare_and_swap(&ios_ts_armed, 0, 1))
         {
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_xprobe_main(); });   /* ml1128 */
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_wprof_main(); });   /* ml1129 */
+            /* madeira-bcd: MADEIRA_PROBES picks which always-on profilers start,
+             * for timing runs: unset/1 = all (as before); "light" = only the
+             * xprobe ([xp]/[xp-t]/[xp-api], counters read 4x a second, no thread
+             * is ever suspended); 0 = none. The thread sampler suspends every
+             * thread 4x per 20 s and the guest RIP profile suspends the game's
+             * threads 200x in a second after that -- cheap, but not free on a
+             * device whose efficiency cores are saturated (God of War at 1080p). */
+            const char *probes_env = getenv("MADEIRA_PROBES");
+            int probes = !probes_env || !*probes_env ? 2 : !strcmp(probes_env, "0") ? 0 : !strcmp(probes_env, "light") ? 1 : 2;
+            if (probes < 2)
+                wine_log_write("[probes] madeira-bcd MADEIRA_PROBES=%s: thread sampler, guest RIP profile and W-thread profiler off%s",
+                               probes_env, probes ? "; [xp] counters stay" : "; [xp] counters off too");
+            ios_frame_stats_arm();   /* madeira-bcd [frame]: off unless MADEIRA_FRAME_STATS is set */
+            if (probes >= 2) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });
+            if (probes >= 1) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_xprobe_main(); });   /* ml1128 */
+            if (probes >= 2) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_wprof_main(); });   /* ml1129 */
         }
         if (!getenv("MADEIRA_QUIET"))
         {

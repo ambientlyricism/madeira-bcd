@@ -8673,19 +8673,10 @@ static void ios_init_stub_tables(void)
 extern const void *dxmt_winemetal_unix_call_funcs[];
 
 /* DXMT's winemetal_unix.c, linked into the same image, reports per-frame
- * statistics into a "[frame]" instrument through the symbols below.  That
- * instrument is a diagnostic and is not part of this port, so this is its off
- * state: ios_frame_stats_on stays 0, which winemetal checks before any
- * per-frame hook, and the entry points it calls unconditionally do nothing.
- * Nothing here allocates, logs or takes a lock. */
-int ios_frame_stats_on = 0;
-void ios_frame_game_tick(void) { }
-void ios_frame_encode_present( int skipped ) { }
-void ios_frame_drawable_wait( unsigned long long ns ) { }
-void ios_frame_gpu( unsigned long long gpu_ns, unsigned long long inflight ) { }
-void ios_frame_note_display( int panel_hz, int intent_hz, int mode ) { }
-void ios_frame_limiter( unsigned long long ns ) { }
-void ios_frame_pass( unsigned kind, unsigned loads, unsigned stores, unsigned clears ) { }
+ * statistics into a "[frame]" instrument (ios_frame_stats_on and the
+ * ios_frame_* entry points). madeira-bcd: the instrument now lives in
+ * server_ios.c, off unless MADEIRA_FRAME_STATS is set; these were its empty
+ * stubs. */
 
 /* iOS-Madeira 2026-05-13: null audio driver unix table. Implements the 37
  * mmdevapi audio funcs to provide a fake "iOS Null" render endpoint with
