@@ -495,6 +495,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     upload. Setup steps for the iPad user given to the owner to relay
     (Library long-press -> Game settings -> MetalFX/Frame generation Off,
     "Advanced: this game's config" lines, Settings -> Memory pool Off).
+  - **RAM cap for 8 GB devices (owner's request 2026-10-01: optimise for 8 GB
+    iPhones like 15 Pro / 16 Pro too, without touching what works now).**
+    tools/patch-winemetal-ram-cap.py (step "Patch winemetal RAM cap for 8 GB
+    devices", native winemetal only, not in the farm key): the video memory
+    budget (ml1042 base, ml1075/ml1103 trim) and MadeiraCtl op 7 (headroom
+    for DXMT's automatic BC mip clamp, also used by the committed 64-bit
+    d3d11.dll) now plan with min(jetsam limit, hw.memsize - ram-reserve-mb);
+    madeira.cfg `ram-reserve-mb` default 2048, 0 = off. `[ram-cap]` logs the
+    cap once and once when it lowers something. Local stub test: iPad RAM
+    7644 -> cap 5596 MB, limit 8192 -> 5596, headroom at 5000 MB footprint
+    596 MB (was 3192); owner's iPhone RAM 11695 -> cap 9647 > 8192, every
+    value unchanged. Not changed: the RAM Wine reports to games (ml992 --
+    on the iPad it already reported hw.memsize because the 8192 measurement
+    was rejected as larger than RAM).
 
 ---
 

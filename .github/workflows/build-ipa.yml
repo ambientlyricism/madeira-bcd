@@ -935,6 +935,13 @@ jobs:
       - name: Patch winemetal shared textures for iOS
         run: python3 tools/patch-winemetal-ios-shared-texture.py
 
+      # 8 GB devices: an iPad (7644 MB RAM) measured an 8192 MB process limit,
+      # above its RAM, and starved (black frames) instead of trimming. Video
+      # budget, its trim and the mip clamp now plan with min(limit, RAM - 2 GB);
+      # unchanged on 12 GB phones. madeira.cfg ram-reserve-mb (0 = off).
+      - name: Patch winemetal RAM cap for 8 GB devices
+        run: python3 tools/patch-winemetal-ram-cap.py
+
       # WoW64's 32-bit Windows farm (app/Madeira/i386-windows), which upstream
       # builds from the pinned wine and DXMT (build/wine-i386) and does not
       # commit. Cached per wine/DXMT revision; a failure only leaves 32-bit
