@@ -1760,6 +1760,8 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     FPSOverlayFenceMode.current; log `[hud] madeira-bcd: GPU sync F<n>`).
     Swift is not compilable here; the code mirrors FPSOverlay's calls and
     the panel's existing iOS 17 onChange form. Catalog unchanged (PASS).
+  - **Build 307 dispatched** (run 36910925828, head 9a40329): 306 + the
+    Session panel CAP / GPU sync controls.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
