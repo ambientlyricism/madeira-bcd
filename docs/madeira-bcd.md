@@ -548,6 +548,10 @@ the update pack, the game's options and starts the per-game session log.
   window smaller than the guest desktop now does the same (`[game-input]`,
   once per thread). A full-screen game window never marks its thread.
   `MADEIRA_GAME_INPUT_WAKE=0` turns it off.
+- Session panel "Diagnostics" (`app/Madeira/SessionUI.swift`): CAP (capture the
+  next frame, 0.6 s after the panel closes) and the GPU sync mode F1 / F6 / F5 /
+  F0, the developer HUD's pills, which a library session does not show (the
+  touch-controls window covers the pillarbox bar they sit in).
 - DXMT_CONFIG separator (`app/Madeira/ContentView.swift`,
   `LibraryBCD.swift`): DXMT splits `DXMT_CONFIG` on ";" only and its line
   parser does not treat a newline as whitespace, but the app joined the

@@ -1746,6 +1746,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     NVAPI line `-> 0 4194304 KB`, and the memory footprint later (the
     ml1075 trim, `vram-trim-mb`, still lowers the budget near the kill
     line; ph-rdr56 saw 7.1 GB with vram-mb 3072 in RDR).
+  - **Owner: "CAP, F1, F6 ... buttons are not visible any more; they stayed in
+    the old UI -- how do I press CAP?"** In a library session the game runs
+    in landscape with the touch-controls window on top, which covers the
+    pillarbox bar where FPSOverlay(compact) draws its CAP / F pills (the
+    old developer view showed them). **Fix (this commit):** the Session
+    panel (the in-game menu button, `SessionPanelView` in SessionUI.swift)
+    has a new "Diagnostics" section: "Capture the next frame (CAP)" closes
+    the panel and calls `madeira_capture_request(1)` 0.6 s later (log
+    `[capture] madeira-bcd: frame capture requested from the Session
+    panel`), and a segmented "GPU sync" picker F1 / F6 / F5 / F0 that does
+    what the F pill did (`madeira_set_fence_mode`, 0 -> 7; shares
+    FPSOverlayFenceMode.current; log `[hud] madeira-bcd: GPU sync F<n>`).
+    Swift is not compilable here; the code mirrors FPSOverlay's calls and
+    the panel's existing iOS 17 onChange form. Catalog unchanged (PASS).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

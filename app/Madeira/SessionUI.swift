@@ -110,6 +110,7 @@ struct SessionPanelView: View {
     @State private var frameLimit = FrameLimit.current
     @State private var fit = DisplayFit.current
     @State private var eco = madeira_get_eco() != 0
+    @State private var fenceMode = FPSOverlayFenceMode.current
 
     var body: some View {
         NavigationStack {
@@ -182,6 +183,41 @@ struct SessionPanelView: View {
                          : input.mode == .touch
                          ? "Touch: the pointer jumps to your finger and a touch clicks there."
                          : "Trackpad: drag moves the pointer, tap clicks, hold then drag drags, two fingers scroll or right-click.")
+                }
+
+                // madeira-bcd: the developer HUD's CAP and F1/F6/F5/F0 pills (FPSOverlay) are
+                // not on screen in a library session, where the touch-controls window covers
+                // the pillarbox bar; the same two actions live here.
+                Section {
+                    Button {
+                        onClose()
+                        // After the panel has gone, so the frame shows what the player saw.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            madeira_capture_request(1)
+                            LogStore.shared.log("[capture] madeira-bcd: frame capture requested from the Session panel")
+                        }
+                    } label: {
+                        Label("Capture the next frame (CAP)", systemImage: "camera.viewfinder")
+                    }
+                    Picker("GPU sync", selection: $fenceMode) {
+                        Text("F1").tag(1)
+                        Text("F6").tag(6)
+                        Text("F5").tag(5)
+                        Text("F0").tag(0)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: fenceMode) { _, mode in
+                        FPSOverlayFenceMode.current = mode
+                        madeira_set_fence_mode(Int32(mode == 0 ? 7 : mode))
+                        LogStore.shared.log("[hud] madeira-bcd: GPU sync F\(mode) from the Session panel")
+                    }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("Capture saves every render pass of the next frame to Documents/capture and the draw list "
+                         + "to the log. GPU sync: F1 is the default (every encoder waits for the one before), F6 "
+                         + "barrier-driven, F5 render passes wait at the fragment stage, F0 no sync at all "
+                         + "(flicker expected; tests only).")
                 }
 
                 Section {
