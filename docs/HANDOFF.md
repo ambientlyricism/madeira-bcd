@@ -1078,6 +1078,35 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
       ConfigCatalog regenerated (env.MADEIRA_GAME_WINDOWS), check PASS;
       check-swap-coverage and check-wg-parser fail on HEAD too (pre-existing);
       the swift-needing host checks cannot run in this container.
+  - **GTA V Enhanced (owner, logs PlayGTAV.exe 2026-10-01 17:30:35 /
+    17:31:07 / 17:31:38, build 286; owner: "let's move several games at
+    once").** All three end the same way after ~1-5 s: PlayGTAV.exe (the
+    launcher stub) spawns `C:\Grand Theft Auto V Enhanced\GTA5_Enhanced.exe`
+    (internal name game_win64_gdk_master_llvm.exe, the D3D12 GDK build) as a
+    pseudo-process child, then exits (NtTerminateProcess(self, 0)) about a
+    second later; WineProcessBridge treats the main process's exit as the end
+    of the session and stops the wineserver, so the game dies while loading
+    (`[Wine child thread] child exited with code -1073741819`, "Wine finished
+    after 1.0s"). On Windows / Wine the server lives while any process does.
+    Fix: build/ntdll-unix/process_ios.c keeps a table of running
+    pseudo-process children (image basename + start time; slot taken in
+    spawn_process, released at the end of ios_child_thread_entry) and
+    exports `madeira_live_game_children(buf, len, max_age)`, which skips
+    crash reporters / helpers (names containing crash, crs-handler, handler,
+    report, helper). After the main process exits, WineProcessBridge waits
+    (polls every 200 ms, logs every 60 s) while such a child runs -- but only
+    if one was started in the last 60 s, so a game that exits normally long
+    after starting a helper still ends at once (God of War / GoT start
+    crs-handler.exe, which is a helper anyway). Logs: `[WineProc]
+    madeira-bcd: the main process exited but N child process(es) it started
+    still run (gta5_enhanced.exe) ...`, `... the last child process exited
+    after N s`. MADEIRA_WAIT_CHILDREN=0 restores the old behaviour. The slot
+    code was compiled and tested on the host in isolation (take / release /
+    helper filter / age filter); the rest is first compiled by CI. Not
+    looked at: anything GTA V does after this point (D3D12, its own checks).
+    The launcher's command line carries `-nobattleye -scOfflineOnly`; this
+    is a Madeira process-lifetime fix only (hard rule: nothing about crack or
+    emulator setups).
 
 ### DualSense / DirectInput (second agent)
 

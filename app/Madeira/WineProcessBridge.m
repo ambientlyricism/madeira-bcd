@@ -1643,6 +1643,35 @@ static void *wine_process_thread(void *arg) {
             dprintf(STDERR_FILENO, "[WineProc] Wine exited with code %d (caught by longjmp)\n", wine_ios_exit_code);
         }
 
+        /* madeira-bcd: a launcher stub that starts the game and exits at once
+         * (GTA V Enhanced: PlayGTAV.exe -> GTA5_Enhanced.exe) must not end the
+         * session -- stopping the wineserver here killed the game while it
+         * loaded. If a child process that is not a crash reporter / helper was
+         * started in the last 60 s and still runs, the session goes on until
+         * no such child is left (process_ios.c, madeira_live_game_children).
+         * A game that exits normally long after starting its helpers is not
+         * affected. MADEIRA_WAIT_CHILDREN=0 ends the session with the main
+         * process, as before. */
+        {
+            extern int madeira_live_game_children(char *buf, int len, double max_age);
+            const char *wc = getenv("MADEIRA_WAIT_CHILDREN");
+            char names[256];
+            int n = madeira_live_game_children(names, sizeof names, 60.0);
+            if (n > 0 && !(wc && wc[0] == '0')) {
+                dprintf(STDERR_FILENO, "[WineProc] madeira-bcd: the main process exited but %d child process(es) "
+                        "it started still run (%s) -- a launcher started the game; the session goes on until "
+                        "they exit (MADEIRA_WAIT_CHILDREN=0 ends it with the main process)\n", n, names);
+                unsigned ticks = 0;
+                while ((n = madeira_live_game_children(names, sizeof names, -1.0)) > 0) {
+                    usleep(200 * 1000);
+                    if ((++ticks % 300) == 0)
+                        dprintf(STDERR_FILENO, "[WineProc] madeira-bcd: still running: %d child process(es) (%s), %u s\n",
+                                n, names, ticks / 5);
+                }
+                dprintf(STDERR_FILENO, "[WineProc] madeira-bcd: the last child process exited after %u s\n", ticks / 5);
+            }
+        }
+
         g_wine_running = 0;
 
         // Stop wineserver to prevent CPU spin (iOS kills for excessive CPU)
