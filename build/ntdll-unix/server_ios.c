@@ -1977,6 +1977,153 @@ static void ios_wprof_main( void )
     }
 }
 
+/* ============================================================================
+ * madeira-bcd [frame]: per-second frame anatomy for DXMT titles, opt-in.
+ *
+ * Question it answers: is a D3D11 game GPU-bound, CPU-bound or held by the
+ * display? The God of War logs of 2026-10-01 had no frame or GPU timing at all
+ * (only a Metal HUD screenshot), because DXMT's winemetal_unix.c reports into
+ * hooks (ios_frame_*, ml1050) whose instrument was not part of this port: they
+ * were empty stubs in virtual_ios.c. They are implemented here, behind
+ * MADEIRA_FRAME_STATS (unset or 0: off, exactly as before -- ios_frame_stats_on
+ * stays 0 and winemetal makes no hook call and adds no completion handler; any
+ * other value: on for every caller, 64-bit included). Once a second:
+ *
+ *   [frame] madeira-bcd 1.00 s: present 30.0/s (skipped 0) game 30.0/s |
+ *     GPU busy 948 ms = 95% (31.6 ms/frame) | cmdbufs 124, span sum 1010 ms,
+ *     in flight max 3 | nextDrawable wait 12.0 ms (max 4.1) | per frame:
+ *     render 41.0 compute 9.0 blit 6.0 passes, attachments load 22.0 store
+ *     63.0 clear 19.0 | panel 120 Hz intent 60 mode 1 | limiter 0.0 ms
+ *
+ * "GPU busy" is the union of the command buffers' GPUStartTime..GPUEndTime
+ * (ios_frame_gpu_span, fed by tools/patch-winemetal-gpu-span.py); "span sum"
+ * adds the spans and over-counts when buffers overlap. Busy near 100 % = the
+ * GPU is the limit; a large nextDrawable wait = the display/compositor holds
+ * the producer; neither = the CPU side. Accumulators are relaxed atomics, the
+ * busy union takes one uncontended mutex per command buffer, and the line is
+ * printed by whichever per-frame hook first sees a second elapsed. */
+int ios_frame_stats_on = 0;
+static uint64_t ios_fr_t0;
+static uint64_t ios_fr_ticks, ios_fr_presents, ios_fr_skipped, ios_fr_cmdbufs, ios_fr_span_ns, ios_fr_busy_ns;
+static uint64_t ios_fr_dw_ns, ios_fr_dw_max_ns, ios_fr_lim_ns, ios_fr_qmax, ios_fr_pass[3], ios_fr_att[3];
+static volatile int ios_fr_panel_hz, ios_fr_intent_hz, ios_fr_mode;
+static pthread_mutex_t ios_fr_gpu_lock = PTHREAD_MUTEX_INITIALIZER;
+static double ios_fr_gpu_end;   /* GPU timeline high-water mark (s), under ios_fr_gpu_lock */
+
+#define IOS_FR_ADD(v, x) __atomic_fetch_add( &(v), (uint64_t)(x), __ATOMIC_RELAXED )
+#define IOS_FR_TAKE(v)   __atomic_exchange_n( &(v), 0, __ATOMIC_RELAXED )
+
+static void ios_fr_max( uint64_t *v, uint64_t x )
+{
+    uint64_t c = __atomic_load_n( v, __ATOMIC_RELAXED );
+    while (x > c && !__atomic_compare_exchange_n( v, &c, x, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED )) ;
+}
+
+static void ios_fr_maybe_report( void )
+{
+    static mach_timebase_info_data_t tb;
+    uint64_t now = mach_absolute_time(), t0 = __atomic_load_n( &ios_fr_t0, __ATOMIC_RELAXED ), one_s;
+    double secs, frames, busy, span, dw, dwmax, lim;
+    uint64_t ticks, pres, skip, cmdbufs, qmax, pass[3], att[3];
+    int i;
+
+    if (!tb.denom) mach_timebase_info( &tb );
+    one_s = (uint64_t)(1e9 * tb.denom / tb.numer);
+    if (!t0) { __atomic_compare_exchange_n( &ios_fr_t0, &t0, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED ); return; }
+    if (now - t0 < one_s) return;
+    if (!__atomic_compare_exchange_n( &ios_fr_t0, &t0, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED )) return;   /* another thread reports */
+
+    secs = (double)(now - t0) * tb.numer / tb.denom / 1e9;
+    ticks = IOS_FR_TAKE( ios_fr_ticks ); pres = IOS_FR_TAKE( ios_fr_presents ); skip = IOS_FR_TAKE( ios_fr_skipped );
+    cmdbufs = IOS_FR_TAKE( ios_fr_cmdbufs ); qmax = IOS_FR_TAKE( ios_fr_qmax );
+    busy = IOS_FR_TAKE( ios_fr_busy_ns ) / 1e6; span = IOS_FR_TAKE( ios_fr_span_ns ) / 1e6;
+    dw = IOS_FR_TAKE( ios_fr_dw_ns ) / 1e6; dwmax = IOS_FR_TAKE( ios_fr_dw_max_ns ) / 1e6; lim = IOS_FR_TAKE( ios_fr_lim_ns ) / 1e6;
+    for (i = 0; i < 3; i++) { pass[i] = IOS_FR_TAKE( ios_fr_pass[i] ); att[i] = IOS_FR_TAKE( ios_fr_att[i] ); }
+    frames = pres ? (double)pres : ticks ? (double)ticks : 1.0;
+    wine_log_write( "[frame] madeira-bcd %.2f s: present %.1f/s (skipped %llu) game %.1f/s | GPU busy %.0f ms = %.0f%% (%.1f ms/frame) | "
+                    "cmdbufs %llu, span sum %.0f ms, in flight max %llu | nextDrawable wait %.1f ms (max %.1f) | per frame: render %.1f "
+                    "compute %.1f blit %.1f passes, attachments load %.1f store %.1f clear %.1f | panel %d Hz intent %d mode %d | limiter %.1f ms",
+                    secs, pres / secs, (unsigned long long)skip, ticks / secs, busy, secs > 0 ? busy / (secs * 10.0) : 0.0, busy / frames,
+                    (unsigned long long)cmdbufs, span, (unsigned long long)qmax, dw, dwmax,
+                    pass[0] / frames, pass[2] / frames, pass[1] / frames, att[0] / frames, att[1] / frames, att[2] / frames,
+                    ios_fr_panel_hz, ios_fr_intent_hz, ios_fr_mode, lim );
+}
+
+/* Called once at process init (the sampler arming site): reads the switch. */
+static void ios_frame_stats_arm( void )
+{
+    const char *e = getenv( "MADEIRA_FRAME_STATS" );   /* [frame] once a second: unset/0 off (default), anything else on */
+    if (!e || !*e || !strcmp( e, "0" )) return;
+    ios_frame_stats_on = 1;
+    wine_log_write( "[frame] madeira-bcd instrument on (MADEIRA_FRAME_STATS=%s): one line per second with presents, GPU busy "
+                    "and nextDrawable wait; unset it for timing-sensitive runs", e );
+}
+
+/* The game's Present: once per Present on the presenting thread (winemetal's
+ * QueryDisplaySettingForLayer, ml1050). */
+void ios_frame_game_tick( void )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_ticks, 1 );
+    ios_fr_maybe_report();
+}
+
+/* presentDrawable on the encode thread (skipped: RAW mode dropped the frame) */
+void ios_frame_encode_present( int skipped )
+{
+    if (!ios_frame_stats_on) return;
+    if (skipped) IOS_FR_ADD( ios_fr_skipped, 1 ); else IOS_FR_ADD( ios_fr_presents, 1 );
+    ios_fr_maybe_report();
+}
+
+void ios_frame_drawable_wait( unsigned long long ns )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_dw_ns, ns );
+    ios_fr_max( &ios_fr_dw_max_ns, ns );
+}
+
+/* a command buffer completed: its GPU span and how many were in flight */
+void ios_frame_gpu( unsigned long long gpu_ns, unsigned long long inflight )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_cmdbufs, 1 );
+    IOS_FR_ADD( ios_fr_span_ns, gpu_ns );
+    ios_fr_max( &ios_fr_qmax, inflight );
+}
+
+/* the same buffer on the GPU timeline (seconds, CACurrentMediaTime base):
+ * the union of these is the time the GPU had work */
+void ios_frame_gpu_span( double start_s, double end_s )
+{
+    double from, add = 0;
+    if (!ios_frame_stats_on || !(start_s > 0.0) || !(end_s > start_s)) return;
+    pthread_mutex_lock( &ios_fr_gpu_lock );
+    from = start_s > ios_fr_gpu_end ? start_s : ios_fr_gpu_end;
+    if (end_s > from) add = end_s - from;
+    if (end_s > ios_fr_gpu_end) ios_fr_gpu_end = end_s;
+    pthread_mutex_unlock( &ios_fr_gpu_lock );
+    if (add > 0) IOS_FR_ADD( ios_fr_busy_ns, add * 1e9 );
+}
+
+void ios_frame_note_display( int panel_hz, int intent_hz, int mode )
+{
+    ios_fr_panel_hz = panel_hz; ios_fr_intent_hz = intent_hz; ios_fr_mode = mode;
+}
+
+void ios_frame_limiter( unsigned long long ns )
+{
+    if (ios_frame_stats_on) IOS_FR_ADD( ios_fr_lim_ns, ns );
+}
+
+/* kind 0 render, 1 blit, 2 compute; attachments of a render pass */
+void ios_frame_pass( unsigned kind, unsigned loads, unsigned stores, unsigned clears )
+{
+    if (!ios_frame_stats_on) return;
+    IOS_FR_ADD( ios_fr_pass[kind < 3 ? kind : 0], 1 );
+    IOS_FR_ADD( ios_fr_att[0], loads ); IOS_FR_ADD( ios_fr_att[1], stores ); IOS_FR_ADD( ios_fr_att[2], clears );
+}
+
 static void ios_thread_sampler_main(void)
 {
     int gen = 0;
@@ -4612,9 +4759,22 @@ void server_init_process_done(void)
          * ios_thread_sampler_main() above. */
         if (__sync_bool_compare_and_swap(&ios_ts_armed, 0, 1))
         {
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_xprobe_main(); });   /* ml1128 */
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_wprof_main(); });   /* ml1129 */
+            /* madeira-bcd: MADEIRA_PROBES picks which always-on profilers start,
+             * for timing runs: unset/1 = all (as before); "light" = only the
+             * xprobe ([xp]/[xp-t]/[xp-api], counters read 4x a second, no thread
+             * is ever suspended); 0 = none. The thread sampler suspends every
+             * thread 4x per 20 s and the guest RIP profile suspends the game's
+             * threads 200x in a second after that -- cheap, but not free on a
+             * device whose efficiency cores are saturated (God of War at 1080p). */
+            const char *probes_env = getenv("MADEIRA_PROBES");
+            int probes = !probes_env || !*probes_env ? 2 : !strcmp(probes_env, "0") ? 0 : !strcmp(probes_env, "light") ? 1 : 2;
+            if (probes < 2)
+                wine_log_write("[probes] madeira-bcd MADEIRA_PROBES=%s: thread sampler, guest RIP profile and W-thread profiler off%s",
+                               probes_env, probes ? "; [xp] counters stay" : "; [xp] counters off too");
+            ios_frame_stats_arm();   /* madeira-bcd [frame]: off unless MADEIRA_FRAME_STATS is set */
+            if (probes >= 2) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });
+            if (probes >= 1) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_xprobe_main(); });   /* ml1128 */
+            if (probes >= 2) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_wprof_main(); });   /* ml1129 */
         }
         if (!getenv("MADEIRA_QUIET"))
         {
