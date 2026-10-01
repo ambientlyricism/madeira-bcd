@@ -1363,6 +1363,24 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     env.MADEIRA_VMON_IDS = 0 / env.MADEIRA_GUEST_LOG = 0 undo it. Still
     open, identical in the good run: NVAPI says RTX 4090 / 999.99 / PCI id
     0x000010DE vs DXGI + registry RTX 3060 10DE:2544 / 35.0.15.6094.
+    Build 295 was cancelled for **build 296** (run 36891112764, head
+    5981d3e): 294 + GTA child-ntdll fix + GoT virtual-monitor fix +
+    [guest-log] + NVAPI trace.
+  - **GoW darkening below 1080p: owner wants it solved ("1080p aşağısında
+    hala karanlık"); agent started (own worktree).** New logs, build 294,
+    both with env MADEIRA_LD_BOUNDS=0 (bounds checks off), PAD_MODE=hid:
+    19:16:44 at 720p = dark (float targets include R32F 754x424 and RGBA32F
+    95x53 -- the game renders internally at 754x424 there), 19:33:23 at
+    1080p = normal. The owner's earlier "dark overall" (bounds ON) has no
+    log, so it is open whether the 282/284 bounds checks darken 1080p. The
+    agent gets every known fact (tile grid past the bottom, exposure
+    readback, iPad NaN, refuted switches) and checks resinfo / sampling of
+    NPOT float targets / groupshared + barriers + atomics in compute /
+    NaN-Inf semantics / render-target size vs viewport and stale regions;
+    deliverables docs/gow-darkening.md, a fix with evidence or a set of
+    independent opt-in experiment switches (each with its own shader-cache
+    salt) for one A/B device session, and possibly an opt-in DXBC/AIR dump
+    of the luminance shaders.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
