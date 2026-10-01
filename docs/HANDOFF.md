@@ -1731,6 +1731,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     main fast-forwarded to 98ef76f (no workflow change, no push run). Carries
     the GoT smoke diagnostics (skip-ps, dxil-dump, capture-ps for DXIL,
     dxil-tess-patch-topology) and the NVAPI frame-buffer sizes for GTA.
+  - **GTA V on build 306 (log PlayGTAV.exe 2026-10-01 21:55:06, DXGI_SRC=1):
+    same ERR_GFX_D3D_NOD3D12, but the NVAPI fix works** -- `GetGpuCoreCount
+    -> 0`, `GetPhysicalFrameBufferSize -> 0 1572864 KB`, `GetVirtual... ->
+    0 1572864 KB` (7455-7476), then `destroyed Device` and the box. **The
+    answer is the problem: 1.5 GB of video memory**, below GTA V Enhanced's
+    4 GB minimum. It is ml1042's per-process budget, the same number DXGI
+    reports as DedicatedVideoMemory: `[wmt] ml1042 video memory budget =
+    1536 MB (process limit 8192 MB ...)` (4766) = 8192 - 4096 (guest RAM)
+    - 2560 (runtime overhead). The existing knob `vram-mb = N` (madeira.cfg
+    or the game's own file, read through MADEIRA_CFG_GAME) overrides it. No
+    code change: the owner is asked to add **`vram-mb = 4096`** to GTA's
+    game file. Watch: `[wmt] ml1042 video memory budget = 4096 MB`, the
+    NVAPI line `-> 0 4194304 KB`, and the memory footprint later (the
+    ml1075 trim, `vram-trim-mb`, still lowers the budget near the kill
+    line; ph-rdr56 saw 7.1 GB with vram-mb 3072 in RDR).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
