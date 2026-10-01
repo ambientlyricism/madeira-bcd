@@ -186,6 +186,13 @@ the update pack, the game's options and starts the per-game session log.
   `NvAPI_GetAssociatedNvidiaDisplayHandle`, `NvAPI_GetAssociatedDisplayOutputId`,
   `NvAPI_GPU_GetPCIIdentifiers`, `NvAPI_GPU_GetThermalSettings` -- one GPU
   sensor at 50 C) and logs each queried function once as `[nvapi] query`.
+  `tools/patch-nvapi-strings.py` terminates the strings it returns.
+  `tools/patch-nvapi-trace.py` sends that trace through DXMT's Logger (the
+  `fprintf(stderr)` never reached the session log), returns 30 adapter /
+  display / driver entry points through wrappers that log
+  `[nvapi] NvAPI_X -> <status>` with the values, and lets
+  `NvAPI_DISP_GetDisplayIdByDisplayName` find the one display by the primary
+  adapter's name when `GetMonitorInfo` does not match.
 - `madeira_d3d12.c`: `GetAdapterLuid` returns the adapter's LUID and
   `GetDeviceRemovedReason` returns S_OK unless the device is lost; both were
   generated stubs (a zero LUID, E_NOTIMPL). Ghost of Tsushima polls the
@@ -475,6 +482,24 @@ the update pack, the game's options and starts the per-game session log.
   `dxgi.customDeviceId=2544` too (appended to `DXMT_CONFIG`), so DXGI,
   EnumDisplayDevices, SetupAPI and NVAPI name one GPU. Ghost of Tsushima still
   said "Failed to get GPU Driver Info" with NVAPI alone.
+- Virtual monitor names (`build/win32u-unix/sysparams_ios.c`,
+  `ios_vmon_ids_enabled`; docs/got-gpu-check.md): upstream's file (taken in
+  17088ab) names the source-less virtual monitor `"WinDisc"` in
+  `GetMonitorInfo` (Windows' name for a disconnected display) and gives it an
+  empty DeviceID / DeviceKey in the synthesized `EnumDisplayDevices`, so Ghost
+  of Tsushima's `EnumDisplayDevices(L"\\.\DISPLAY1", 0,
+  EDD_GET_DEVICE_INTERFACE_NAME)` found no monitor on the GPU ("No installed
+  graphics card ... your monitor is connected to it") on every launch since
+  build 222. The monitor is `"\\.\DISPLAY1"` again, with the pre-222
+  interface path / instance id / class key; `MADEIRA_VMON_IDS=0` restores
+  upstream's answers. `[vmon]`, `[vmode]`, `[vdcfg]` and `[vkmt]` lines log
+  what a game asks (a few per session).
+- `[guest-log]` (`tools/patch-wine-guest-log.py`, CI step before "Build
+  ntdll-unix"): `NtWriteFile` mirrors error / GPU / driver / display lines a
+  program writes to its `*.log` (or `output_log.txt`) into the session log,
+  64 lines, naming each file once; `MADEIRA_GUEST_LOG=all` mirrors every line
+  (400), `=0` turns it off, `MADEIRA_GUEST_LOG_LIMIT=N`. This fork's wine had
+  it before build 222 (125hz's `file.c`); willfaust/wine has not.
 - `vulkan-1.dll` (and d3d10/avifil32 if the build above failed)
   (`tools/build-stub-dlls.py`):
   stand-ins generated from Wine's `.spec` export lists, for games that import
