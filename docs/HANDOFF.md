@@ -774,6 +774,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the native cache salt gets +100 when on, so the first launch reconverts
     every shader. Not compiled locally (no LLVM 15 here); patch chain
     applies cleanly and is idempotent on a scratch copy.
+  - **Build 282 green** (run 36860447690, head 50a95fb; run 281 with the
+    readback census alone was cancelled by it): "Patch airconv texture load
+    bounds" and "Patch winemetal readback census" applied and compiled,
+    native ABI 413d09f97f39c4c5, OTA mailed, bucket 8 builds 1.20 GB.
+    Waiting on device: God of War at 720p (or FSR on at 1080p), outdoors --
+    does the darkening stay away? `[ld-bounds] ... on` must be in the log;
+    `[rb-tex]` / `[rb-buf]` show the readbacks.
 
 ---
 
