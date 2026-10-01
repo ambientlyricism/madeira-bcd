@@ -1783,6 +1783,22 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (the 4 errors at 11985 come from the unpatched dxmt winemetal.h here);
     catalog + got-diagnostics checks PASS. Next GTA log answers which
     feature the game reads last before `destroyed Device`.
+  - **Owner: "GTA V Enhanced runs with Winlator (vkd3d), so there is a way;
+    research if needed."** Quick web research: no public statement of which
+    D3D12 feature GTA V Enhanced requires; the published fixes for
+    ERR_GFX_D3D_NOD3D12 are Windows-side (drivers, DirectX, a feature-level
+    proxy for Elden Ring that does not apply here); vkd3d-proton issues show
+    the game running (RT perf issue #2811), and Winlator guides use
+    DXVK + VKD3D on Turnip. What vkd3d-proton reports on a mobile GPU and
+    we do not: ResourceBindingTier 3 (we say 2), OPTIONS12
+    EnhancedBarriersSupported TRUE (we zero OPTIONS12; the error text names
+    the Agility SDK, where enhanced barriers live), shader model 6.7/6.8 (we
+    cap at 6.6). Raytracing / mesh shaders are unlikely requirements (Turnip
+    lacks them, Winlator runs it). Not guessing blindly: the `[d3d12-caps]`
+    trace (e30b6b1) shows the last feature read before `destroyed Device`;
+    then a switchable answer, implemented far enough for what the game uses.
+    **Build 308 dispatched** (run 36911439452, head e30b6b1), superseding 307
+    (9a40329, cancelled after 4 min; 308 contains it).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
