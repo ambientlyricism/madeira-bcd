@@ -547,6 +547,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     War items: the slow darkening (owner's question about camera/area
     pending), the iPad M1 black scene (275 log pending), upstream PR for
     the lean SM50 fix.
+  - Upstream PRs wait (owner, 2026-10-01): he is not yet in the upstream
+    Discord contributors channel; PRs will be requested there and the owner
+    will say which ones. Do not open upstream PRs before that.
 
 ---
 
