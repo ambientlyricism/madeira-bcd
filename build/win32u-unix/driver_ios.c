@@ -521,6 +521,27 @@ static int winios_desktop_mode(void)
     return mode;
 }
 
+/* madeira-bcd: game-mode windows. Outside desktop mode a window got win32u's
+ * offscreen surface and its position never reached the app, so a launcher or
+ * a message box a game opens before (or instead of) its 3D window was drawn
+ * nowhere: Ghost of Tsushima's Play / Options launcher and its "No installed
+ * graphics card" box (logs 2026-10-01). This fork had a game-mode overlay for
+ * them until the switch to upstream (build 222). Both gates open again for a
+ * game; the app side (Winios.m) draws only top-level windows that do not cover
+ * the whole guest desktop and do not present through Metal, so a game's own
+ * window never covers its picture. MADEIRA_GAME_WINDOWS=0 restores the old
+ * behaviour. */
+static int winios_game_windows(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char *env = getenv( "MADEIRA_GAME_WINDOWS" );
+        on = !winios_desktop_mode() && !(env && *env == '0');
+    }
+    return on;
+}
+
 /* ml505 probe. This hook was a pure stub: wine hands the driver the
  * surface's VISIBLE REGION here — the rects left after sibling and child
  * occlusion — and we discarded all of it.
@@ -651,7 +672,9 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
 {
     /* desktop mode only — game windows must never wake the compositor
      * (it would draw its backdrop OVER the DXMT Metal layer) */
-    if (winios_window_frame && winios_desktop_mode())
+    if (winios_window_frame && (winios_desktop_mode()
+        || (winios_game_windows() && !(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD)
+            && NtUserGetAncestor( hwnd, GA_PARENT ) == get_desktop_window())))
     {
         const RECT *v = &new_rects->visible;
         const RECT *c = &new_rects->client;
@@ -1768,6 +1791,12 @@ static void load_display_driver(void)
         {
             winios_user_driver.pCreateWindowSurface = winios_CreateWindowSurface;
             dprintf( 2, "[winios] desktop mode: window-surface compositing ENABLED\n" );
+        }
+        else if (winios_game_windows())
+        {
+            winios_user_driver.pCreateWindowSurface = winios_CreateWindowSurface;
+            dprintf( 2, "[winios] game mode: launcher / dialog windows are drawn over the game "
+                        "(MADEIRA_GAME_WINDOWS=0 hides them)\n" );
         }
         winios_user_driver.pUpdateDisplayDevices = winios_UpdateDisplayDevices;
         __wine_set_user_driver( &winios_user_driver, WINE_GDI_DRIVER_VERSION );

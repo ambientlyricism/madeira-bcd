@@ -1037,6 +1037,47 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     key should press the invisible dialog's default button (Tamam) -- not
     verified; GoT's dialog itself goes away with the monitor-identity fix
     (build 289, or the two env lines in its game file).
+  - **Owner: "will the launcher (the small Play / Options box before DX12)
+    show? It did before upstream." -> No, not without the overlay; so the
+    overlay is back now (game-mode windows).** 09-28 20:39 shows the
+    launcher: top-level hwnd 0x10038 "Ghost of Tsushima DIRECTOR'S CUT",
+    792x447, drawn by the old overlay (`[overlay] first window hwnd=0x10038
+    ... surface=896x512`) before the game window 0x2003a (1280x720) and its
+    D3D12 swapchain. Without a game-mode window path GoT would sit at an
+    invisible launcher even with the dialog gone, so build 289 alone could
+    not work. Design (small, on upstream's desktop compositor instead of
+    porting 125hz's ~1350-line overlay):
+    * build/win32u-unix/driver_ios.c: `winios_game_windows()` (not desktop
+      mode and MADEIRA_GAME_WINDOWS != 0) installs pCreateWindowSurface in a
+      game session too, and forwards winios_window_frame for TOP-LEVEL
+      windows only (not WS_CHILD, parent = the desktop window). Log
+      `[winios] game mode: launcher / dialog windows are drawn over the game`.
+    * app/Madeira/Winios/Winios.m: in a game session the compositor view is
+      created as a transparent overlay (clear background, no teal backdrop,
+      no touches, no drawn cursor) in the same game rect the front end
+      publishes via winios_set_desktop_rect -- the rect MetalBackedView maps
+      touches through, so a tap lands on the drawn button. A window is drawn
+      only if its rect does NOT cover the whole guest desktop and it does
+      not present through Metal (`winios_note_game_metal_hwnd`, called by
+      IOSDisplayShim's game-mode view_create_metal_view, which D3D9/11/12
+      swapchains all reach via CreateMetalViewFromHWND). Bits that arrive
+      before a window's position wait in a hidden layer. The overlay is
+      dropped at session end (winios_compositor_set_hidden(1)) and at every
+      Wine start (`winios_session_reset`, WineProcessBridge), and a desktop
+      compositor left from an earlier session of the same app run is
+      replaced (and vice versa). Logs: `[winios] game-mode window overlay
+      attached`, `[winios] game window hwnd=... presents through Metal`,
+      `... not drawn (covers the guest desktop)`.
+    * God of War: its window covers the guest desktop (1024x768 / 1280x720)
+      and presents through Metal, so it is never drawn; with the old overlay
+      (09-29 logs) the game window flushed GDI only 4 times per session, so
+      the extra surface copies cost nothing measurable. Library starting
+      screen: a drawn game-mode window counts as the session's first frame
+      (as a desktop window does), so it no longer covers a launcher.
+    * Not verifiable here (no Swift/UIKit compiler): first compile is CI.
+      ConfigCatalog regenerated (env.MADEIRA_GAME_WINDOWS), check PASS;
+      check-swap-coverage and check-wg-parser fail on HEAD too (pre-existing);
+      the swift-needing host checks cannot run in this container.
 
 ### DualSense / DirectInput (second agent)
 
