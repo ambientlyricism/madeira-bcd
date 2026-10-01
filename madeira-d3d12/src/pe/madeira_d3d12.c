@@ -183,6 +183,53 @@ static char g_capture_ps[512]; static int g_capture_ps_loaded, g_capture_ps_shot
  * detailed mip) and root CBVs captured BEFORE they run. UE5's Nanite shades
  * every material in compute, so this is how to see what a material samples. */
 static char g_capture_cs[64]; static int g_capture_cs_shots, g_capture_cs_max = 12, g_capture_cs_ind;
+/* madeira-bcd: DRAW SKIP BY SHADER NAME, a diagnostic for Ghost of Tsushima's
+ * smoke squares (docs/got-corruption.md). madeira.cfg / the game's file
+ * skip-ps = <entry>[,<entry>...]: draws whose pixel OR vertex shader entry is
+ * one of the names (exact match) are dropped; their render pass and its clears
+ * still run, and the drops are counted in "skips by site". skip-ps-cycle = N
+ * (seconds) rotates instead of skipping all of them: N s with nothing skipped,
+ * N s with only the first name, N s with only the second, ... and round again;
+ * every step is logged with its present number ([skip-ps] phase ...), so ONE
+ * screen recording says which pass draws an artefact. Unset (the default):
+ * read once, nothing is ever skipped. */
+static char g_skip_ps_tok[16][64]; static int g_skip_ps_state = -1, g_skip_ps_n, g_skip_ps_cycle;
+static volatile LONG g_skip_ps_phase = -1, g_skip_ps_dropped; static ULONGLONG g_skip_ps_t0;
+static SRWLOCK g_skip_ps_lock = SRWLOCK_INIT;
+/* madeira-bcd: DXIL DUMP BY ENTRY NAME (docs/got-corruption.md). madeira.cfg /
+ * the game's file dxil-dump = <entry>[,<entry>...]: when a pipeline whose vertex,
+ * pixel or compute entry is one of the names is created, the bytecode of EVERY
+ * stage it has (VS, HS, DS, GS, PS or CS) is written to the log as base64
+ * ([dxil-dump] header, [b64 <hash>] lines -- the same format as the GPU fault
+ * shaders, so HANDOFF section 5's grep | base64 -d | tools/dxil-disasm.py works)
+ * and to C:\madeira-cs\dump_<stage>_<entry>_<hash>.dxil. Each bytecode once, at
+ * most 48 blobs / 3 MB a run. Unset (the default): nothing is written. */
+static char g_dxil_dump[512]; static int g_dxil_dump_state = -1; static SRWLOCK g_dxil_dump_lock = SRWLOCK_INIT;
+static UINT64 g_dxil_dumped[48]; static unsigned g_dxil_ndumped; static SIZE_T g_dxil_dump_bytes;
+/* madeira-bcd: SAMPLER STATES BY RESOURCE ID, so a targeted capture can say
+ * what a sampler descriptor really does (filter, address modes, LOD clamps,
+ * bias). Filled at CreateSampler and for root-signature static samplers; a
+ * small open-addressed table, a lost entry only prints "state unknown". */
+struct mad_smpdesc { UINT64 id; UINT filter, au, av, aw, aniso, cmp, border; float minlod, maxlod, bias; };
+#define MAD_SMPDESC_CAP 4096u
+static struct mad_smpdesc g_smpdesc[MAD_SMPDESC_CAP];
+static SRWLOCK g_smpdesc_lock = SRWLOCK_INIT;
+#define MAD_SWZ_IDENTITY (2u | 3u << 8 | 4u << 16 | 5u << 24)   /* ml918: see mad_texture_view_id */
+/* madeira-bcd: is NAME one of the entries of LIST (split on commas, semicolons
+ * and blanks)? Exact names: "ps_SetColor" is not in "ps_SetColor_MultiLight". */
+static int mad_name_in_list(const char *list, const char *name) {
+    const char *q; size_t nl;
+    if (!list || !name || !name[0]) return 0;
+    nl = strlen(name);
+    for (q = list; *q; ) {
+        size_t len = 0;
+        while (*q == ',' || *q == ';' || *q == ' ' || *q == '\t') q++;
+        while (q[len] && q[len] != ',' && q[len] != ';' && q[len] != ' ' && q[len] != '\t') len++;
+        if (len && len == nl && !memcmp(name, q, len)) return 1;
+        q += len;
+    }
+    return 0;
+}
 static LONG g_barrier_renc_closed, g_stencil_srv, g_barrier_seen;
 struct mad_obj {
     void *vtbl;
@@ -617,6 +664,31 @@ static void mad_acct_report(void) {
                             g_hp_dev->hp_textures, g_hp_dev->hp_fallbacks, g_hp_dev->nhret);
     d3d12_log("[madeira-d3d12] ml1060 shader libraries created: %ld, %lld MB of metallib (one per pipeline STAGE, never shared "
               "between pipelines)\n", g_lib_count, (long long)(g_lib_bytes >> 20));
+}
+static void mad_smpdesc_put(UINT64 id, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border,
+                            float minlod, float maxlod, float bias) {   /* madeira-bcd: see g_smpdesc */
+    unsigned h = (unsigned)((id * 0x9E3779B97F4A7C15ull) >> 52), k;
+    struct mad_smpdesc *s;
+    if (!id) return;
+    AcquireSRWLockExclusive(&g_smpdesc_lock);
+    for (k = 0; k < 8; k++) { s = &g_smpdesc[(h + k) & (MAD_SMPDESC_CAP - 1)]; if (!s->id || s->id == id) break; }
+    if (k == 8) k = 0;
+    s = &g_smpdesc[(h + k) & (MAD_SMPDESC_CAP - 1)];
+    s->id = id; s->filter = filter; s->au = au; s->av = av; s->aw = aw; s->aniso = aniso; s->cmp = cmp; s->border = border;
+    s->minlod = minlod; s->maxlod = maxlod; s->bias = bias;
+    ReleaseSRWLockExclusive(&g_smpdesc_lock);
+}
+static int mad_smpdesc_get(UINT64 id, struct mad_smpdesc *out) {
+    unsigned h = (unsigned)((id * 0x9E3779B97F4A7C15ull) >> 52), k; int found = 0;
+    if (!id) return 0;
+    AcquireSRWLockShared(&g_smpdesc_lock);
+    for (k = 0; k < 8; k++) {
+        const struct mad_smpdesc *s = &g_smpdesc[(h + k) & (MAD_SMPDESC_CAP - 1)];
+        if (s->id == id) { *out = *s; found = 1; break; }
+        if (!s->id) break;
+    }
+    ReleaseSRWLockShared(&g_smpdesc_lock);
+    return found;
 }
 static void mad_note_sampler(struct mad_device *d, obj_handle_t smp) {
     int kept = 0;
@@ -2335,6 +2407,8 @@ static void mad_capture_buffer(struct mad_exec *e, obj_handle_t benc, struct mad
 }
 static struct mad_resource *mad_texture_of_view(struct mad_device *d, UINT64 id, int *xv);
 static struct mad_resource *mad_resolve_address(struct mad_device *d, UINT64 addr, UINT64 *off);
+static void mad_capture_rs_tables(struct mad_exec *e, obj_handle_t benc, unsigned seq, const struct mad_rootsig *rs,
+                                  const UINT64 *root, const UINT32 (*consts)[64], const char *tag);   /* madeira-bcd */
 static int mad_air_resolve(struct mad_exec *e, const struct mad_rootsig *rs, const UINT64 *root,
                            const UINT32 (*consts)[64], const struct madeira_ir_air_range *rg,
                            unsigned vis_mask, struct mad_descriptor *desc, UINT64 *direct_va, const char **why);
@@ -2374,39 +2448,43 @@ static void mad_capture_draw_inputs(struct mad_exec *e, const struct mad_cmd *c)
                   (unsigned long long)de.texture_view_id, r->name ? r->name : "?", r->width, r->height, (unsigned)r->tex_pf, (unsigned)r->desc.Format, r->tex_mips, r->tex_layers, xv);
         if (said_tex++ < 64) mad_capture_one(e, benc, r, &v0, seq, 100 + rg->lower_bound, "tex", 0, NULL);
     }
+    if (!e->pso->ps_nair && e->pso->backend != MADEIRA_IR_BACKEND_AIRCONV && e->rs) {
+        /* madeira-bcd: a converter (DXIL) pipeline has no airconv range list, so
+         * the loop above saw nothing; walk its root signature like capture-cs. */
+        d3d12_log("[capture-draw] converter pipeline: %u root params, %u static samplers; %s (max factor %.1f, output primitive %u)\n",
+                  (unsigned)e->rs->nparams, (unsigned)e->rs->nsamplers,
+                  e->pso->gs_emu == 2 ? "DXIL tessellation through the converter's emulation" : e->pso->gs_emu ? "geometry emulation" : "plain vertex/pixel",
+                  e->pso->gs_emu == 2 ? (double)e->pso->dt.max_factor : 0.0, e->pso->gs_emu == 2 ? (unsigned)e->pso->dt.out_prim : 0u);
+        mad_capture_rs_tables(e, benc, seq, e->rs, e->root, (const UINT32 (*)[64])e->consts, "capture-draw");
+    }
     exec_fence_blit(e, benc, 1);
     MTLCommandEncoder_endEncoding(benc);
 }
 /* ml1141: everything a matched DISPATCH will read, logged range by range from
  * the root signature and copied out BEFORE it runs. Converter (DXIL) pipelines
- * only: the sm5 backend's tables are logged by mad_air_build_tables. */
-static void mad_capture_dispatch_inputs(struct mad_exec *e, const struct mad_cmd *c) {
-    struct mad_device *d = e->q->device; const struct mad_rootsig *rs = e->crs;
+ * only: the sm5 backend's tables are logged by mad_air_build_tables.
+ * madeira-bcd: the table walk is shared with converter DRAWS (capture-ps on a
+ * DXIL pixel shader logged only the vertex/index buffers before: the airconv
+ * range list it walks is empty there), and it names each sampler's state. */
+static void mad_capture_rs_tables(struct mad_exec *e, obj_handle_t benc, unsigned seq, const struct mad_rootsig *rs,
+                                  const UINT64 *root, const UINT32 (*consts)[64], const char *tag) {
+    struct mad_device *d = e->q->device;
     static struct mad_resource *seen[96]; static unsigned nseen; static UINT64 seen_frame;
-    obj_handle_t benc; unsigned i, k, ri, seq; char line[1024]; int n;
+    unsigned i, k, ri; char line[1024]; int n;
     static const char *const rt_name[4] = { "SRV", "UAV", "CBV", "SMP" };
     if (!rs) return;
     if (seen_frame != g_capture_frame) { seen_frame = g_capture_frame; nseen = 0; }
-    exec_end(e);
-    benc = MTLCommandBuffer_blitCommandEncoder(e->cb); if (!benc) return;
-    seq = ++g_enc_seq;
-    exec_fence_blit(e, benc, 0);
-    d3d12_log("[capture-cs] ml1141 ===== '%s' #%d list#%u enc#%u %s %ux%ux%u, %u root params =====\n", e->cpso->vs_name, g_capture_cs_shots,
-              g_list_seq, seq, c->kind == MC_DISPATCH_INDIRECT ? "indirect" : "direct",
-              c->kind == MC_DISPATCH ? c->u.dispatch.x : 0, c->kind == MC_DISPATCH ? c->u.dispatch.y : 0, c->kind == MC_DISPATCH ? c->u.dispatch.z : 0,
-              (unsigned)rs->nparams);
-    if (c->kind == MC_DISPATCH_INDIRECT && c->u.ind.args) mad_capture_buffer(e, benc, c->u.ind.args, c->u.ind.off, 12, "iargs", 0, seq);
     for (i = 0; i < rs->nparams && i < MAD_ROOT_PARAM_MAX; i++) {
-        const struct madeira_ir_root_param *p = &rs->params[i]; UINT64 va = e->croot[i];
+        const struct madeira_ir_root_param *p = &rs->params[i]; UINT64 va = root[i];
         if (p->type == MADEIRA_IR_PARAM_CONSTANTS) {
-            n = snprintf(line, sizeof line, "[capture-cs] p%u: %u root constants (b%u space%u):", i, p->num_constants, p->shader_register, p->register_space);
-            for (k = 0; k < p->num_constants && k < 16; k++) n += snprintf(line + n, sizeof line - n, " %08x", e->cconsts[i][k]);
+            n = snprintf(line, sizeof line, "[%s] p%u: %u root constants (b%u space%u):", tag, i, p->num_constants, p->shader_register, p->register_space);
+            for (k = 0; k < p->num_constants && k < 16; k++) n += snprintf(line + n, sizeof line - n, " %08x", consts[i][k]);
             d3d12_log("%s\n", line);
             continue;
         }
         if (p->type != MADEIRA_IR_PARAM_TABLE) {   /* root CBV / SRV / UAV: a GPU address */
             UINT64 off = 0; struct mad_resource *r = va ? mad_resolve_address(d, va, &off) : NULL;
-            d3d12_log("[capture-cs] p%u: root %s r%u space%u va=0x%llx -> %s size %llu +%llu\n", i,
+            d3d12_log("[%s] p%u: root %s r%u space%u va=0x%llx -> %s size %llu +%llu\n", tag, i,
                       p->type == MADEIRA_IR_PARAM_CBV ? "CBV" : p->type == MADEIRA_IR_PARAM_SRV ? "SRV" : "UAV", p->shader_register, p->register_space,
                       (unsigned long long)va, r ? (r->name ? r->name : "buffer") : "NOTHING LIVE", r ? (unsigned long long)r->size : 0ull, (unsigned long long)off);
             if (r && r->buffer && p->type == MADEIRA_IR_PARAM_CBV) mad_capture_buffer(e, benc, r, off, 1024, "cb", i, seq);
@@ -2416,7 +2494,7 @@ static void mad_capture_dispatch_inputs(struct mad_exec *e, const struct mad_cmd
             const struct mad_heap *h = NULL; unsigned base, run = 0;
             if (e->srv && va >= e->srv->gpu_address && va < e->srv->gpu_address + (UINT64)e->srv->count * sizeof(struct mad_descriptor)) h = e->srv;
             else if (e->smp && va >= e->smp->gpu_address && va < e->smp->gpu_address + (UINT64)e->smp->count * sizeof(struct mad_descriptor)) h = e->smp;
-            if (!h || !h->cpu) { d3d12_log("[capture-cs] p%u: table va=0x%llx is in no bound heap\n", i, (unsigned long long)va); continue; }
+            if (!h || !h->cpu) { d3d12_log("[%s] p%u: table va=0x%llx is in no bound heap\n", tag, i, (unsigned long long)va); continue; }
             base = (unsigned)((va - h->gpu_address) / sizeof(struct mad_descriptor));
             for (ri = 0; ri < p->num_ranges; ri++) {
                 const struct madeira_ir_root_range *rg; unsigned nd, off;
@@ -2430,19 +2508,27 @@ static void mad_capture_dispatch_inputs(struct mad_exec *e, const struct mad_cmd
                     unsigned reg = rg->base_register + k;
                     const char *rn = rt_name[rg->range_type & 3];
                     if (rg->range_type == MADEIRA_IR_RANGE_SAMPLER) {
-                        float bias; UINT32 bb = (UINT32)de->metadata; memcpy(&bias, &bb, sizeof bias);
-                        if (de->gpu_va) d3d12_log("[capture-cs] p%u %s s%u space%u: sampler, LOD bias %.3f\n", i, rn, reg, rg->register_space, bias);
+                        float bias; UINT32 bb = (UINT32)de->metadata; struct mad_smpdesc sd;
+                        memcpy(&bias, &bb, sizeof bias);
+                        if (!de->gpu_va) continue;
+                        if (mad_smpdesc_get(de->gpu_va, &sd))
+                            d3d12_log("[%s] p%u %s s%u space%u: sampler, LOD bias %.3f; filter 0x%x address %u/%u/%u LOD %.2f..%.2f aniso %u compare %u border %u\n",
+                                      tag, i, rn, reg, rg->register_space, bias, sd.filter, sd.au, sd.av, sd.aw, (double)sd.minlod,
+                                      (double)sd.maxlod, sd.aniso, sd.cmp, sd.border);
+                        else d3d12_log("[%s] p%u %s s%u space%u: sampler, LOD bias %.3f (state unknown)\n", tag, i, rn, reg, rg->register_space, bias);
                         continue;
                     }
                     if (de->texture_view_id && !(de->metadata >> 63)) {
                         int xv = -1; struct mad_resource *r = mad_texture_of_view(d, de->texture_view_id, &xv);
-                        unsigned l0 = 0, nl, s0 = 0, u;
-                        if (!r) { d3d12_log("[capture-cs] p%u %s %c%u space%u: texture view %llx NOT FOUND\n", i, rn, rg->range_type == 1 ? 'u' : 't', reg, rg->register_space, (unsigned long long)de->texture_view_id); continue; }
-                        nl = r->tex_mips;
-                        if (xv >= 0) { l0 = r->xview[xv].lvl0; nl = r->xview[xv].nlvl; s0 = r->xview[xv].sl0; }
-                        d3d12_log("[capture-cs] p%u %s %c%u space%u: %s %ux%u x%u type%u pf%u dx%u, %u mips, view mips %u+%u slice %u\n", i, rn,
+                        unsigned l0 = 0, nl, s0 = 0, u, swz = MAD_SWZ_IDENTITY, vpf;
+                        float minlod; UINT32 ml = (UINT32)de->metadata; memcpy(&minlod, &ml, sizeof minlod);
+                        if (!r) { d3d12_log("[%s] p%u %s %c%u space%u: texture view %llx NOT FOUND\n", tag, i, rn, rg->range_type == 1 ? 'u' : 't', reg, rg->register_space, (unsigned long long)de->texture_view_id); continue; }
+                        nl = r->tex_mips; vpf = (unsigned)r->tex_pf;
+                        if (xv >= 0) { l0 = r->xview[xv].lvl0; nl = r->xview[xv].nlvl; s0 = r->xview[xv].sl0; swz = r->xview[xv].swz; vpf = r->xview[xv].pf; }
+                        d3d12_log("[%s] p%u %s %c%u space%u: %s %ux%u x%u type%u pf%u dx%u, %u mips, view mips %u+%u slice %u view pf%u swz %08x min-LOD %.2f%s\n", tag, i, rn,
                                   rg->range_type == 1 ? 'u' : 't', reg, rg->register_space, r->name ? r->name : "?", r->width, r->height,
-                                  r->tex_layers, (unsigned)r->tex_type, (unsigned)r->tex_pf, (unsigned)r->desc.Format, r->tex_mips, l0, nl, s0);
+                                  r->tex_layers, (unsigned)r->tex_type, (unsigned)r->tex_pf, (unsigned)r->desc.Format, r->tex_mips, l0, nl, s0,
+                                  vpf, swz, (double)minlod, r->placed_heap ? " (placed)" : "");
                         if (rg->range_type != MADEIRA_IR_RANGE_SRV) continue;
                         for (u = 0; u < nseen; u++) if (seen[u] == r) break;
                         if (u < nseen || nseen >= 96) continue;
@@ -2451,19 +2537,40 @@ static void mad_capture_dispatch_inputs(struct mad_exec *e, const struct mad_cmd
                           mad_capture_one(e, benc, r, &v, seq, i * 1000 + off + k, "tex", 0, NULL); }
                     } else if (de->gpu_va) {
                         UINT64 boff = 0; struct mad_resource *br = mad_resolve_address(d, de->gpu_va, &boff);
-                        d3d12_log("[capture-cs] p%u %s %c%u space%u: buffer %s size %llu +%llu, metadata 0x%llx%s\n", i, rn,
+                        d3d12_log("[%s] p%u %s %c%u space%u: buffer %s size %llu +%llu, metadata 0x%llx%s\n", tag, i, rn,
                                   rg->range_type == 1 ? 'u' : rg->range_type == 2 ? 'b' : 't', reg, rg->register_space,
                                   br ? (br->name ? br->name : "buffer") : "NOTHING LIVE", br ? (unsigned long long)br->size : 0ull,
                                   (unsigned long long)boff, (unsigned long long)de->metadata, (de->metadata >> 63) ? " (typed)" : "");
                         if (br && br->buffer && rg->range_type == MADEIRA_IR_RANGE_CBV) mad_capture_buffer(e, benc, br, boff, 1024, "cb", i * 1000 + off + k, seq);
                     } else if (de->texture_view_id) {
-                        d3d12_log("[capture-cs] p%u %s %c%u space%u: typed buffer view %llx, metadata 0x%llx\n", i, rn, rg->range_type == 1 ? 'u' : 't',
+                        d3d12_log("[%s] p%u %s %c%u space%u: typed buffer view %llx, metadata 0x%llx\n", tag, i, rn, rg->range_type == 1 ? 'u' : 't',
                                   reg, rg->register_space, (unsigned long long)de->texture_view_id, (unsigned long long)de->metadata);
                     }
                 }
             }
         }
     }
+    for (i = 0; i < rs->nsamplers && i < 32; i++) {   /* madeira-bcd: root-signature static samplers */
+        const struct madeira_ir_static_sampler *ss = &rs->samplers[i];
+        d3d12_log("[%s] static sampler s%u space%u: filter 0x%x address %u/%u/%u LOD %.2f..%.2f bias %.3f aniso %u compare %u border %u\n",
+                  tag, ss->shader_register, ss->register_space, ss->filter, ss->address_u, ss->address_v, ss->address_w,
+                  (double)ss->min_lod, (double)ss->max_lod, (double)ss->mip_lod_bias, ss->max_anisotropy, ss->comparison, ss->border_color);
+    }
+}
+static void mad_capture_dispatch_inputs(struct mad_exec *e, const struct mad_cmd *c) {
+    const struct mad_rootsig *rs = e->crs;
+    obj_handle_t benc; unsigned seq;
+    if (!rs) return;
+    exec_end(e);
+    benc = MTLCommandBuffer_blitCommandEncoder(e->cb); if (!benc) return;
+    seq = ++g_enc_seq;
+    exec_fence_blit(e, benc, 0);
+    d3d12_log("[capture-cs] ml1141 ===== '%s' #%d list#%u enc#%u %s %ux%ux%u, %u root params =====\n", e->cpso->vs_name, g_capture_cs_shots,
+              g_list_seq, seq, c->kind == MC_DISPATCH_INDIRECT ? "indirect" : "direct",
+              c->kind == MC_DISPATCH ? c->u.dispatch.x : 0, c->kind == MC_DISPATCH ? c->u.dispatch.y : 0, c->kind == MC_DISPATCH ? c->u.dispatch.z : 0,
+              (unsigned)rs->nparams);
+    if (c->kind == MC_DISPATCH_INDIRECT && c->u.ind.args) mad_capture_buffer(e, benc, c->u.ind.args, c->u.ind.off, 12, "iargs", 0, seq);
+    mad_capture_rs_tables(e, benc, seq, rs, e->croot, (const UINT32 (*)[64])e->cconsts, "capture-cs");
     exec_fence_blit(e, benc, 1);
     MTLCommandEncoder_endEncoding(benc);
 }
@@ -2841,17 +2948,10 @@ static void mad_fault_cs_load(void) {
     }
     if (g_fault_cs_nwant) d3d12_log("[madeira-d3d12] GPU fault: %u compute shader(s) from earlier runs will be logged when created\n", g_fault_cs_nwant);
 }
-static void mad_fault_cs_check(const void *bc, UINT len, UINT64 hash) {
+/* One bytecode blob as [b64 <hash>] log lines (700 characters each). */
+static void mad_log_b64(UINT64 hash, const void *bc, UINT len) {
     static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    UINT i, k; char name[96], line[720]; const unsigned char *p = bc; HANDLE h; DWORD wr;
-    mad_fault_cs_load();
-    for (i = 0; i < g_fault_cs_nwant; i++) if (g_fault_cs_want[i] == hash) break;
-    if (i == g_fault_cs_nwant) return;
-    g_fault_cs_want[i] = 0;   /* once */
-    snprintf(name, sizeof name, "C:\\madeira-cs\\fault_%016llx.dxil", (unsigned long long)hash);
-    h = CreateFileA(name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) { WriteFile(h, bc, len, &wr, NULL); CloseHandle(h); }
-    d3d12_log("[madeira-d3d12] GPU fault shader %016llx: %u bytes follow as base64 (also %s)\n", (unsigned long long)hash, len, name);
+    UINT i, k; char line[720]; const unsigned char *p = bc;
     for (i = 0; i < len; ) {
         UINT n = 0;
         for (k = 0; k < 175 && i < len; k++) {   /* 525 bytes -> 700 chars per line */
@@ -2866,7 +2966,60 @@ static void mad_fault_cs_check(const void *bc, UINT len, UINT64 hash) {
         line[n] = 0;
         d3d12_log("[b64 %016llx] %s\n", (unsigned long long)hash, line);
     }
+}
+static void mad_fault_cs_check(const void *bc, UINT len, UINT64 hash) {
+    UINT i; char name[96]; HANDLE h; DWORD wr;
+    mad_fault_cs_load();
+    for (i = 0; i < g_fault_cs_nwant; i++) if (g_fault_cs_want[i] == hash) break;
+    if (i == g_fault_cs_nwant) return;
+    g_fault_cs_want[i] = 0;   /* once */
+    snprintf(name, sizeof name, "C:\\madeira-cs\\fault_%016llx.dxil", (unsigned long long)hash);
+    h = CreateFileA(name, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) { WriteFile(h, bc, len, &wr, NULL); CloseHandle(h); }
+    d3d12_log("[madeira-d3d12] GPU fault shader %016llx: %u bytes follow as base64 (also %s)\n", (unsigned long long)hash, len, name);
+    mad_log_b64(hash, bc, len);
     d3d12_log("[madeira-d3d12] GPU fault shader %016llx: end of bytecode\n", (unsigned long long)hash);
+}
+/* madeira-bcd: dxil-dump (see g_dxil_dump). Exact entry names, split on commas,
+ * semicolons and blanks. */
+static int mad_dxil_dump_wanted(const char *name) {
+    if (g_dxil_dump_state < 0) {
+        AcquireSRWLockExclusive(&g_dxil_dump_lock);
+        if (g_dxil_dump_state < 0) {
+            g_dxil_dump[0] = 0;
+            mad_cfg_str_pe("dxil-dump", g_dxil_dump, sizeof g_dxil_dump);   /* diagnostic: log the bytecode of pipelines with these entry names */
+            if (g_dxil_dump[0]) d3d12_log("[dxil-dump] madeira-bcd: pipelines with entry %s get every stage's bytecode logged (madeira.cfg dxil-dump)\n", g_dxil_dump);
+            g_dxil_dump_state = g_dxil_dump[0] ? 1 : 0;
+        }
+        ReleaseSRWLockExclusive(&g_dxil_dump_lock);
+    }
+    if (g_dxil_dump_state <= 0 || !name || !name[0]) return 0;
+    MemoryBarrier();   /* the list was written before the state, under the lock */
+    return mad_name_in_list(g_dxil_dump, name);
+}
+static void mad_dxil_dump_one(const char *stage, const char *entry, const void *bc, SIZE_T len) {
+    UINT64 hh = 0xcbf29ce484222325ull; SIZE_T q; unsigned i; char name[160], safe[64];
+    const unsigned char *b = bc;
+    if (!bc || !len || len > (1u << 20)) return;
+    for (q = 0; q < len; q++) { hh ^= b[q]; hh *= 0x100000001b3ull; }
+    for (i = 0; i < sizeof safe - 1 && entry[i]; i++) safe[i] = isalnum((unsigned char)entry[i]) || entry[i] == '_' ? entry[i] : '_';
+    safe[i] = 0;
+    AcquireSRWLockExclusive(&g_dxil_dump_lock);
+    for (i = 0; i < g_dxil_ndumped; i++) if (g_dxil_dumped[i] == hh) break;
+    if (i < g_dxil_ndumped || g_dxil_ndumped >= 48 || g_dxil_dump_bytes + len > (3u << 20)) {
+        if (i == g_dxil_ndumped && g_dxil_ndumped < 48) { g_dxil_dumped[g_dxil_ndumped++] = hh;
+            d3d12_log("[dxil-dump] %s of '%s' %016llx (%u bytes) NOT logged: the 3 MB budget is spent\n", stage, entry, (unsigned long long)hh, (unsigned)len); }
+        ReleaseSRWLockExclusive(&g_dxil_dump_lock);
+        return;
+    }
+    g_dxil_dumped[g_dxil_ndumped++] = hh; g_dxil_dump_bytes += len;
+    snprintf(name, sizeof name, "dump_%s_%s_%016llx.dxil", stage, safe, (unsigned long long)hh);
+    mad_dump_blob(name, bc, len);
+    d3d12_log("[dxil-dump] %s of '%s' %016llx: %u bytes follow as base64 (also C:\\madeira-cs\\%s)\n", stage, entry,
+              (unsigned long long)hh, (unsigned)len, name);
+    mad_log_b64(hh, bc, (UINT)len);
+    d3d12_log("[dxil-dump] %s of '%s' %016llx: end of bytecode\n", stage, entry, (unsigned long long)hh);
+    ReleaseSRWLockExclusive(&g_dxil_dump_lock);
 }
 static volatile LONG g_frec_pos;
 static void mad_fault_record_dispatch(struct mad_exec *e, const struct mad_cmd *c) {
@@ -4618,6 +4771,57 @@ static int mad_use_seen(struct mad_exec *e, obj_handle_t enc, obj_handle_t h, UI
     return 0;
 }
 
+/* madeira-bcd: skip-ps / skip-ps-cycle (see g_skip_ps_tok). Names are split on
+ * commas, semicolons and blanks. */
+static void mad_skip_ps_load(void) {
+    char buf[512], *q;
+    int n = 0;
+    AcquireSRWLockExclusive(&g_skip_ps_lock);
+    if (g_skip_ps_state < 0) {
+        buf[0] = 0;
+        mad_cfg_str_pe("skip-ps", buf, sizeof buf);   /* diagnostic: drop the draws of these shader entries (comma list, exact names) */
+        for (q = buf; *q && n < 16; ) {
+            size_t len = 0;
+            while (*q == ',' || *q == ';' || *q == ' ' || *q == '\t') q++;
+            while (q[len] && q[len] != ',' && q[len] != ';' && q[len] != ' ' && q[len] != '\t') len++;
+            if (len && len < sizeof g_skip_ps_tok[0]) { memcpy(g_skip_ps_tok[n], q, len); g_skip_ps_tok[n][len] = 0; n++; }
+            q += len;
+        }
+        g_skip_ps_n = n;
+        g_skip_ps_cycle = n ? (int)mad_cfg_int_pe("skip-ps-cycle", 0) : 0;   /* diagnostic: rotate skip-ps one name at a time, N seconds each (0 = skip all at once) */
+        if (g_skip_ps_cycle < 0) g_skip_ps_cycle = 0;
+        g_skip_ps_t0 = GetTickCount64();
+        if (n)
+            d3d12_log("[skip-ps] madeira-bcd DIAGNOSTIC: %d shader name(s) (first '%s'), %s; their draws are dropped "
+                      "(madeira.cfg skip-ps / skip-ps-cycle; remove both for normal rendering)\n", n, g_skip_ps_tok[0],
+                      g_skip_ps_cycle ? "rotating one at a time with a phase of nothing skipped" : "all of them, all the time");
+        g_skip_ps_state = n ? 1 : 0;
+    }
+    ReleaseSRWLockExclusive(&g_skip_ps_lock);
+}
+static int mad_skip_ps_match(const struct mad_pso *p) {
+    int i, lo = 0, hi;
+    if (g_skip_ps_state < 0) mad_skip_ps_load();
+    if (g_skip_ps_state <= 0 || !p) return 0;
+    MemoryBarrier();   /* the names were written before the state, under the lock */
+    hi = g_skip_ps_n;
+    if (g_skip_ps_cycle > 0) {
+        LONG phase = (LONG)(((GetTickCount64() - g_skip_ps_t0) / (1000ull * (ULONGLONG)g_skip_ps_cycle)) % (ULONGLONG)(g_skip_ps_n + 1));
+        if (InterlockedExchange(&g_skip_ps_phase, phase) != phase)
+            d3d12_log("[skip-ps] phase %ld/%d from present #%lld (t+%.1f s): %s%s%s\n", (long)phase, g_skip_ps_n, (long long)g_presents_now,
+                      (double)(GetTickCount64() - g_skip_ps_t0) / 1000.0, phase ? "skipping '" : "nothing skipped",
+                      phase ? g_skip_ps_tok[phase - 1] : "", phase ? "'" : "");
+        if (!phase) return 0;
+        lo = (int)phase - 1; hi = (int)phase;
+    }
+    for (i = lo; i < hi; i++)
+        if (!strcmp(p->ps_name, g_skip_ps_tok[i]) || !strcmp(p->vs_name, g_skip_ps_tok[i])) {
+            if (InterlockedIncrement(&g_skip_ps_dropped) <= 8)
+                d3d12_log("[skip-ps] dropped a draw of vs '%s' ps '%s' (matched '%s')\n", p->vs_name, p->ps_name, g_skip_ps_tok[i]);
+            return 1;
+        }
+    return 0;
+}
 static void exec_draw(struct mad_exec *e, const struct mad_cmd *c) {
     struct wmtcmd_render_setpso c_pso;
     struct wmtcmd_render_draw_indirect c_di;
@@ -4674,8 +4878,9 @@ static void exec_draw(struct mad_exec *e, const struct mad_cmd *c) {
     }
     if (g_census_on) { exec_capture_draw(e, c); exec_desc_check(e, e->rs, e->root, e->pso->vs_name); }   /* ml910/ml913 */
     if (!exec_begin_render(e)) { MAD_SKIP(e); return; }
+    if (g_skip_ps_state && mad_skip_ps_match(e->pso)) { MAD_SKIP(e); return; }   /* madeira-bcd: diagnostic, off unless skip-ps is set */
     g_dump_tables = 0;
-    if (g_capture_on && g_capture_ps[0] && e->pso->ps_name[0] && strstr(g_capture_ps, e->pso->ps_name) && g_capture_ps_shots < 8) {   /* ml1106; ml1152: any listed ps, 8 shots */
+    if (g_capture_on && g_capture_ps[0] && mad_name_in_list(g_capture_ps, e->pso->ps_name) && g_capture_ps_shots < 8) {   /* ml1106; ml1152: any listed ps, 8 shots; madeira-bcd: exact names (a substring match let ps_SetColor eat the shots meant for ps_SetColor_MultiLight) */
         g_capture_ps_shots++;
         mad_capture_draw_inputs(e, c);
         if (!exec_begin_render(e)) { MAD_SKIP(e); return; }
@@ -7362,7 +7567,7 @@ static int mad_typed_buffer_view(struct mad_device *d, struct mad_resource *r, D
  * otherwise a (cached) Metal texture view of the right type. */
 /* ml918: pf = 0 keeps the texture's own format; swz packs four
  * WMTTextureSwizzle values (r | g<<8 | b<<16 | a<<24), 0 = identity. */
-#define MAD_SWZ_IDENTITY (2u | 3u << 8 | 4u << 16 | 5u << 24)
+/* MAD_SWZ_IDENTITY (the identity swizzle) is defined at the top (madeira-bcd: the capture walker uses it too). */
 static UINT64 mad_texture_view_id(struct mad_device *d, struct mad_resource *r, enum WMTTextureType want,
                                   UINT lvl0, UINT nlvl, UINT sl0, UINT nsl, enum WMTPixelFormat pf, UINT swz) {
     unsigned k; UINT64 id = 0; obj_handle_t tex;
@@ -8985,6 +9190,8 @@ static HRESULT device_CreateRootSignature_impl(ID3D12Device *This, UINT node,
                 if (!smp || !si.gpu_resource_id) continue;
                 memcpy(&bias_bits, &ss->mip_lod_bias, 4);
                 tab[i].gpu_va = si.gpu_resource_id; tab[i].texture_view_id = 0; tab[i].metadata = (UINT64)bias_bits;
+                mad_smpdesc_put(si.gpu_resource_id, ss->filter, ss->address_u, ss->address_v, ss->address_w, ss->max_anisotropy,
+                                ss->comparison, ss->border_color, ss->min_lod, ss->max_lod, ss->mip_lod_bias);   /* madeira-bcd */
                 if (ss->mip_lod_bias != 0.0f) {
                     static LONG said;
                     if (InterlockedIncrement(&said) <= 8)
@@ -9825,6 +10032,10 @@ static void STDMETHODCALLTYPE device_CreateSampler(ID3D12Device *This,
     e->gpu_va = si.gpu_resource_id;
     e->texture_view_id = 0;
     e->metadata = (UINT64)bias_bits;
+    if (desc)   /* madeira-bcd: for targeted captures (g_smpdesc) */
+        mad_smpdesc_put(si.gpu_resource_id, desc->Filter, desc->AddressU, desc->AddressV, desc->AddressW, desc->MaxAnisotropy,
+                        desc->ComparisonFunc, (desc->BorderColor[0] > 0.5f) ? 2u : (desc->BorderColor[3] > 0.5f) ? 1u : 0u,
+                        desc->MinLOD, desc->MaxLOD, bias);
     /* The sampler object itself is kept alive by the device for the process's
      * life. Samplers are few and immutable, and tying one to a descriptor slot
      * that the application may overwrite would need a lifetime story that this
@@ -11255,6 +11466,22 @@ static int mad_dtess_on(void) {
     }
     return on;
 }
+/* madeira-bcd: EXPERIMENT, off by default (docs/got-corruption.md). The three
+ * stages of a DXIL tessellation pipeline are converted with the pipeline's
+ * topology type, PATCH (4), which the service has always turned into
+ * IRInputTopologyTriangle. madeira.cfg dxil-tess-patch-topology = 1 sends
+ * MADEIRA_IR_TOPOLOGY_PATCH_STRICT instead, and the service asks the converter
+ * for IRInputTopologyPatch. A different value, so the converted shaders are
+ * cached apart; only tessellation pipelines (water, lit particles) change. */
+static UINT mad_dtess_topology(UINT topo) {
+    static int on = -1;
+    if (on < 0) {
+        on = mad_cfg_int_pe("dxil-tess-patch-topology", 0) ? 1 : 0;   /* experiment: convert DXIL tessellation stages with the converter's patch input topology */
+        if (on) d3d12_log("[madeira-d3d12] DXIL tessellation stages converted with the converter's PATCH input topology "
+                          "(madeira.cfg dxil-tess-patch-topology = 1, experiment; remove it for the default triangle topology)\n");
+    }
+    return on && topo == (UINT)D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH ? MADEIRA_IR_TOPOLOGY_PATCH_STRICT : topo;
+}
 static void mad_dtess_convert(struct mad_device *d, struct mad_rootsig *rs, struct mad_pso *p,
                               const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc,
                               struct madeira_ir_vs_input *vsin, unsigned *nvsin) {
@@ -11277,7 +11504,7 @@ static void mad_dtess_convert(struct mad_device *d, struct mad_rootsig *rs, stru
      * domain's; and a vertex stage without an input layout (water grids built
      * from SV_VertexID) still needs a stage-in function to link, so the layout
      * goes along even when it is empty. */
-    memset(&ov, 0, sizeof ov); ov.gs_emulation = 1; ov.topology = (UINT)desc->PrimitiveTopologyType; ov.layout = L;
+    memset(&ov, 0, sizeof ov); ov.gs_emulation = 1; ov.topology = mad_dtess_topology((UINT)desc->PrimitiveTopologyType); ov.layout = L;
     ov.lib2_out = &p->si_lib; ov.vs_output_size = &p->gs_vertex_size; ov.name_out = p->vs_name; ov.name_cap = sizeof p->vs_name;
     ov.lib_only = 1;
     {
@@ -11286,14 +11513,14 @@ static void mad_dtess_convert(struct mad_device *d, struct mad_rootsig *rs, stru
         if (vl) { NSObject_retain(vl); p->vs_fn = vl; }   /* vs_fn and vs_lib are released separately */
     }
     if (p->vs_fn) mad_apply_reflected_layout(p, rs, locs, nl, "VS");
-    memset(&oh, 0, sizeof oh); oh.gs_emulation = 1; oh.topology = (UINT)desc->PrimitiveTopologyType;
+    memset(&oh, 0, sizeof oh); oh.gs_emulation = 1; oh.topology = mad_dtess_topology((UINT)desc->PrimitiveTopologyType);
     oh.lib_only = 1; oh.dtess = &r; oh.name_out = hname; oh.name_cap = sizeof hname; hname[0] = 0;
     nl = 0;
     if (p->vs_fn)
         hok = mad_convert_stage_opts(d, rs, desc->HS.pShaderBytecode, desc->HS.BytecodeLength, NULL, &p->hs_lib, "HS(dxil tess)",
                                      NULL, 0, NULL, NULL, locs, &nl, &oh);
     if (hok) mad_apply_reflected_layout(p, rs, locs, nl, "HS");
-    memset(&od, 0, sizeof od); od.gs_emulation = 1; od.topology = (UINT)desc->PrimitiveTopologyType;
+    memset(&od, 0, sizeof od); od.gs_emulation = 1; od.topology = mad_dtess_topology((UINT)desc->PrimitiveTopologyType);
     od.lib_only = 1; od.dtess = &r; od.name_out = dname; od.name_cap = sizeof dname; dname[0] = 0;
     nl = 0;
     if (hok)
@@ -11571,6 +11798,14 @@ static HRESULT device_CreateGraphicsPipelineState_impl(ID3D12Device *This,
                 }
             }
         }
+    }
+    if (g_dxil_dump_state && (mad_dxil_dump_wanted(p->vs_name) || mad_dxil_dump_wanted(p->ps_name))) {   /* madeira-bcd: diagnostic, off unless dxil-dump is set */
+        const char *en = mad_dxil_dump_wanted(p->vs_name) ? p->vs_name : p->ps_name;
+        mad_dxil_dump_one("vs", en, desc->VS.pShaderBytecode, desc->VS.BytecodeLength);
+        mad_dxil_dump_one("hs", en, desc->HS.pShaderBytecode, desc->HS.BytecodeLength);
+        mad_dxil_dump_one("ds", en, desc->DS.pShaderBytecode, desc->DS.BytecodeLength);
+        mad_dxil_dump_one("gs", en, desc->GS.pShaderBytecode, desc->GS.BytecodeLength);
+        mad_dxil_dump_one("ps", en, desc->PS.pShaderBytecode, desc->PS.BytecodeLength);
     }
     if (!p->vs_fn || (desc->PS.pShaderBytecode && !p->ps_fn)) { pso_Release((ID3D12PipelineState *)p); return E_FAIL; }
 
@@ -11913,9 +12148,11 @@ static HRESULT device_CreateComputePipelineState_impl(ID3D12Device *This,
         memset(&air, 0, sizeof air);
         memset(&o, 0, sizeof o);
         o.air = &air;
-        o.name_out = entry; o.name_cap = sizeof entry;
+        o.name_out = entry; o.name_cap = sizeof entry; entry[0] = 0;   /* madeira-bcd: read by dxil-dump below */
         p->vs_fn = mad_convert_stage_opts(d, (struct mad_rootsig *)desc->pRootSignature, desc->CS.pShaderBytecode,
                                      desc->CS.BytecodeLength, NULL, &p->vs_lib, "CS", NULL, 0, NULL, p->tg, locs, &nl, &o);
+        if (g_dxil_dump_state && mad_dxil_dump_wanted(entry))   /* madeira-bcd: diagnostic, off unless dxil-dump is set */
+            mad_dxil_dump_one("cs", entry, desc->CS.pShaderBytecode, desc->CS.BytecodeLength);
         p->backend = air.backend;
         if (air.backend == MADEIRA_IR_BACKEND_AIRCONV) {   /* ml1008 */
             static unsigned said_air;
