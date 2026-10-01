@@ -608,6 +608,28 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     "vcruntime :: recovered 12 of 12" puts them into our IPA, and our unsigned
     IPA artifacts are downloadable by any GitHub user (owner chose to keep
     them, option (a)). Raised with the owner.
+  - **Upstream v0.1.0 IPA inspected locally (2026-10-01).** The draft asset
+    downloads through the session's proxy (our repo's API), sha256 29054bb5...
+    as on the page. Findings: bundle id **com.willfaust.madeora** (ours keeps
+    com.willfaust.mythicemu -> both can be installed side by side), version
+    0.1.0 (1), MinimumOS 17.0; built with **Xcode 27.0 (27A266a), iPhoneOS
+    27.0 SDK, on a Mac running macOS 26 (26A428)**, in the **Debug**
+    configuration (Madeira.debug.dylib 57.5 MB + __preview.dylib next to a
+    73 KB stub executable); 581 build paths `/Users/<user>/Documents/
+    ios-pc-game-claude/...` and none from /Users/runner -> built in Xcode on
+    Will's own Mac, not CI. x86_64-vcruntime/ is EMPTY (no Microsoft
+    DLLs). d3d12/ ships Apple's libmetalirconverter.dylib with
+    METAL-SHADER-CONVERTER-AGREEMENT.txt + NOTICE + header license, plus
+    canary *.dxil; legal/ and licenses/ hold the notices. Content vs our
+    tree: aarch64-windows 135/135 and arm64ec-windows 143/143 committed files
+    byte-identical to ours (incl. the PE d3d11.dll); extra in the release are
+    only build products (plugplay/svchost/winedevice.exe, dockhost.exe,
+    dock-notices.txt). The native code's `mlNNNN` log tags in the release
+    binary are all present in our source tree (ml506-508 are GDI blit logs);
+    the highest is ml2015 on both sides -> **no unpublished fixes (RDR2 or
+    otherwise) in the release; everything in it is in the repo, and our fork
+    already has all of it but the UI commit 3ccbf9b.** inspect-ipa.yml stays
+    on the branch (not needed for this one).
 
 ---
 
