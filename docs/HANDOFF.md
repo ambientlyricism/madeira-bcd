@@ -1216,6 +1216,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `env.MADEIRA_LD_BOUNDS = 0` (native 1080p only; re-converts shaders);
     with `env.MADEIRA_FRAME_STATS = 1` in the game config and
     `env.MADEIRA_DEVICE_STATS = 1` in madeira.cfg.
+  - **M1 iPad, build 291 (log GoW.exe 2026-10-01 17:08:27; owner: not a
+    priority).** Now really on 291 (`[build] v0.1.291`, `[ld-bounds] ... on`).
+    Display 640x480, game file only `fence-chain = 6`; internal targets
+    320x200 / 160x100 / 40x25 / 10x7. The exposure readback (`[rb-buf]
+    value 16 bytes`) is not spiky like the iPhone's but stuck: starts as
+    `nan 0.2331 nan`, then mostly `19.9326 0.2331 6500.36` (x = log
+    luminance ~19.9 vs ~-0.15 on the owner's iPhone outdoors, z = 6500 vs
+    ~1500), later the exposure factor falls to ~0.0156 with x 5.9-7.2. So the
+    game measures an absurdly bright (or NaN) scene and crushes exposure to
+    black: NaN / Inf in the HDR scene or its luminance chain on Apple7 (M1),
+    not (only) out-of-range reads. Cheap next try on that device:
+    `env.MADEIRA_PS_CLAMP = 1` (finite clamp of pixel-shader outputs, build
+    277; did not help the iPhone's spikes, but this one looks like NaN/Inf),
+    then `= 2`. Parked behind GoW 1080p performance, GoT and GTA V.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
