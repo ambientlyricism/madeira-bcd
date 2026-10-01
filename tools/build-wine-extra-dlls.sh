@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Wine PE DLLs that upstream's arm64ec-windows set does not ship but
-# games import: older VC++ runtimes (Crysis's Bin64\Crysis64.exe needs
+# games import (and, since ml2106, xinput1_1-1_4 with host rumble; see below): older VC++ runtimes (Crysis's Bin64\Crysis64.exe needs
 # msvcr80), D3DX9/10/11, d3d10, avifil32, XAudio2, dinput. Configured the way
 # upstream's build/wine-pe/build-ntdll.sh configures wine/build-arm64ec;
 # stripped and padded by 64 KB past SizeOfImage like the shipped builtins.
@@ -36,7 +36,21 @@ for d in $WANT; do
     shipped "$d" && continue
     targets="$targets dlls/$d/arm64ec-windows/$d.dll"; todo="$todo $d"
 done
-[ -n "$todo" ] || { echo "nothing to build"; exit 0; }
+# ml2106: the one exception to "never replaces a shipped DLL". xinput1_1-1_4
+# (one source, dlls/xinput1_3/main.c) are rebuilt with
+# tools/patch-wine-xinput-vibration.py, so XInputSetState reaches the host pad
+# (docs/dualsense-output.md), and replace upstream's copies -- which were built
+# from this same submodule without the patch. xinput9_1_0 forwards to
+# xinput1_4 at run time. A failed build keeps the shipped copies (no rumble,
+# nothing else changes). MADEIRA_XINPUT_RUMBLE_BUILD=0 skips it.
+XI=""
+if [ "${MADEIRA_XINPUT_RUMBLE_BUILD:-1}" != 0 ]; then
+    for d in xinput1_1 xinput1_2 xinput1_3 xinput1_4; do
+        [ -d "$R/wine/dlls/$d" ] || continue
+        targets="$targets dlls/$d/arm64ec-windows/$d.dll"; XI="$XI $d"
+    done
+fi
+[ -n "$todo$XI" ] || { echo "nothing to build"; exit 0; }
 
 if [ ! -f "$B/Makefile" ]; then
     mkdir -p "$B"
@@ -46,8 +60,36 @@ if [ ! -f "$B/Makefile" ]; then
 fi
 # msvcr*: mirror the data exports into the PE mapping (see the script).
 python3 "$R/tools/patch-wine-msvcrt-datasync.py" "$R/wine/dlls/msvcrt/main.c"
+xi_patched=0
+if [ -n "$XI" ]; then
+    python3 "$R/tools/patch-wine-xinput-vibration.py" "$R/wine/dlls/xinput1_3/main.c" && xi_patched=1
+    # Old objects from an unpatched build must not satisfy make.
+    for d in $XI; do rm -f "$B/dlls/$d/arm64ec-windows/$d.dll" "$B/dlls/$d"/arm64ec-windows/*.o; done
+fi
 make -C "$B" -k -j"$JOBS" $targets > "$B.build.log" 2>&1
-git -C "$R/wine" checkout -- dlls/msvcrt/main.c
+git -C "$R/wine" checkout -- dlls/msvcrt/main.c dlls/xinput1_3/main.c
+xi_built=0; xi_failed=""
+if [ "$xi_patched" = 1 ]; then
+    for d in $XI; do
+        f="$B/dlls/$d/arm64ec-windows/$d.dll"
+        if [ ! -f "$f" ]; then xi_failed="$xi_failed $d"; continue; fi
+        cp "$f" "$SHIP/$d.dll.tmp"
+        "$MINGW/llvm-strip" "$SHIP/$d.dll.tmp"
+        python3 - "$SHIP/$d.dll.tmp" <<'PY'
+import struct, sys
+p = sys.argv[1]; d = open(p, 'rb').read()
+pe = struct.unpack_from('<I', d, 0x3c)[0]
+target = struct.unpack_from('<I', d, pe + 24 + 56)[0] + 0x10000
+if len(d) < target:
+    open(p, 'ab').write(b'\0' * (target - len(d)))
+PY
+        mv "$SHIP/$d.dll.tmp" "$SHIP/$d.dll"
+        xi_built=$((xi_built + 1))
+    done
+    echo "::notice::xinput with host rumble (ml2106): replaced $xi_built shipped DLLs${xi_failed:+ (failed, shipped copy kept:$xi_failed)}"
+elif [ -n "$XI" ]; then
+    echo "::warning::xinput rumble patch did not apply; shipped xinput DLLs kept"
+fi
 built=0; failed=""
 for d in $todo; do
     f="$B/dlls/$d/arm64ec-windows/$d.dll"

@@ -812,3 +812,16 @@ the update pack, the game's options and starts the per-game session log.
   DirectInput see it, else a generic HID gamepad; player 1 then leaves XInput.
   Read at session start; output reports (rumble, triggers, light bar) are
   parsed but not applied yet.
+- Controller output (ml2106/ml2107, `docs/dualsense-output.md`): what a game
+  writes to the virtual DualSense now reaches the real one through
+  GameController -- the rumble pair as CoreHaptics on the left/right handle,
+  adaptive trigger effects as the closest `GCDualSenseAdaptiveTrigger` mode
+  (feedback, weapon, vibration, per-zone variants), the lightbar as
+  `GCDeviceLight`, player LEDs as `playerIndex` (`app/Madeira/PadOutput.m`,
+  mapping in `Winios/WiniosPadEffects.h`, decoder in
+  `build/hidpad/hidpad_reports.h`). XInputSetState rumble also plays on any
+  pad (win32u op 2 + `tools/patch-wine-xinput-vibration.py`, applied to the
+  arm64ec xinput1_1-1_4 that `tools/build-wine-extra-dlls.sh` now rebuilds).
+  `env.MADEIRA_PAD_OUTPUT = 0` turns all of it off (`hid` / `xinput`: one
+  half). Audio-based DualSense haptics, speaker, mic and mic LED are out of
+  an iOS app's reach.
