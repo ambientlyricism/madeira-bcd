@@ -708,6 +708,7 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     picker + per-game key), commits locally only (no push, no CI) and writes
     its notes into a subsection "DualSense / DirectInput (second agent)" at
     the end of section 0. The main session reviews, merges and builds.
+    `.claude/worktrees/` (the agent's worktree) is now in .gitignore.
 
 ---
 
