@@ -509,6 +509,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     value unchanged. Not changed: the RAM Wine reports to games (ml992 --
     on the iPad it already reported hw.memsize because the 8192 measurement
     was rejected as larger than RAM).
+  - **Owner (2026-10-01): delete the unsigned IPA artifacts of builds below
+    260.** The GitHub MCP has no artifact delete, so a new workflow
+    `.github/workflows/cleanup-artifacts.yml` (workflow_dispatch, input
+    `below`, default 260; GITHUB_TOKEN with actions: write) lists every
+    artifact page and deletes only `madeira-0.1.<N>-unsigned-ipa` with N <
+    below; build-logs artifacts stay. Before: 370 artifacts, 29 old IPA ones
+    on the first page alone (4.2 GB). It must be on main to be dispatched.
 
 ---
 
