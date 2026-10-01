@@ -709,6 +709,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     its notes into a subsection "DualSense / DirectInput (second agent)" at
     the end of section 0. The main session reviews, merges and builds.
     `.claude/worktrees/` (the agent's worktree) is now in .gitignore.
+    The owner stopped that agent by accident; its uncommitted work (18 files,
+    ~2200 lines: build/hidpad/*, build/wineserver/hidpad_ios.c, server_ios.c,
+    WiniosGamepad, LibraryHUD picker, host test check-hidpad.py) was saved as
+    local commit 7da53e7 on branch worktree-agent-ad222c1a2512434bd (not
+    pushed, not built). A stopped agent cannot be resumed, so a new agent
+    was started on the owner's go: it first reviews 7da53e7 critically,
+    cherry-picks and finishes it if sound, otherwise starts over cleanly
+    (owner: "no mistakes; start over if it gets messy"). Same rules (local
+    commits only, notes in the "DualSense / DirectInput (second agent)"
+    subsection).
   - **Build 279 green** (run 36855551967, head 4dea9ee): "Patch winemetal
     luminance probe" applied, native ABI d629033a90627b60, OTA mailed,
     bucket 6 builds 0.90 GB. Waiting on device: owner reproduces the
