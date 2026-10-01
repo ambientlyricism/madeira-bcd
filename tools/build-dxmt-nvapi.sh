@@ -34,6 +34,9 @@ cp "$D/src/nvapi/nvapi.cpp" "$OUT/nvapi.cpp"
 python3 "$R/tools/patch-dxmt-nvapi.py" "$OUT/nvapi.cpp"
 # Strings handed back without their NUL (driver branch, adapter name).
 python3 "$R/tools/patch-nvapi-strings.py" "$OUT/nvapi.cpp"
+# Frame-buffer sizes and the core count GTA V Enhanced asks for after it
+# created its device (docs/madeira-bcd.md "NVAPI GPU memory").
+python3 "$R/tools/patch-nvapi-gpu-info.py" "$OUT/nvapi.cpp"
 # The query trace and the adapter / display / driver answers in the session
 # log; the one display found by its adapter name (docs/got-gpu-check.md).
 python3 "$R/tools/patch-nvapi-trace.py" "$OUT/nvapi.cpp"

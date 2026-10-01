@@ -1668,6 +1668,38 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the merge: got-diagnostics, dxgi-factory7, patch chain, catalog PASS.
     Cost: native ABI change (IPA, not a pack); GoT re-converts its shaders
     once on the first launch of the next build.
+  - **GTA V on build 303 (owner, logs PlayGTAV.exe 2026-10-01 21:25:32
+    without and 21:27:54 with `env.MADEIRA_DXGI_SRC = 1`, both with "Report
+    an NVIDIA GPU"; two screenshots).** The game's error box is now DRAWN
+    and the game-mode input wake works (`[game-input] ... hwnd=0x10028`).
+    - Without the switch: Factory7 unknown -> **ERR_SYS_SYSREQ_GPU** ("Your
+      video card does not meet the system requirements", OK / Cancel).
+    - **With the switch: Factory7 works** (`[dxgi-src] ... first factory
+      request a4966eed...`, `RegisterAdaptersChangedEvent: cookie 1`), the
+      game creates D3D12 devices on the REAL adapter (`D3D12CreateDevice(
+      adapter=0000007016B3F8E0 ...)` 5374, again at 7331), runs its format
+      support census (many "texture format N has no Metal mapping": RGB32,
+      YUV, palette formats -- expected), then asks NVAPI: GetFullName ("RTX
+      4090"), GetGpuCoreCount -104, GetAllClockFrequencies -104, and
+      **`NvAPI_GPU_GetPhysicalFrameBufferSize` / `GetVirtualFrameBufferSize`
+      -> "err: nvapi: function ... not implemented"**; the very next line is
+      `destroyed Device` and the box **ERR_GFX_D3D_NOD3D12** ("Failed to
+      initialize DirectX 12 adapter"). No CheckFeatureSupport refusal in the
+      log. Conclusion: the VRAM query is the next blocker.
+    - **Fix (this commit): `tools/patch-nvapi-gpu-info.py`** in
+      `tools/build-dxmt-nvapi.sh` (after patch-nvapi-strings, before the
+      trace): both frame-buffer sizes in KB = the Metal device's
+      recommendedMaxWorkingSetSize (= DXGI DedicatedVideoMemory), logged as
+      `[nvapi] NvAPI_GPU_GetPhysicalFrameBufferSize -> 0 N KB`;
+      GetGpuCoreCount -> 16384 (the RTX 4090 / AD102 this NVAPI already
+      names). GoT never calls these three (its 20:26 log). Verified here:
+      `tools/build-dxmt-nvapi.sh` builds and links nvapi64.dll with the
+      Linux llvm-mingw 20260421 (the dxgi agent's hybrid toolchain);
+      `tests/host/check-nvapi-trace.py` extended (order, idempotence, the
+      two cases, core count still traced) PASS, also with the arm64ec
+      compile step. Open: the NVAPI name (RTX 4090) and DXGI / registry
+      identity (RTX 3060, 10de:2544) still disagree; ClockFrequencies stays
+      NOT_SUPPORTED; D3DKMTEnumAdapters2 lists 0 adapters.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

@@ -193,6 +193,17 @@ the update pack, the game's options and starts the per-game session log.
   `[nvapi] NvAPI_X -> <status>` with the values, and lets
   `NvAPI_DISP_GetDisplayIdByDisplayName` find the one display by the primary
   adapter's name when `GetMonitorInfo` does not match.
+  NVAPI GPU memory (`tools/patch-nvapi-gpu-info.py`, between the strings and
+  the trace patch): GTA V Enhanced, with the source-built dxgi.dll, creates
+  its D3D12 device on the real adapter and then asks NVAPI for
+  `NvAPI_GPU_GetPhysicalFrameBufferSize` / `GetVirtualFrameBufferSize`, which
+  `nvapi_QueryInterface` did not know ("not implemented"), destroys the
+  device and shows ERR_GFX_D3D_NOD3D12 (build 303, log 2026-10-01 21:27:54).
+  Both now answer in KB with the Metal device's
+  `recommendedMaxWorkingSetSize` (what DXGI reports as DedicatedVideoMemory),
+  logged as `[nvapi] NvAPI_GPU_GetPhysicalFrameBufferSize -> 0 N KB`, and
+  `NvAPI_GPU_GetGpuCoreCount` answers 16384, the core count of the GPU this
+  NVAPI names (RTX 4090, AD102). Ghost of Tsushima calls none of them.
 - `dxgi-src.dll` (`tools/build-dxgi-dll.sh`, `tools/patch-dxgi-factory7.py`,
   opt-in): DXMT's 64-bit `dxgi.dll` compiled in CI from the `dxmt` submodule
   with `IDXGIFactory7` (`RegisterAdaptersChangedEvent` /

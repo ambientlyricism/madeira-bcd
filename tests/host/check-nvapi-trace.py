@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """NVAPI trace and display-name fallback (tools/patch-nvapi-trace.py); no Wine runs.
 
-Applies tools/build-dxmt-nvapi.sh's three patches, in its order, to a copy of
+Applies tools/build-dxmt-nvapi.sh's four patches, in its order, to a copy of
 dxmt/src/nvapi/nvapi.cpp (or $DXMT_SRC/src/nvapi/nvapi.cpp) and checks: the
 trace patch refuses to run before patch-dxmt-nvapi.py, is idempotent, sends
 the "[nvapi] query" line through DXMT's Logger instead of stderr, and routes
@@ -34,6 +34,10 @@ with tempfile.TemporaryDirectory() as t:
     assert "patch-dxmt-nvapi.py first" in run("patch-nvapi-trace.py", cpp, ok=False)
     run("patch-dxmt-nvapi.py", cpp)
     run("patch-nvapi-strings.py", cpp)
+    assert "frame-buffer sizes" in run("patch-nvapi-gpu-info.py", cpp)
+    gpu_info = cpp.read_text()
+    assert "already patched" in run("patch-nvapi-gpu-info.py", cpp)
+    assert cpp.read_text() == gpu_info
     assert "entry points traced" in run("patch-nvapi-trace.py", cpp)
     once = cpp.read_text()
     assert "already patched" in run("patch-nvapi-trace.py", cpp)
@@ -50,6 +54,14 @@ with tempfile.TemporaryDirectory() as t:
         assert "madeira_nv_trace<&dxmt::NvAPI_%s, 0x" % fn in qi, fn
     for fn in ("D3D_SetLatencyMarker", "D3D_Sleep", "D3D11_BeginUAVOverlap", "D3D_SetSleepMode"):
         assert "return (void *)&NvAPI_%s;" % fn in qi, fn
+    # patch-nvapi-gpu-info.py: GTA V Enhanced's frame-buffer queries resolve, the
+    # core count answers (and keeps its trace status line).
+    assert "  case 0x46fbeb03:\n    return (void *)&NvAPI_GPU_GetPhysicalFrameBufferSize;" in qi
+    assert "  case 0x5a04b644:\n    return (void *)&NvAPI_GPU_GetVirtualFrameBufferSize;" in qi
+    assert "madeira_nv_trace<&dxmt::NvAPI_GPU_GetGpuCoreCount, 0x" in qi
+    core = once[once.index("NvAPI_GPU_GetGpuCoreCount(NvPhysicalGpuHandle hPhysicalGpu, NvU32 *pCount) {"):]
+    core = core[:core.index("\n}\n")]
+    assert "*pCount = 16384;" in core and "NVAPI_NOT_SUPPORTED" not in core
     fb = once[once.index("madeira_nv_DISP_GetDisplayIdByDisplayName(const char"):]
     fb = fb[:fb.index("\n}\n")]
     assert "s == NVAPI_NVIDIA_DEVICE_NOT_FOUND && displayId && madeira_nv_is_primary_adapter_name(displayName)" in fb
