@@ -1720,6 +1720,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     descriptor lifetime, opt-in confirm/fix switches, docs/got-corruption.md
     new section). Open until it reports. `dxil-tess = 0` stays the owner's
     workaround for the squares (water and lit smoke are lost with it).
+  - **Owner (2026-10-01 ~21:45 UTC+3): game-mode dialog input CONFIRMED on
+    device** -- GTA V's error box (build 303) closed with "Tamam"; Space on
+    the keyboard worked. The 5eb58ff fix (`[game-input]` 16 ms wake for a
+    thread showing a window over the game) is verified; GoT's "No installed
+    graphics card" box should now behave the same.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
