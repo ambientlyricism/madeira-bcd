@@ -1126,7 +1126,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     is D3D12-only and loads DirectStorage (DSTORAGE.dll, the game's own copy)
     at start-up; it got no further than that in these logs, so no d3d12.dll
     load is visible yet. It will run on madeira-d3d12 (the GoT path), not
-    DXMT's D3D11.
+    DXMT's D3D11. Owner (2026-10-01): no Legacy edition -- Enhanced only.
+    Reference he raised: "Vapor" (StephenDev0, the StikDebug author;
+    announced 2026-09-12, unreleased) showed GTA V on an iPhone 18 Pro Max
+    (A20 Pro) at 66 FPS average in the benchmark's city drive, ~80 elsewhere,
+    with press reports giving the settings as 1080p, **DirectX 11**, high
+    textures, FXAA, MSAA off -- i.e. the DX11 (Legacy-style) renderer, not
+    Enhanced's D3D12-only one, on a newer chip than our A19 Pro. Shows that
+    the CPU translation side is feasible; not a like-for-like target for
+    Enhanced on madeira-d3d12.
   - **DualSense / HID pad, first device test: WORKS in God of War (owner,
     build 286, screenshots 2026-10-01 ~17:40 UTC+3).** Session menu >
     Controller > Controller API = "DirectInput / HID", status "Live in this
