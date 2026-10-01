@@ -1940,6 +1940,8 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     If TileBasedRenderer is not it: RaytracingTier (no DXR in the runtime --
     a report-only switch would need CreateStateObject / acceleration
     structures at least as safe failures), then the format flags.
+  - **Build 311 dispatched** (run 36919402019, head 1bee535): 310 +
+    `d3d12-tile-based` + `d3d12-caps-log = 2`.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
