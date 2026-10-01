@@ -1700,6 +1700,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
       compile step. Open: the NVAPI name (RTX 4090) and DXGI / registry
       identity (RTX 3060, 10de:2544) still disagree; ClockFrequencies stays
       NOT_SUPPORTED; D3DKMTEnumAdapters2 lists 0 adapters.
+  - **Build 306 dispatched** (run 36907666595, head 98ef76f): 303 + GoT
+    smoke-square diagnostics + NVAPI frame-buffer sizes; it supersedes the
+    running 305 (d50c20f, concurrency cancel).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
