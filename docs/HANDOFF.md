@@ -1382,7 +1382,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     salt) for one A/B device session, and possibly an opt-in DXBC/AIR dump
     of the luminance shaders. Owner's correction: FSR 2 was on by mistake in
     the 19:16:44 720p log (hence 754x424); native 720p without FSR is just
-    as dark -- passed on to the agent.
+    as dark -- passed on to the agent, with the list of all of today's GoW
+    logs (sub-1080p dark: 11:03, 11:46, 11:49, 11:56, 14:03-14:23 x6,
+    14:51, 15:52, 19:16; 1080p normal: 15:01, 15:06, 19:33).
+  - **Build 296 green** (run 36891112764, head 5981d3e, 2026-10-01 16:39
+    UTC): GTA V child-ntdll fix + GoT virtual-monitor identity + [guest-log]
+    mirror + NVAPI trace on top of 294. Native ABI 2fb57e670bf63f47, shader
+    cache identity unchanged, OTA mailed, bucket 10 builds 1.51 GB. main
+    fast-forwarded to 5981d3e; the push run 297 was cancelled (the
+    guest-log step changed build-ipa.yml). Waiting on device: GoT (no
+    dialog, second D3D12CreateDevice, launcher visible; `[vmon]`, `[vmode]
+    ... id=`, `[nvapi]`, `[guest-log]`), GTA V both ways (`[alias-push]`,
+    child `[pool-rip-fix]`, no NoExec), GoW unchanged.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
