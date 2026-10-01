@@ -1503,6 +1503,25 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `[winios] drain type=0 ...` / `drain type=1 ...` after taps / keys, and
     the box closes on "Tamam" or Enter. With the DXMT_CONFIG fix above the
     box itself should no longer appear for GoT.
+  - **GTA V Enhanced, build 296 with `env.MADEIRA_GUEST_LOG = all` (log
+    PlayGTAV.exe 2026-10-01 20:16:49): the cause of ERR_GFX_D3D_NOD3D12 is
+    IDXGIFactory7.** The full crashcontext.log is mirrored (lines 6815-6951):
+    "Game State : System Init", **"GRAPHICS INFO / Factory : None"**, Display
+    1920 x 1080, nothing else useful. The decisive line is 6662, right after
+    dxgi.dll loads on the game thread 0034: `warn: DXGIFactory: Unknown
+    interface query a4966eed-76db-44da-84c1-ee9a7afb20a8` = **IDXGIFactory7**.
+    DXMT's factory (`dxmt/src/dxgi/dxgi_factory.cpp`) answers only up to
+    IDXGIFactory6, the game's factory stays NULL, three GetDesktopWindow
+    calls follow (`top_window stays 0`) and then the int3 with RSI=0x17b133bd
+    (6671-6742), exit 0x80000003 (7139). The probe D3D12 device earlier in
+    the run (4650-4679) is fine. **Catch:** the 64-bit `dxgi.dll` is
+    upstream's committed binary (9e8291e); CI does not build it, so a source
+    fix needs CI to build dxgi.dll for arm64ec from the dxmt submodule.
+    **An agent was started** (worktree) to add IDXGIFactory7 via a patch
+    script (not `patch-dxmt-*`, which is in the i386 cache key), build
+    dxgi.dll from source in CI, check that the committed binary matches the
+    submodule source, and keep upstream's binary selectable by a switch so
+    God of War / Ghost of Tsushima cannot regress. Open until it reports.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
