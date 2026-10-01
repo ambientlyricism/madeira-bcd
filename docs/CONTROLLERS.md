@@ -165,9 +165,15 @@ microphone (mute) button, so that bit never sets. Battery level and charging
 come from GCDeviceBattery once a second. Sensors report the pad lying flat,
 the touchpad reports no finger.
 
-Not applied yet: output reports are accepted and parsed (rumble, adaptive
-trigger blocks, light bar, player LEDs, microphone LED, in
-`winios_hidpad_get_output`), but nothing on the iOS side acts on them.
+Output (ml2106/ml2107, details in `docs/dualsense-output.md`): the game's
+output reports (0x02 over WriteFile or IOCTL_HID_SET_OUTPUT_REPORT) are
+decoded in the wineserver and applied to player 1's pad by
+`app/Madeira/PadOutput.m`: the rumble pair through CoreHaptics on the left and
+right handle, each trigger effect as the closest `GCDualSenseAdaptiveTrigger`
+mode, the light bar through `GCDeviceLight`, the player LEDs through
+`playerIndex`. When the game closes its last handle the motors stop and the
+triggers are released. `env.MADEIRA_PAD_OUTPUT = 0` keeps the pad as it is
+(`[hidpad-out]` log lines either way).
 
 What iOS allows at all: an app never sees the DualSense's HID reports, its
 USB interfaces or its audio channels; it gets GameController's view only --
@@ -204,8 +210,10 @@ runs only while a read is pending.
 Logs: `[hid-pad] ml2100 session mode=... kind=...` (app), `[hid-pad] ml2101
 device dualsense 054c:0ce6 ...` (wineserver), `[hid-pad] ml2102 ... registered
 (4/4 keys)` (first Wine process), then `ml2101 open #n`, `first input report`,
-`feature report 0x.. read`, `ml2104 output #n via write|ioctl ...` and
-`unsupported ioctl` (each limited to a few lines).
+`feature report 0x.. read`, `[hidpad-out] ml2106 #n via write|ioctl ...`
+(the decoded output report; then a tally at 100, 1000, ... reports), `ml2104
+... refused` and `unsupported ioctl` (each limited to a few lines); the app
+logs what it applied as `[hidpad-out] ml2107 ...`.
 
 `tests/host/check-hidpad.py` (needs the wine submodule or `WINE_SRC`)
 runs both descriptors through Wine's hidparse.sys and hid.dll and checks every
@@ -238,6 +246,7 @@ user sees are opt-in (only `1` enables); the others are on unless set to `0`:
 | `MADEIRA_PAD_EARLY_SLOT` | **off** | `1`: player 1 is reserved at session start (see above) |
 | `MADEIRA_PAD_MODE` | XInput | `hid` / `dualsense` / `generic`: player 1 as a HID controller (see above) |
 | `MADEIRA_HIDPAD_XINPUT` | **off** | `1`: in HID mode, player 1 stays an XInput pad as well |
+| `MADEIRA_PAD_OUTPUT` | on | `0`: no rumble/trigger/lightbar output to the pad; `hid` / `xinput`: only that half (`docs/dualsense-output.md`) |
 
 `[controls-layout] ml1970` logs layout loads, saves, creation and deletion
 (never layout names); `[xinput] ml1990` logs the session slot reservation.
@@ -250,7 +259,13 @@ query. It is hidden unless `env.MADEIRA_DINPUT_PAD = 1` is in madeira.cfg
 otherwise see two controllers. `MADEIRA_DINPUT_TRACE=1` adds a rate-limited
 state trace.
 
-Vibration, battery telemetry, controller-driven navigation of the app itself,
+XInput vibration (ml2106): XInputSetState's two motors play on the pad in
+that slot through CoreHaptics, and XInputGetCapabilities reports motors, when
+`MADEIRA_PAD_OUTPUT` allows it; it needs the arm64ec xinput DLLs CI rebuilds
+with `tools/patch-wine-xinput-vibration.py` (32-bit games keep the farm's
+unpatched xinput until the i386 farm is rebuilt with it).
+
+Battery telemetry, controller-driven navigation of the app itself,
 binding physical buttons to keyboard/mouse controls, shaped (non-round) controls,
 a layout-wide size slider and a movable top bar remain outside this contribution.
 
