@@ -2907,6 +2907,41 @@ static void ios_virtual_gpu_ids( UINT16 *vendor, UINT16 *device )
     else { *vendor = 0x106b; *device = 0x0001; }
 }
 
+/* madeira-bcd: every game shares one prefix and its registry is saved, so a
+ * launch with the other identity (Apple 106B:0001 vs NVIDIA 10DE:2544) left
+ * its adapter behind: two display devices under Enum\PCI, both pointing at
+ * Class\{display}\0000. Ghost of Tsushima enumerated the Apple one first
+ * ("Failed to get GPU Driver Info", "No installed graphics card") on every
+ * launch after God of War / Crysis ran (logs 2026-10-01 16:15 / 16:16).
+ * Remove the identity this launch does not report: its Enum\PCI device and
+ * its two DeviceClasses links. */
+static void ios_forget_virtual_gpu( UINT16 vendor, UINT16 device )
+{
+    static const char *classes[] = { guid_devinterface_display_adapterA, guid_display_device_arrivalA };
+    char dev[64], buffer[MAX_PATH];
+    WCHAR nameW[MAX_PATH];
+    unsigned int i, removed = 0;
+    HKEY hkey;
+
+    snprintf( dev, sizeof(dev), "VEN_%04X&DEV_%04X&SUBSYS_00000000&REV_00", vendor, device );
+    if ((hkey = reg_open_ascii_key( enum_key, "PCI" )))
+    {
+        if (reg_delete_tree( hkey, nameW, asciiz_to_unicode( nameW, dev ) - sizeof(WCHAR) )) removed++;
+        NtClose( hkey );
+    }
+    for (i = 0; i < ARRAY_SIZE(classes); i++)
+    {
+        snprintf( buffer, sizeof(buffer), "DeviceClasses\\%s", classes[i] );
+        if (!(hkey = reg_open_ascii_key( control_key, buffer ))) continue;
+        snprintf( buffer, sizeof(buffer), "##?#PCI#%s#%08X#%s", dev, 0, classes[i] );
+        if (reg_delete_tree( hkey, nameW, asciiz_to_unicode( nameW, buffer ) - sizeof(WCHAR) )) removed++;
+        NtClose( hkey );
+    }
+    if (removed)
+        dprintf( 2, "[vgpu] removed the stale %04x:%04x adapter (%u keys) a launch with the other GPU identity left\n",
+                 vendor, device, removed );
+}
+
 /* madeira-bcd: this port never enumerates display devices (the service-process
  * branch below), so the registry held no display adapter at all: no
  * Enum\PCI entry for SetupAPI, no Class\{display}\0000 with DriverVersion, no
@@ -2935,6 +2970,8 @@ static void ios_register_virtual_gpu(void)
     if (!enum_key || !control_key) return;
 
     ios_virtual_gpu_ids( &pci.vendor, &pci.device );
+    if (pci.vendor == 0x10de) ios_forget_virtual_gpu( 0x106b, 0x0001 );
+    else ios_forget_virtual_gpu( 0x10de, 0x2544 );
     name = gpu_device_name( pci.vendor, pci.device, "Madeira Display" );
     RtlUTF8ToUnicodeN( gpu.name, sizeof(gpu.name) - sizeof(WCHAR), &len, name, strlen( name ) );
     gpu.refcount = 1;

@@ -875,6 +875,37 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     = upstream reorganisation merge + layout fixes + DualSense HID pad (first
     CI compile of the pad's Swift / main_ios.c; i386 farm rebuild because
     build/wine-i386/build.sh changed upstream).
+  - **Ghost of Tsushima: "No installed graphics card" again -- cause: a stale
+    Apple adapter in the shared prefix (2026-10-01, logs GhostOfTsushima.exe
+    16:15:35 and 16:16:49, build 282).** First GoT launch since 2026-09-28. Both
+    launches stop at the dialog right after the game's probe device
+    (D3D12CreateDevice -> destroyed Device -> dialog, presents=0). NOT a lost
+    fix: `[vgpu] registered PCI\VEN_10DE&DEV_2544... driver 35.0.15.6094` is
+    there, nvapi64.dll loads, DXGI reports 2544. What changed is the registry:
+    every game shares one prefix and the in-process wineserver saves the
+    registry, and since 2026-09-29 every God of War / Far Cry 5 / Crysis launch
+    (NVIDIA reporting off) registered `PCI\VEN_106B&DEV_0001...` (Apple). So
+    Enum\PCI held two display devices, both with Driver = Class\{display}\0000;
+    the Apple one sorts first. On 2026-09-28 only GoT ran (all logs that day
+    are 10de:2544 only) and it got past the check -- except 20:41:17, which
+    shows the same "[NxApp] Failed to get GPU Driver Info" + dialog and stays
+    unexplained (nothing else logged in between; maybe an unlogged launch).
+    Fix (build/win32u-unix/sysparams_ios.c, `ios_forget_virtual_gpu`): before
+    `ios_register_virtual_gpu` writes its adapter it deletes the OTHER
+    identity's Enum\PCI device key and its two DeviceClasses links
+    ({5B45201D...} display adapter, {1CA05180...} arrival); logs `[vgpu]
+    removed the stale 106b:0001 adapter (N keys) ...`. Class\{display}\0000,
+    Video\{guid}\0000 are shared and overwritten anyway; DirectX\{guid} is
+    volatile. Helper checked in isolation (key names match link_device's);
+    the full file is first compiled by CI. Workaround until the build is
+    installed: none in the app (pressing Tamam continued the game on
+    09-28 20:41). Waits for build 286 (285 is running the i386 farm; a new
+    dispatch would cancel it). Note: the 282 log has no `[guest-log]` lines
+    at all (09-28 had `ml1300 text-log support`), so the game's own text log
+    is not mirrored any more. Its source is in neither this repo's history
+    nor the wine / FEX submodules at their current pins, so it most likely
+    left with the build 222 switch to upstream's pins. Low priority; it is
+    what showed "[NxApp] Failed to get GPU Driver Info" on 09-28.
 
 ### DualSense / DirectInput (second agent)
 
