@@ -957,6 +957,12 @@ jobs:
       - name: Patch winemetal luminance probe
         run: python3 tools/patch-winemetal-lum-probe.py
 
+      # The luminance probe saw no small 32-bit float readback: census every
+      # texture/buffer readback ([rb-tex], [rb-buf]) with the values of small
+      # ones. Same switch (MADEIRA_LUM_PROBE=0). Native only.
+      - name: Patch winemetal readback census
+        run: python3 tools/patch-winemetal-readback-census.py
+
       # WoW64's 32-bit Windows farm (app/Madeira/i386-windows), which upstream
       # builds from the pinned wine and DXMT (build/wine-i386) and does not
       # commit. Cached per wine/DXMT revision; a failure only leaves 32-bit

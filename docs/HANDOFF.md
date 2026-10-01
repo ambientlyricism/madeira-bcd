@@ -714,6 +714,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     bucket 6 builds 0.90 GB. Waiting on device: owner reproduces the
     outdoor darkening with the old config (mipClampBC=2 back, no MADEIRA_
     switches) and sends the log -> read `[lum-readback]` / `[f32-mipgen]`.
+  - **Build 279 on device (log 14:51:20, darkest in the last ~10 s; owner:
+    the darkness does not depend on the camera at all).** Probe on, but
+    `[lum-readback]` 0 and `[f32-mipgen]` 0: the ~27/s texture->staging
+    copies (stg<-tex 0 -> 3310 in 2 min) are not small 32-bit float
+    textures, and the game never calls GenerateMips on its R32F pyramids
+    (they are reduced by its own shaders). Footprint peak 6.3 GB. Next:
+    tools/patch-winemetal-readback-census.py (step "Patch winemetal readback
+    census", same MADEIRA_LUM_PROBE switch): `[rb-tex]` lists every new
+    (format, size, level) of texture->buffer copies, top six every 1024th,
+    and the values of the previous copy of <= 64 texels (~2/s, floats + hex);
+    `[rb-buf]` the same for buffer->buffer copies of <= 256 bytes into shared
+    buffers (first 8 floats). Applies cleanly after the lum probe on a
+    scratch copy; Objective-C not compiled locally.
 
 ---
 
