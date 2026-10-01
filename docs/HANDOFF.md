@@ -1616,6 +1616,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     DXGI gaps (not fixed): GetSharedResourceAdapterLuid, occlusion / stereo
     registration, CreateSwapChainForComposition / CoreWindow (E_NOTIMPL),
     budget notification without madeira-dxgi-budget.txt, UMD version ~0.
+  - **Build 301 green** (run 36901860397, head ab800bb, 2026-10-01 18:03
+    UTC): 300 + the GoW darkening experiments (the winemetal trace hooks
+    compiled). main fast-forwarded to ab800bb; that push started run 302
+    (workflow changed), cancelled. **Build 303 dispatched** (run
+    36904068206, head 2292a4b): 301 + dxgi-src.dll / MADEIRA_DXGI_SRC.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
