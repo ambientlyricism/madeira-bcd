@@ -679,6 +679,26 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     moment it darkens -- huge/Inf/NaN = the GPU computes it wrong; sane
     values = CPU side / readback timing. Not tested locally (no Metal here);
     patch applies cleanly and is idempotent on a scratch copy.
+  - Owner asked (2026-10-01) for a "fit in 8 GB" demo video: told him the
+    knobs (madeira.cfg `ram-reserve-mb = 6100` -> Madeira's budgets as on a
+    7.6 GB device, `totalphys = 7644` -> the game sees 7.6 GB) but that a
+    12 GB phone does not reproduce 8 GB jetsam/pressure, so such a video is
+    not proof; the honest evidence is the M1 iPad log (footprint 5.4 GB, no
+    crash). Nothing changed.
+  - **Owner request: DirectInput / native DualSense.** Today GameController
+    state goes into a 20-byte XInput-shaped snapshot (app/Madeira/Winios/
+    WiniosGamepad.[ch], read by build/win32u-unix/driver_ios.c) that only
+    xinput sees, so every pad is an Xbox pad and dinput/hid see nothing.
+    winebus.sys is not built for iOS (its source has bus_sdl/iohid/udev
+    backends; hid.dll, setupapi.dll, dinput(8).dll are shipped). Plan put to
+    the owner: (1) build winebus.sys + a new iOS backend that creates a
+    virtual HID device per GameController pad -- a real DualSense report
+    layout (Sony VID 054C / PID 0CE6) for GCDualSenseGamepad so dinput8,
+    raw input and Sony's own libScePad (God of War, Ghost of Tsushima) see a
+    PS5 pad with PS prompts; generic HID gamepad for others; (2) output
+    reports -> rumble, adaptive triggers, light bar via GCDualSense APIs;
+    (3) touchpad and gyro. Needs the PnP path (winedevice/plugplay) to load
+    winebus on device. Multi-day; not started.
 
 ---
 
