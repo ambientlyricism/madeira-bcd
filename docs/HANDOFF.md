@@ -709,6 +709,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     its notes into a subsection "DualSense / DirectInput (second agent)" at
     the end of section 0. The main session reviews, merges and builds.
     `.claude/worktrees/` (the agent's worktree) is now in .gitignore.
+  - **Build 279 green** (run 36855551967, head 4dea9ee): "Patch winemetal
+    luminance probe" applied, native ABI d629033a90627b60, OTA mailed,
+    bucket 6 builds 0.90 GB. Waiting on device: owner reproduces the
+    outdoor darkening with the old config (mipClampBC=2 back, no MADEIRA_
+    switches) and sends the log -> read `[lum-readback]` / `[f32-mipgen]`.
 
 ---
 
