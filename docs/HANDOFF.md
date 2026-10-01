@@ -1945,6 +1945,28 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
   - **Build 311 green** (run 36919402019, head 1bee535). main fast-forwarded
     to 1bee535 (no workflow change). Waiting on the GTA run with
     `d3d12-tile-based = 0` and `d3d12-caps-log = 2`.
+  - **GTA V on build 311 with `d3d12-tile-based = 0` + `d3d12-caps-log = 2`
+    (log PlayGTAV.exe 2026-10-01 23:45:52): same box -- TileBasedRenderer is
+    not it -- but the format log shows the decisive read:** on the real
+    device the game now queries MULTISAMPLE_QUALITY_LEVELS for
+    R8G8B8A8_UNORM (28) x1 / x2 / x4 / **x8 -> levels 0** (7542-7545) right
+    before `destroyed Device` (7546). Every FL 11_0+ GPU has 8x there; Apple
+    GPUs stop at 4x and the runtime already clamps 8x requests to 4x
+    (ml1030 mad_clamp_sample_count) for resources and pipelines. Format
+    failures in the survey are only the expected ones (R32G32B32_TYPELESS,
+    R1, R8G8_B8G8 / G8R8_G8B8, R10G10B10_XR, YUV/video, palette, B4G4R4A4,
+    P208/V208/V408). **Added (this commit): `d3d12-msaa8 = 1`** (default
+    0): MULTISAMPLE_QUALITY_LEVELS answers 1 for 8x; creation still clamps
+    to 4x, so the answer never reaches Metal (log `[d3d12-caps] madeira-bcd
+    msaa8=1`). Syntax check: only the 4 pre-existing errors; catalog, tiled,
+    got-diagnostics PASS. **Next GTA test:** the previous lines +
+    `d3d12-msaa8 = 1`.
+  - **Owner (2026-10-01 ~23:50 UTC+3, going to sleep; GoT tests in the
+    morning): new task -- DualSense haptics / adaptive triggers / lightbar
+    for Sony PC ports** (God of War, Horizon Forbidden West, TLOU2 ...),
+    which drive all of it over Bluetooth on Windows (and in CrossOver on the
+    Mac). The DInput/HID pad path already works (GoW buttons became PS
+    buttons). An agent was started on it (worktree).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

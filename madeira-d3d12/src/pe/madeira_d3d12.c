@@ -7426,6 +7426,20 @@ static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
          * unsupported here and then handing that same count to Metal is what
          * cost 28 pipelines. */
         m->NumQualityLevels = (m->SampleCount == mad_clamp_sample_count(m->SampleCount)) ? 1 : 0;
+        /* madeira-bcd: d3d12-msaa8 = 1 reports 8x as supported (one quality
+         * level); resources and pipelines asking for it still get 4x through
+         * mad_clamp_sample_count, so the answer never reaches Metal. GTA V
+         * Enhanced asks R8G8B8A8_UNORM x1/x2/x4/x8 on its real device and gives
+         * up with ERR_GFX_D3D_NOD3D12 after the 8x answer 0 (build 311, log
+         * PlayGTAV.exe 2026-10-01 23:45:52); every FL 11_0+ GPU has 8x there. */
+        if (m->SampleCount == 8 && !m->NumQualityLevels) {
+            static int msaa8 = -1;
+            if (msaa8 < 0) {
+                msaa8 = mad_cfg_int_pe("d3d12-msaa8", 0) ? 1 : 0;   /* 1: report 8x MSAA (rendered at 4x) */
+                if (msaa8) d3d12_log("[d3d12-caps] madeira-bcd msaa8=1 (d3d12-msaa8): 8x MSAA reported, rendered at 4x\n");
+            }
+            if (msaa8) m->NumQualityLevels = 1;
+        }
         return S_OK;
     }
     case D3D12_FEATURE_FORMAT_INFO: {
