@@ -2006,6 +2006,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (i386 farm xinput unpatched -- patching changes the farm cache key, a
     one-time full farm rebuild: owner's call); Bluetooth presentation if the
     Sony ports send audio haptics over the wired-pad path.
+  - **Build 313 green** (run 36928040291, head c7646de): DualSense output +
+    XInput rumble compiled against the iOS SDK. main fast-forwarded to
+    c7646de. Device tests pending (GoW `env.MADEIRA_PAD_MODE = dualsense`;
+    GTA with `d3d12-msaa8 = 1`; GoT G1/G2/H).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
