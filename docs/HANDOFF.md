@@ -1826,6 +1826,56 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     typed-uav-load-additional=1 (opt-in)` and the OPTIONS hex at offset 24
     = 01). If it still fails: TiledResourcesTier (would need reserved
     resources + UpdateTileMappings on Metal sparse textures / heaps).
+  - **GTA V with `d3d12-typed-uav-load = 1` (build 308, log PlayGTAV.exe
+    2026-10-01 22:27:37): same box.** The opt-in took effect (`ml1970
+    typed-uav-load-additional=1 (opt-in)`, OPTIONS byte 24 = 01, 5341-5342);
+    same survey, same last reads (ARCHITECTURE, OPTIONS5) before `destroyed
+    Device`. Left among FL 12_0's hard requirements: **TiledResourcesTier
+    >= 2** (we answer 0 and implement no reserved resources). Also odd:
+    OPTIONS.MaxGPUVirtualAddressBitsPerResource = 0 (real GPUs 40; the
+    GPU_VIRTUAL_ADDRESS_SUPPORT answer is 40/40).
+  - **GoT one-frame "shapes in the air" after `dxil-tess = 0` (agent,
+    2026-10-01; docs/got-corruption.md section 8).** Build 303, log
+    `GhostOfTsushima.exe-2026-10-01_21-30-15`, video
+    `ScreenRecording_10-01-2026_21-33-21`: `dxil-tess = 0` removed the smoke
+    squares (confirms the lit-smoke DXIL tessellation pass). The remaining
+    artefact, frame by frame: at least 12 broken frames in 5.2 s of play (one
+    game frame in ~6-8), each ONE frame, three kinds -- a dark boulder drawn at
+    a wrong place/scale (in front of the cart, on the ground, once floating in
+    the sky: 1.37/2.80/3.93/4.67/4.92 s), motion-blur streaks of the bridge
+    planks or a tree (1.32/1.97/2.78/3.53/3.98/4.87 s), once blue moonlit
+    lighting (0.92 s); no frame-time spike correlation. Reading: right meshes
+    with another object's / another frame's per-object data (CPU-written UPLOAD
+    data: per-draw constants, the GPU-driven passes' instance stream). Log: all
+    8 large UPLOAD/READBACK buffers (82 MB) are on ml1154 storage, which with
+    the owner's `swap-mb = 3072` is the file-backed swap tier (file 3069/3072
+    MB, footprint 6.5 GB, 1.3 GB compressed); Queue::Wait never slept; 0 GPU
+    errors, full fence chain; skips are only the smoke placeholder;
+    render-target aliasing and count-buffer records ruled out. Side findings:
+    r#739 (256x256 BC3, Metal size 96 KB) placed in a 64 KB slot overlaps r#325
+    by 32 KB (texture content); occlusion results never reach GoT's GPU-only
+    resolve buffer. Ranked: (1) the GPU reads stale UPLOAD pages on the swap
+    tier, (2) premature reuse through an early fence -- one real window:
+    queue_Signal sets `submitted` before its batch is committed and the
+    synchronous Queue::Wait returns on it, (3) our indirect probe's render-pass
+    splits, (4) descriptors rewritten in flight. **Added, all OFF by default,
+    D3D12 runtime only:** `fence-strict` (1: Wait needs the commit, every
+    batch/present command buffer GPU-waits for the newest committed serial; 2:
+    also a synchronous draining Signal and Present waits for its frame),
+    `upload-guard` (1: re-hash the UPLOAD ranges draws read once the GPU is
+    done, before the fence/Present, `[upload-guard] CHANGED`; 2: also a GPU blit
+    copy per batch, `GPU SAW DIFFERENT BYTES`; `upload-guard-bytes`),
+    `desc-guard` (`[desc-guard] ... rewrote descriptor ...`), `cbv-snapshot`
+    (UPLOAD root CBVs copied into the argument ring at replay). Summary
+    `[sync-diag] present #N` every 300 presents. Catalog regenerated (ships in
+    an IPA); `tests/host/check-got-diagnostics.py` PASS (ASan/UBSan clean);
+    arm64ec build links. **Device plan:** now on 303/306: `upload-swap = 0`,
+    then `ind-probe = 0` (each with `dxil-tess = 0`, one launch each); after
+    the next IPA: `upload-guard = 2` + `upload-guard-bytes = 4096`, then as it
+    points `fence-strict = 1`, `fence-strict = 2`, `desc-guard = 1`,
+    `cbv-snapshot = 1`. Open: the fix depends on G1 / H.
+    Merged as 9a9aba9 (agent commit 8200f3b); host checks after the merge:
+    got-diagnostics, catalog PASS.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
