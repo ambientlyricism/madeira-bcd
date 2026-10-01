@@ -539,6 +539,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     device cannot filter 32-bit floats (check MTLDevice
     supports32BitFloatFiltering as well as the family), make the sampler
     nearest for those formats or filter manually in the converted shader.
+  - **Owner's decision (2026-10-01): drop the 32-bit Crysis games** (Crysis
+    D3D10 tree streaks, Crysis 3 Bin32) -- "too old, not worth it". Focus is
+    God of War. The SM4-only DXMT patches already in the build (cb-short,
+    idx-align, vfetch-bounds, vb-align) stay: they do not touch SM 5.0
+    shaders and cost nothing; do not spend more time on them. Open God of
+    War items: the slow darkening (owner's question about camera/area
+    pending), the iPad M1 black scene (275 log pending), upstream PR for
+    the lean SM50 fix.
 
 ---
 
