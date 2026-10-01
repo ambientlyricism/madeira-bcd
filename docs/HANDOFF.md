@@ -1628,6 +1628,46 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `env.MADEIRA_LD_BOUNDS = 0` A/B at 1080p is no longer a darkening test,
     only a possible small GPU gain (perf doc 3.2 item 5). 1080p is the
     reference that must not regress in every experiment.
+  - **Build 303 green** (run 36904068206, head 2292a4b, 2026-10-01 18:24
+    UTC): notices "dxgi-src.dll built from DXMT a5e0cd3 with IDXGIFactory7 +
+    EnumAdapterByLuid (1748992 bytes, exports = upstream's)", "the recipe
+    reproduces upstream's dxgi.dll without the patch (9663 symbols ...)",
+    "dxgi-src.dll present". main fast-forwarded to 2292a4b; its push run 304
+    (workflow changed) cancelled.
+  - **GoT "objelerdeki sıkıntı" = smoke squares (agent, 2026-10-01; docs/got-corruption.md).**
+    Video `ScreenRecording_10-01-2026_20-40-37` (build 296, FSR off, 1280x720)
+    and log `GhostOfTsushima.exe-2026-10-01_20-26-49`: the smoke over the burning
+    bridge is drawn as hard-edged, uniformly translucent dark ROTATED SQUARES
+    (one per particle, ~40-150 game px), not 4x4/8x8 blocks; FSR only smeared
+    them (09-28 20:36 video shows the same squares). Timeline: builds 208-210
+    skipped the indirect DXIL-tessellation draws (`L4436=2696`) and the 210 video
+    at the same spot has none; 211 draws them (`ls_SetColor` /
+    `ps_SetColor_MultiLight`, premultiplied straight onto the scene HDR target)
+    and every later video has the squares. Prime suspect: the lit-smoke pass in
+    the converter's tessellation emulation loses the per-pixel opacity (UV not
+    reaching the PS / NaN UV flushed by msc-sample-nan-zero / factor cap 3 /
+    triangle instead of patch input topology). Ruled out with log evidence: BC
+    decode (native BC formats), min-LOD clamp (0 SRVs), multi-arg ExecuteIndirect
+    and count buffers, GPU faults/skips, LOD bias. **Added, all OFF by default,
+    D3D12 runtime only (God of War untouched):** `skip-ps` + `skip-ps-cycle`
+    (drop / rotate draws by shader name, `[skip-ps] phase` lines),
+    `dxil-dump` (every stage's bytecode of named pipelines to the log as
+    `[b64 <hash>]` and `C:\madeira-cs\dump_*.dxil`), `capture-ps` now walks DXIL
+    draws' root signatures (`[capture-draw]` textures, views, sampler states,
+    static samplers, raw sprite copies; capture-ps names now exact),
+    `dxil-tess-patch-topology = 1`
+    (IRInputTopologyPatch for tessellation stages; native, needs an IPA; cache
+    keyed apart). Catalog regenerated; `tests/host/check-got-diagnostics.py`
+    PASS; runtime builds for arm64ec locally. **Device plan** (docs/got-corruption.md
+    section 6): on 296 without a build: CAP; `dxil-tess = 0`;
+    `dxil-tess-max-factor = 0`; `msc-sample-nan-zero = 0`; after the next IPA:
+    `skip-ps-cycle` run with a screen recording, `dxil-dump` + `capture-ps` + CAP,
+    `dxil-tess-patch-topology = 1`. Open: the actual fix depends on which block
+    removes the squares.
+    Merged as c6b98b1 (agent commits 8b7552a, 69cdf9c); host checks after
+    the merge: got-diagnostics, dxgi-factory7, patch chain, catalog PASS.
+    Cost: native ABI change (IPA, not a pack); GoT re-converts its shaders
+    once on the first launch of the next build.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
