@@ -1146,6 +1146,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     before more games are tested. Still open: a DirectInput-only game, Ghost
     of Tsushima (libScePad), phase 2 (rumble / adaptive triggers /
     lightbar), phase 3 (touchpad coordinates, gyro).
+  - **God of War at native 1080p: performance work started (owner
+    2026-10-01: "1080p looks great; raise the FPS as far as possible; the
+    darkening then does not matter; start an agent if needed").** The
+    darkening below 1080p is parked. First look at the 1080p log
+    (GoW.exe 15:06:44, build 279): `[rip-profile] ml1111/1112` puts ~43 % of
+    RUNNING guest samples inside two kernel32.dll calls (IAT 0x140d48220 ->
+    kernel32+0x374f0, 26 %; 0x140d48448 -> kernel32+0x409a0, 17 %;
+    kernel32 at 0x71fe6d0000), and `[xp]` shows much of the game's CPU time
+    on efficiency cores (e.g. P=189 ms vs E=278 ms in a 279 ms window).
+    A background agent (own worktree; no push, no dispatch, no HANDOFF
+    edits) is analysing it: name those two functions (or add a diagnostic
+    that names IAT callees as module!export), thread QoS / P-core placement,
+    GPU vs CPU bound, present latency, existing DXMT / sync switches; it
+    writes docs/perf-gow-1080p.md and low-risk or switchable changes on its
+    branch for the main session to merge and build.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
