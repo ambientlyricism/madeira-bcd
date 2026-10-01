@@ -638,6 +638,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
   - Owner: the cleanup left IPA artifacts older than ~164. Those builds used
     the fixed name `madeira-unsigned-ipa` (83 artifacts). cleanup-artifacts
     now deletes that name too.
+    Done: main fast-forwarded to 9607361 (duplicate push run 278
+    cancelled), cleanup run 36851915094 "deleted 83 IPA artifacts ... (5.59
+    GB)". IPA artifacts left: 261-273, 275, 277 (12); 227 artifacts in all.
 
 ---
 
