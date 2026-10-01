@@ -1107,6 +1107,23 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     The launcher's command line carries `-nobattleye -scOfflineOnly`; this
     is a Madeira process-lifetime fix only (hard rule: nothing about crack or
     emulator setups).
+  - **GTA5_Enhanced.exe started directly (log 2026-10-01 17:32:19, build
+    286): the mirror image.** The game loads socialclub.dll, spawns
+    `PlayGTAV.exe` (cmdline "PlayGTAV.exe") and terminates itself with exit
+    code 0x1337 ~5 s in -- the usual "restart me through my launcher" -- and
+    the session ended the same way (main process exit -> wineserver
+    stopped). With build 291's child wait both starts should work: the main
+    exe exits with PlayGTAV.exe running (started < 60 s ago) -> the session
+    waits; PlayGTAV.exe then starts GTA5_Enhanced.exe (a grandchild, tracked
+    in the same table, since every pseudo-process spawns through
+    process_ios.c) and exits; the wait goes on while GTA5_Enhanced.exe runs.
+    Expect `[WineProc] madeira-bcd: the main process exited but 1 child
+    process(es) ... (playgtav.exe)` and later only gta5_enhanced.exe in the
+    "still running" lines.
+  - **Owner's standing permission (2026-10-01):** start multiple agents
+    (subagents) whenever they help solve a problem or reach success faster;
+    no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
+    başlatabilirsin ... benim söylememi bekleme").
 
 ### DualSense / DirectInput (second agent)
 
