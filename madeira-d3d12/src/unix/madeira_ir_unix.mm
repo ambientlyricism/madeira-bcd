@@ -1663,6 +1663,10 @@ extern "C" int madeira_ir_convert_impl(struct madeira_ir_convert_args *a) {
         IRInputTopology topo = IRInputTopologyTriangle;
         if (a->input_topology == 1) topo = IRInputTopologyPoint;
         else if (a->input_topology == 2) topo = IRInputTopologyLine;
+        /* madeira-bcd: experiment for Ghost of Tsushima's lit smoke (docs/got-corruption.md),
+         * sent only with madeira.cfg dxil-tess-patch-topology = 1: the converter has a patch
+         * input topology the tessellation stages were never given. */
+        else if (a->input_topology == MADEIRA_IR_TOPOLOGY_PATCH_STRICT) topo = (IRInputTopology)4;   /* IRInputTopologyPatch */
         g_ir.IRCompilerEnableGeometryAndTessellationEmulation(compiler, true);
         g_ir.IRCompilerSetInputTopology(compiler, topo);
         if (a->layout) g_ir.IRCompilerSetStageInGenerationMode(compiler, IRStageInCodeGenerationModeUseSeparateStageInFunction);

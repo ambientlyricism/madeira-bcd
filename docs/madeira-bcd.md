@@ -418,6 +418,22 @@ the update pack, the game's options and starts the per-game session log.
   dispatch can write. Block-compressed textures are no longer thumbnailed and
   every thumbnail read is bounds-checked (a BC1 UAV target read past its copy
   and hung the second CAP of build 190).
+- Ghost of Tsushima smoke-square diagnostics (`madeira_d3d12.c`,
+  `madeira_ir_unix.mm`, `madeira_ir_abi.h`; docs/got-corruption.md), all off
+  unless set in madeira.cfg or the game's file. The 10-01 artefact is the
+  smoke drawn as uniform translucent rotated squares, which appeared when the
+  indirect DXIL tessellation draws of `ls_SetColor` / `ps_SetColor_MultiLight`
+  started to be drawn (build 211). `skip-ps` (+ `skip-ps-cycle` seconds) drops
+  or rotates draws by exact VS/PS entry name with `[skip-ps] phase` lines;
+  `dxil-dump` writes every stage's bytecode of named pipelines to the log
+  (`[b64 <hash>]`) and `C:\madeira-cs\dump_*.dxil`; `capture-ps` now walks a
+  converter (DXIL) draw's root signature like `capture-cs` (shared
+  `mad_capture_rs_tables`, tag `capture-draw`), logs sampler states (a table
+  filled at CreateSampler and for static samplers) and matches exact names;
+  `dxil-tess-patch-topology = 1` converts DXIL tessellation stages with
+  `IRInputTopologyPatch` instead of triangle (a distinct `input_topology`
+  value, so both shader caches keep it apart). Host test
+  `tests/host/check-got-diagnostics.py`.
 - RtlPcToFileHeader knows JIT-pool aliases (`build/ntdll-unix/virtual_ios.c`,
   `ios_patch_rtl_pc_to_file_header`, called from both ntdll hook sites in
   `loader_ios.c`): the pool copy of the prebuilt PE ntdll's RtlPcToFileHeader
