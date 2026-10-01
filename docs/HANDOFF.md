@@ -516,6 +516,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     artifact page and deletes only `madeira-0.1.<N>-unsigned-ipa` with N <
     below; build-logs artifacts stay. Before: 370 artifacts, 29 old IPA ones
     on the first page alone (4.2 GB). It must be on main to be dispatched.
+    Done: build 275 green first (run 36844076835, head e41139f, "Patch
+    winemetal RAM cap" applied, native ABI 01e5d03be2878bbc, OTA mailed,
+    bucket 4 builds 0.60 GB); main fast-forwarded to cd3b7dd, the duplicate
+    push run 276 cancelled; cleanup run 36846074181: "deleted 64 IPA
+    artifacts below build 260 (9.16 GB)".
 
 ---
 
