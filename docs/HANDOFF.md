@@ -295,6 +295,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     main push started run 270 on the same commit; left running on purpose as
     the OTA retry. sign-and-publish-ota.sh now sets AWS_RETRY_MODE=adaptive,
     AWS_MAX_ATTEMPTS=10 (next build).
+  - **Run 270 (push on main, same commit 87830f1) delivered the OTA:** "Madeira
+    0.1.270 signed ... kurulum-0.1.270.html written to the private B2 bucket"
+    and "install link for 0.1.270 e-mailed" (01:57 UTC). It also rebuilt the
+    i386 farm (the farm cache is per branch, main had none for this key).
 
 ---
 
