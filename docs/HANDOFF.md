@@ -1621,6 +1621,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     compiled). main fast-forwarded to ab800bb; that push started run 302
     (workflow changed), cancelled. **Build 303 dispatched** (run
     36904068206, head 2292a4b): 301 + dxgi-src.dll / MADEIRA_DXGI_SRC.
+  - **Owner (2026-10-01 ~21:10 UTC+3): "at 1080p it is not dark, God of War
+    is completely fine at 1080p."** This closes the earlier "dark overall"
+    worry (19:15 report) for native 1080p: the darkening is only below 1080p
+    (720p / FSR), as the darkening agent's readback numbers show. The
+    `env.MADEIRA_LD_BOUNDS = 0` A/B at 1080p is no longer a darkening test,
+    only a possible small GPU gain (perf doc 3.2 item 5). 1080p is the
+    reference that must not regress in every experiment.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
