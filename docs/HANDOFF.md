@@ -727,6 +727,23 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `[rb-buf]` the same for buffer->buffer copies of <= 256 bytes into shared
     buffers (first 8 floats). Applies cleanly after the lum probe on a
     scratch copy; Objective-C not compiled locally.
+  - **Darkening gone at 1920x1080 (owner, build 279, log 15:01:54:
+    display-shape 1920x1080 + MetalFX 2x -> 3840x2160; "completely
+    gone").** MetalFX is not the factor: the 11:56 session had MetalFX 1.5
+    (1280x720 -> 1920x1080) and darkened; 14:51 (1568x720, no MetalFX)
+    darkened. What differs: GoW starts with a 1920x1080 set of render
+    targets (R32F 1920x1080, 960x540, 60x34, RGBA32F 240x135, ...); at a
+    720-line window it creates a SECOND set (R32F 1280x720, 640x360, 40x23,
+    RGBA32F 160x90) -- `[f32-tex]` in 14:51 vs 15:01. At 1080p no second
+    set is created and no darkening happens. So the bug follows the game's
+    switch away from its 1920x1080 start-up size (a resize path: a stale
+    1080p-sized resource or view still read after the switch is the likely
+    shape; not proven). Workaround given: play God of War at display
+    resolution 1920x1080 (MetalFX optional). Side finding while looking:
+    DXMT's presenter scales HDR output by currentEDRHeadroom /
+    potentialEDRHeadroom (dxmt_presenter.cpp), which would also dim the
+    whole picture when iOS lowers the headroom -- only relevant if the game
+    runs in HDR; no log evidence that it does.
 
 ---
 
