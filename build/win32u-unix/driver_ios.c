@@ -542,6 +542,53 @@ static int winios_game_windows(void)
     return on;
 }
 
+/* madeira-bcd: game mode, a thread that shows a launcher / message box. Taps
+ * and keys wait in the app's ring (Winios.m) until a wine thread runs
+ * pProcessEvents. A game's own loop polls PeekMessage and drains it every
+ * frame, but a modal loop (MessageBox, a launcher's GetMessage) sleeps in
+ * wait_message with no timeout and the wineserver does not watch the ring:
+ * Ghost of Tsushima's "No installed graphics card" box took no tap, Enter or
+ * Space (build 296, log 2026-10-01 20:08:38: 18 touches and 36 keys posted, no
+ * "[winios] drain" line). Desktop mode wakes such waits every 16 ms to drain
+ * the ring (message_ios.c wait_message); a thread that shows a visible
+ * top-level window smaller than the guest desktop now does the same. A
+ * full-screen game window never marks its thread. MADEIRA_GAME_INPUT_WAKE=0
+ * turns this off. Logs [game-input] once per thread (8 at most). */
+static __thread int winios_thread_shows_dialog;
+
+int winios_input_wake_thread(void)
+{
+    return winios_thread_shows_dialog;
+}
+
+static void winios_note_dialog_thread( HWND hwnd, const RECT *visible )
+{
+    static int on = -1;
+    static unsigned int said;
+    RECT screen;
+
+    if (winios_thread_shows_dialog) return;
+    if (on < 0)
+    {
+        /* Default on: a launcher / message box over a game takes taps and keys; 0 = off. */
+        const char *env = getenv( "MADEIRA_GAME_INPUT_WAKE" );
+        on = !(env && *env == '0');
+    }
+    if (!on) return;
+    if (visible->right - visible->left < 32 || visible->bottom - visible->top < 32) return;
+    if (!(get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE)) return;
+    if (get_window_thread( hwnd, NULL ) != GetCurrentThreadId()) return;
+    screen = get_virtual_screen_rect( 0, MDT_DEFAULT );
+    if (visible->left <= screen.left && visible->top <= screen.top &&
+        visible->right >= screen.right && visible->bottom >= screen.bottom) return;
+    winios_thread_shows_dialog = 1;
+    if (__atomic_fetch_add( &said, 1, __ATOMIC_RELAXED ) < 8)
+        dprintf( 2, "[game-input] madeira-bcd tid=%04x hwnd=%p vis={%d,%d,%d,%d}: this thread shows a "
+                 "window over the game; its message waits now wake every 16 ms to take taps and keys "
+                 "(MADEIRA_GAME_INPUT_WAKE=0 disables)\n", (int)GetCurrentThreadId(), hwnd,
+                 (int)visible->left, (int)visible->top, (int)visible->right, (int)visible->bottom );
+}
+
 /* ml505 probe. This hook was a pure stub: wine hands the driver the
  * surface's VISIBLE REGION here — the rects left after sibling and child
  * occlusion — and we discarded all of it.
@@ -681,6 +728,7 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         int visible = !IsRectEmpty( v ) && !(swp_flags & SWP_HIDEWINDOW);
         winios_window_frame( hwnd, v->left, v->top, v->right - v->left, v->bottom - v->top, visible,
                              c->left, c->top, c->right - c->left, c->bottom - c->top );
+        if (visible && surface && winios_game_windows()) winios_note_dialog_thread( hwnd, v );
     }
     /* ml505: z-order and geometry churn. If the three same-rect siblings are
      * being reordered, the topmost changes and the surface shows whichever

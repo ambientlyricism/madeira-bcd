@@ -482,6 +482,19 @@ the update pack, the game's options and starts the per-game session log.
   `dxgi.customDeviceId=2544` too (appended to `DXMT_CONFIG`), so DXGI,
   EnumDisplayDevices, SetupAPI and NVAPI name one GPU. Ghost of Tsushima still
   said "Failed to get GPU Driver Info" with NVAPI alone.
+- Input for a launcher / message box over a game
+  (`build/win32u-unix/driver_ios.c` `winios_note_dialog_thread`,
+  `message_ios.c` `wait_message`): taps and keys wait in the app's ring
+  (Winios.m) until a wine thread runs pProcessEvents. A game's loop polls
+  PeekMessage and drains it every frame, but a modal loop (MessageBox, a
+  launcher's GetMessage) sleeps with no timeout and the wineserver does not
+  watch the ring, so Ghost of Tsushima's "No installed graphics card" box took
+  no tap, Enter or Space (build 296, log 2026-10-01 20:08:38: 18 touches and
+  36 keys posted, not one `[winios] drain`). Desktop mode already woke such
+  waits every 16 ms; in game mode a thread that shows a visible top-level
+  window smaller than the guest desktop now does the same (`[game-input]`,
+  once per thread). A full-screen game window never marks its thread.
+  `MADEIRA_GAME_INPUT_WAKE=0` turns it off.
 - DXMT_CONFIG separator (`app/Madeira/ContentView.swift`,
   `LibraryBCD.swift`): DXMT splits `DXMT_CONFIG` on ";" only and its line
   parser does not treat a newline as whitespace, but the app joined the

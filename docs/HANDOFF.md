@@ -1476,6 +1476,33 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     has a placeholder monitor and 3 modes, the game expects 1920x1080).
     Other suspects (not changed): D3DKMT lists no adapter, DXMT has no
     IDXGIFactory7, OutputDebugString is logged only 4x per process.
+  - **GoT dialog takes no input (owner, build 296, log 20:08:38: "no mouse,
+    Enter / Space do nothing") -- cause found and fixed.** The box is the
+    game's "No installed graphics card" MessageBox (hwnd 0x10034, buttons
+    "Tamam" / "İptal", thread 0024). The app posted 18 touches (one at
+    552,424, right on "Tamam") and 36 keys (`[winios] post_touch_down`,
+    `post_key vk=0xd / 0x20 / 0x9`), but the log has **no `[winios] drain`
+    line at all**: the ring in Winios.m is only drained when a wine thread
+    runs pProcessEvents (PeekMessage / wait_message). A game's render loop
+    polls every frame (GoW 10-01 14:06: drain=22), but a modal loop sleeps
+    in `wait_message` with no timeout and the wineserver does not watch the
+    ring, so nothing ever delivered the input. Desktop mode has woken these
+    waits every 16 ms since the trackpad work; game mode did not. **Fix:**
+    `driver_ios.c` marks (thread-local) a thread that shows a visible,
+    surface-backed top-level window smaller than the guest desktop (>= 32x32,
+    WS_VISIBLE, its own thread) -- a launcher or message box, never a
+    full-screen game window -- and `message_ios.c` `wait_message` uses the
+    desktop-mode 16 ms slicing for that thread. `[game-input] madeira-bcd
+    tid=... hwnd=...` once per thread; `MADEIRA_GAME_INPUT_WAKE=0` turns it
+    off. Host syntax check of driver_ios.c / message_ios.c with -Wall clean;
+    catalog regenerated, check PASS. Cost: a marked thread that later sleeps
+    in a message wait wakes ~60x/s (cheap); GoW's full-screen window does not
+    mark its thread. No cursor is drawn in game mode (by design, desktop
+    sessions only); taps act as absolute clicks. **Expected on the next
+    build:** `[game-input] ... hwnd=0x...` when the box appears, then
+    `[winios] drain type=0 ...` / `drain type=1 ...` after taps / keys, and
+    the box closes on "Tamam" or Enter. With the DXMT_CONFIG fix above the
+    box itself should no longer appear for GoT.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
