@@ -1703,6 +1703,23 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
   - **Build 306 dispatched** (run 36907666595, head 98ef76f): 303 + GoT
     smoke-square diagnostics + NVAPI frame-buffer sizes; it supersedes the
     running 305 (d50c20f, concurrency cancel).
+  - **GoT on build 303 with `dxil-tess = 0` (owner, log GhostOfTsushima.exe
+    2026-10-01 21:30:15 + ScreenRecording_10-01-2026_21-33-21): the smoke
+    squares are GONE** -- confirms the agent's #1 (the lit-smoke DXIL
+    tessellation pass). Owner: "the nonsense shapes in the air continue".
+    Frame-by-frame (every frame 3.6-5.2 s extracted with imageio-ffmpeg):
+    ONE-FRAME flashes of coherent geometry in the wrong place -- a huge dark
+    lit rock-like body over the bridge (one frame), two streaked ellipses
+    around the bridge lanterns, a dark smudge over the cart, a diagonal
+    streaked orange plume (~4.75 s). Reading: per-draw data from the wrong
+    frame/object (upload-ring / constant data overwritten before the GPU
+    used it, a fence reported early, descriptor slot rewritten in flight)
+    or light-volume proxies for one frame. Log: async-submit = 0,
+    fence-chain = 1, "fences are delivered asynchronously" (ml1061), no GPU
+    fault. **The GoT agent was resumed** on this (fence / upload-heap /
+    descriptor lifetime, opt-in confirm/fix switches, docs/got-corruption.md
+    new section). Open until it reports. `dxil-tess = 0` stays the owner's
+    workaround for the squares (water and lit smoke are lost with it).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
