@@ -1914,6 +1914,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Merged as 1baa002 (agent commit 60e87a0); host checks after the merge:
     check-d3d12-tiled, got-diagnostics, catalog PASS. Build 309 (d4ca619)
     superseded by the next dispatch, which carries both.
+  - **Build 310 green** (run 36916408689, head 3b463c3): 308 + GoT
+    one-frame-shape diagnostics + GTA opt-in tiled resources. Shader cache
+    identity unchanged (8d70ae1af2324972, no re-conversion). OTA mailed.
+    309 was cancelled (superseded). main fast-forwarded to 3b463c3 (no
+    workflow change).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
