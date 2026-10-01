@@ -339,6 +339,41 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     builds; with a 7 GB foreign file; tiny budget; re-publish of the same
     version). At ~150 MB per IPA, 10 builds are ~1.5 GB, so normally only
     the count rule removes anything. Build dispatched to verify on R2.
+  - **Owner removed the B2_* secrets (2026-10-01).** Left: OTA_MAIL_* (3),
+    R2_* (4), SIGN_P12_PASSWORD -- correct; with the R2 secrets the script
+    never reads B2_*. (The workflow still passes the empty B2_* env; harmless.)
+  - **God of War memory -- cause found (log GoW.exe 2026-10-01 11:03:41, build
+    271, game settings swap-mb 6144 + swap-min-kb 1024 ["blocks"], global
+    mempool 2048).** Died on a loading screen: footprint 5.1 -> 7.5 GB within
+    11:04:15-11:04:17, then flat ~7.3 GB until the log ends at 11:05:07
+    (pool reported memory pressure CRITICAL at 11:04:16; the last line is
+    "keyboard focus: elsewhere (app inactive)", then nothing -- jetsam).
+    Swap tier and pool worked (file-backed 2.1 GB, 0 refused; pool peak 530
+    MB, then "guarded" as pressure rose) but cannot touch the growth: it was
+    all native malloc -- `[malloc-zones]` DefaultMallocZone 489 MB / 0.89 M
+    blocks (line 22126) -> 2887 MB / 2.93 M blocks (line 24411), ~1.2 KB per
+    block; `[phys-map]` band "pa" 223 -> 2752 MB. During those seconds the
+    busiest threads were the game's DxShaderCache0-3 (tids 00a0/00a4/00a8/
+    00ac) -- it creates its shaders there; DXMT GPU memory stayed ~1.4 GB.
+    DXMT's PipelineCache (d3d11_pipeline_cache.cpp) keeps every created shader
+    forever (shaders_ map by SHA-1, never evicted) and each CachedSM50Shader
+    holds airconv's parsed program from SM50Initialize (bbs of decoded
+    instructions + signature_handlers std::functions), only needed while a
+    variant is compiled. Fix (next build): tools/patch-airconv-sm50-lean.py
+    (step "Patch airconv lean SM50 shaders", native only, not in the i386
+    farm key): SM50Initialize still parses (reflection, argument and range
+    info come from it), keeps a copy of the bytecode and drops bbs +
+    signature_handlers; SM50Compile and the four tessellation/geometry
+    pipeline entry points re-parse into a temporary for that call (parse is
+    deterministic; compilation copies func_signature and only reads the
+    shader). madeira-d3d12 uses only the public API, so it is covered too.
+    MADEIRA_SM50_LEAN=0 restores the old behaviour; `[sm50-lean]` logs the
+    mode and, every 1000 shaders, live count / bytecode kept / sampled bytes
+    dropped per shader / malloc in use. airconv_cli sets LEAN=0 (it calls the
+    internals directly). Not compiled locally (no LLVM 15 headers here); the
+    patch chain applies cleanly and is idempotent on a scratch copy. Not yet
+    proven: if `[sm50-lean]` shows little dropped per shader, the 2.4 GB is
+    elsewhere (next suspect: compiled variants / Metal pipeline objects).
 
 ---
 

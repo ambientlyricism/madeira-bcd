@@ -921,6 +921,13 @@ jobs:
       - name: Patch DXMT byte-aligned vertex fetch
         run: python3 tools/patch-dxmt-vb-align.py
 
+      # God of War died on a loading screen at 7.5 GB: 2.4 GB of native malloc in
+      # two seconds while it created its shaders. DXMT keeps every shader with
+      # airconv's parsed program; the parse is now dropped after creation and
+      # redone per compiled variant (MADEIRA_SM50_LEAN=0 keeps it). Native only.
+      - name: Patch airconv lean SM50 shaders
+        run: python3 tools/patch-airconv-sm50-lean.py
+
       # iOS cannot bootstrap-register a shared texture's mach port; without a
       # port DXMT keeps the texture unshared instead of failing its creation
       # (Crysis Remastered died on ClearRenderTargetView(NULL) after that).
