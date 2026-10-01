@@ -374,6 +374,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     patch chain applies cleanly and is idempotent on a scratch copy. Not yet
     proven: if `[sm50-lean]` shows little dropped per shader, the 2.4 GB is
     elsewhere (next suspect: compiled variants / Metal pipeline objects).
+  - **Build 272 green** (run 36833812490, head cc83828, main fast-forwarded):
+    storage budget verified on R2 -- "OTA: bucket holds 2 builds, 0.30 GB of
+    the 8 GB budget", link mailed (08:18 UTC). Build 273 dispatched (run
+    36835669781, head 914c951) with the lean SM50 patch. Owner keeps God of
+    War's game config unchanged for the comparison (mipClampBC=2, WINEDEBUG
+    err+all/err-virtual/fixme-all, swap-mb 6144, swap-min-kb 1024; global
+    mempool 2048); 271 is the fallback.
 
 ---
 
