@@ -326,6 +326,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     script falls back to B2 only when an R2_* secret is missing) and the B2
     bucket emptied. Run 270 still shows "in progress" (GitHub glitch); it did
     not block 271's concurrency group.
+  - **Owner confirmed (2026-10-01): the R2 mail arrived and build 271
+    installed.** Owner's order: never exceed R2's 10 GB free storage, automate
+    it. sign-and-publish-ota.sh now has a storage budget: the WHOLE bucket
+    (signing files and anything else included) stays under OTA_BUDGET_GB
+    (default 8 decimal GB, 2 GB headroom) and at most 10 builds; room for the
+    new IPA is made BEFORE the upload (oldest builds first, the one being
+    published never), and if even that is not enough (foreign files) the
+    step fails with an ::error instead of uploading. A final check prints
+    "OTA: bucket holds N builds, X GB of the 8 GB budget". Replaces the old
+    keep-ten cleanup. Tested locally with a fake `aws` (listings of 12
+    builds; with a 7 GB foreign file; tiny budget; re-publish of the same
+    version). At ~150 MB per IPA, 10 builds are ~1.5 GB, so normally only
+    the count rule removes anything. Build dispatched to verify on R2.
 
 ---
 
@@ -447,6 +460,10 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   B2's free plan allows 1 GB of downloads a day, ~6 installs).
   In use since build 271 (2026-10-01): the four `R2_*` secrets exist, the
   signing files are at the R2 bucket root, the log says "private R2 bucket".
+* **Storage budget** (owner, 2026-10-01: never past R2's 10 GB free tier):
+  the whole bucket stays under `OTA_BUDGET_GB` (default 8) and at most 10
+  builds; old builds are removed before the new upload, the log notice says
+  how much is used.
 * Signing keeps the IPA's own bundle ids (`com.willfaust.mythicemu`, extension
   `.MemoryHost`), like the owner's Feather install, so an OTA install updates
   the installed app in place. `SIGN_USE_PROFILE_BUNDLE_ID=1` would rename to

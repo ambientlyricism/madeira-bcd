@@ -150,6 +150,69 @@ B="s3://$B2_SIGN_BUCKET/ota"
 TTL=604800   # 7 days, the S3 maximum for a pre-signed URL
 presign() { aws s3 presign "$1" --expires-in "$TTL" --endpoint-url "$EP"; }
 
+# Storage budget (owner, 2026-10-01: R2's free plan stores 10 GB -- never go
+# past it). The WHOLE bucket (signing files and anything else in it included)
+# stays under OTA_BUDGET_GB, default 8 (decimal GB, 2 GB headroom), and at most
+# ten builds are kept. Room for the new IPA is made BEFORE it is uploaded, so
+# the bucket never holds more than the budget even for a moment; the oldest
+# builds go first, the one being published never. Older builds stay in the
+# Actions artifacts. Prints only version numbers and sizes.
+BUDGET_GB="${OTA_BUDGET_GB:-8}"
+KEEP_BUILDS=10
+prune() {  # $1 = bytes about to be added; makes room, sets USED/LIMIT/BUILDS
+  local plan="$W/prune.txt"
+  # (no s3() here: `aws s3 ls` rejects --only-show-errors, which silently skipped the cleanup through build 262)
+  if ! aws s3 ls "s3://$B2_SIGN_BUCKET/" --recursive --endpoint-url "$EP" > "$W/bucket.txt"; then
+    echo "::warning::OTA: could not list the bucket, storage budget not checked"
+    USED=0 LIMIT=0 BUILDS=0
+    return 0
+  fi
+  python3 - "$1" "$BUDGET_GB" "$KEEP_BUILDS" "$VERSION" "$W/bucket.txt" > "$plan" <<'PY'
+import re, sys
+reserve, budget, keep, cur = int(sys.argv[1]), int(float(sys.argv[2]) * 1e9), int(sys.argv[3]), sys.argv[4]
+objs = {}
+for line in open(sys.argv[5]):
+    p = line.rstrip("\n").split(None, 3)   # date time size key
+    if len(p) == 4 and p[2].isdigit():
+        objs[p[3]] = int(p[2])
+size = lambda v: objs.get(f"ota/Madeira-{v}.ipa", 0) + objs.get(f"ota/manifest-{v}.plist", 0) + objs.get(f"kurulum-{v}.html", 0)
+key = lambda v: [int(x) for x in re.findall(r"[0-9]+", v)]
+vers = sorted((k[len("ota/Madeira-"):-len(".ipa")] for k in objs if re.match(r"^ota/Madeira-.*[.]ipa$", k)), key=key)
+total = sum(objs.values())
+builds = len(vers)
+if reserve:
+    if cur in vers:          # re-publishing the same version replaces it
+        total -= objs[f"ota/Madeira-{cur}.ipa"]
+    else:
+        builds += 1
+    total += reserve
+for v in vers:
+    if v == cur:
+        continue
+    if builds <= keep and total <= budget:
+        break
+    print(v)
+    total -= size(v)
+    builds -= 1
+print(f"#total {total} {budget} {builds}")
+PY
+  local v
+  for v in $(grep -v '^#' "$plan" || true); do
+    s3 rm "$B/Madeira-$v.ipa" || true
+    s3 rm "$B/manifest-$v.plist" || true
+    s3 rm "s3://$B2_SIGN_BUCKET/kurulum-$v.html" || true
+    echo "OTA: removed build $v from the bucket (keep $KEEP_BUILDS builds, budget $BUDGET_GB GB)"
+  done
+  read -r _ USED LIMIT BUILDS < <(grep '^#total' "$plan") || true
+}
+
+SIGNED_BYTES="$(stat -f%z "$SIGNED" 2>/dev/null || stat -c%s "$SIGNED")"
+prune "$SIGNED_BYTES"
+if [ "${LIMIT:-0}" -gt 0 ] && [ "$USED" -gt "$LIMIT" ]; then
+  echo "::error::OTA: the bucket would hold $((USED / 1000000)) MB with this build, over the $BUDGET_GB GB budget even after removing old builds -- not uploading (look for other files in the bucket)"
+  exit 1
+fi
+
 s3 cp "$SIGNED" "$B/Madeira-$VERSION.ipa" --content-type application/octet-stream
 IPA_URL="$(presign "$B/Madeira-$VERSION.ipa")"
 IPA_URL_XML="$(python3 -c 'import sys, html; print(html.escape(sys.argv[1]))' "$IPA_URL")"
@@ -208,20 +271,11 @@ p{color:#aaa;font-size:14px}
 EOF
 s3 cp "$W/kurulum-$VERSION.html" "s3://$B2_SIGN_BUCKET/kurulum-$VERSION.html" --content-type "text/html; charset=utf-8" --cache-control no-cache
 
-# Keep the last ten builds (IPA + manifest + install page); older ones stay in the Actions artifacts.
-# (no s3() here: `aws s3 ls` rejects --only-show-errors, which silently skipped this through build 262)
-aws s3 ls "$B/" --endpoint-url "$EP" | awk '{print $4}' | python3 -c '
-import re, sys
-names = [l.strip() for l in sys.stdin if re.match(r"^Madeira-.*[.]ipa$", l.strip())]
-key = lambda n: [int(x) for x in re.findall(r"[0-9]+", n)]
-for n in sorted(names, key=key)[:-10]:
-    print(n)' |
-  while read -r old; do
-    v="${old#Madeira-}"; v="${v%.ipa}"
-    s3 rm "$B/$old" || true
-    s3 rm "$B/manifest-$v.plist" || true
-    s3 rm "s3://$B2_SIGN_BUCKET/kurulum-$v.html" || true
-  done || true
+# Final check (the manifest and page are a few KB); nothing left to remove normally.
+prune 0
+if [ "${LIMIT:-0}" -gt 0 ]; then
+  echo "::notice::OTA: bucket holds $BUILDS builds, $(python3 -c "import sys; print(f'{int(sys.argv[1])/1e9:.2f}')" "$USED") GB of the $BUDGET_GB GB budget"
+fi
 
 echo "::notice::OTA: Madeira $VERSION signed (profile expires $EXPIRES); kurulum-$VERSION.html written to the private $STORE bucket (links valid until $UNTIL)"
 
