@@ -595,6 +595,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     found in the main binary (user names redacted), and the per-file
     difference of the two .app bundles. It never re-uploads an IPA and prints
     no URLs. Needs to be on main to be dispatched.
+    Owner uploaded `Madeira-0.1.0.ipa` (136 MB) to an untagged draft
+    ("madeira first release"); inspect-ipa now also matches a draft by name
+    or by its untagged-... address. Release notes (pasted by the owner):
+    ad-hoc signed IPA carrying the app's entitlements incl. the increased
+    memory limit, sideloaded with the user's own Apple ID; iOS 17+, UI for
+    iOS 26; contents of that build: liquid metal UI (MADEIRA_GLASS_SKIN=0 /
+    MADEIRA_LIQUID_METAL=0), library ambient light / card press / icon-only
+    tab bar, fastsync default, new icon -- nothing about RDR2 or other game
+    fixes. **"The Microsoft Visual C++ runtime DLLs are not redistributed"**
+    (legal/THIRD-PARTY-NOTICES.md, tools/fetch-vcruntime.md). Ours: CI step
+    "vcruntime :: recovered 12 of 12" puts them into our IPA, and our unsigned
+    IPA artifacts are downloadable by any GitHub user (owner chose to keep
+    them, option (a)). Raised with the owner.
 
 ---
 
