@@ -1942,6 +1942,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     structures at least as safe failures), then the format flags.
   - **Build 311 dispatched** (run 36919402019, head 1bee535): 310 +
     `d3d12-tile-based` + `d3d12-caps-log = 2`.
+  - **Build 311 green** (run 36919402019, head 1bee535). main fast-forwarded
+    to 1bee535 (no workflow change). Waiting on the GTA run with
+    `d3d12-tile-based = 0` and `d3d12-caps-log = 2`.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
