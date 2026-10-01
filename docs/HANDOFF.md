@@ -1876,6 +1876,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `cbv-snapshot = 1`. Open: the fix depends on G1 / H.
     Merged as 9a9aba9 (agent commit 8200f3b); host checks after the merge:
     got-diagnostics, catalog PASS.
+  - **Build 309 dispatched** (run 36914704769, head d4ca619): 308 + the GoT
+    one-frame-shape diagnostics (fence-strict, upload-guard, desc-guard,
+    cbv-snapshot, [sync-diag]). The GoT agent was resumed on GTA V's tiled
+    resources (opt-in `d3d12-tiled-resources`, fully backed reserved
+    resources, GetResourceTiling, no-op tile mappings).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
