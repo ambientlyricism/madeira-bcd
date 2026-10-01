@@ -396,6 +396,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the same settings -- look for `[sm50-lean]` (mode line, then per-1000
     counts with KB dropped per shader and malloc in use) and compare
     `[malloc-zones]` with the 271 log (2887 MB after the loading jump).
+  - **God of War FIXED past the loading screen on build 273** (owner,
+    2026-10-01, ~09:00 UTC): playing, with **2.35 GB available memory**
+    reported in game (271 died at ~7.5 GB footprint on the same loading
+    screen with the same settings). The lean SM50 patch is the fix. Log not
+    yet received; `[sm50-lean]` numbers (KB dropped per shader, malloc in
+    use) to be recorded when it arrives. **273 is the new God of War
+    baseline/fallback** (was 251/271). Upstream candidate: this is a strong
+    one for Will (native airconv only, one file + a header field, env
+    switch) -- add it to the candidate PR list above.
 
 ---
 
