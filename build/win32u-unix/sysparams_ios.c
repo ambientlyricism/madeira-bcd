@@ -2464,6 +2464,52 @@ static RECT monitor_get_rect( struct monitor *monitor, UINT dpi, MONITOR_DPI_TYP
     return map_dpi_rect( rect, dpi_from, dpi );
 }
 
+#ifdef WINE_IOS
+/* madeira-bcd: the virtual monitor's Win32 names (docs/got-gpu-check.md).
+ *
+ * This port reports one adapter, "\\.\DISPLAY1" (NtUserEnumDisplayDevices'
+ * synthesized branch; DXGI_OUTPUT_DESC::DeviceName says the same), and one
+ * monitor under it, the virtual monitor, which has no source. Upstream's code
+ * gives a sourceless monitor the GDI name "WinDisc" -- Windows' name for a
+ * DISCONNECTED display -- and the synthesized EnumDisplayDevices answered the
+ * monitor with an EMPTY DeviceID and DeviceKey, so a program that walks
+ * adapter -> monitor -> device interface (Ghost of Tsushima does exactly
+ * that, EnumDisplayDevices(L"\\.\DISPLAY1", 0, EDD_GET_DEVICE_INTERFACE_NAME))
+ * or matches GetMonitorInfo's szDevice against the DXGI output / NVAPI
+ * display name finds no monitor on the GPU. This fork answered both until
+ * the build 222 switch to upstream's sysparams_ios.c (2026-09-16 and the
+ * DeviceID fix of the same week); GoT has stopped at "No installed graphics
+ * card ... your monitor is connected to it" on every launch since.
+ * MADEIRA_VMON_IDS=0 restores upstream's answers. */
+/* vmon-test:begin (tests/host/check-vmon-identity.py compiles this region) */
+static int ios_vmon_ids_enabled(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char *e = getenv( "MADEIRA_VMON_IDS" );
+        on = !(e && e[0] == '0');
+    }
+    return on;
+}
+
+/* The monitor's DeviceID: its device interface path with
+ * EDD_GET_DEVICE_INTERFACE_NAME, its device instance id without. */
+static void ios_vmon_device_id( DWORD flags, char *buffer, size_t size )
+{
+    if (flags & EDD_GET_DEVICE_INTERFACE_NAME)
+        snprintf( buffer, size, "\\\\?\\DISPLAY#Default_Monitor#4&madeira&0&UID0#%s", guid_devinterface_monitorA );
+    else
+        snprintf( buffer, size, "MONITOR\\Default_Monitor\\%s\\0000", guid_devclass_monitorA );
+}
+
+static void ios_vmon_device_key( char *buffer, size_t size )
+{
+    snprintf( buffer, size, "%s\\Class\\%s\\0000", control_keyA, guid_devclass_monitorA );
+}
+/* vmon-test:end */
+#endif
+
 /* display_lock must be held */
 static void monitor_get_info( struct monitor *monitor, MONITORINFO *info, UINT dpi )
 {
@@ -2476,8 +2522,23 @@ static void monitor_get_info( struct monitor *monitor, MONITORINFO *info, UINT d
     {
         char buffer[CCHDEVICENAME];
         if (monitor->source) snprintf( buffer, sizeof(buffer), "\\\\.\\DISPLAY%d", monitor->source->id + 1 );
+#ifdef WINE_IOS
+        /* madeira-bcd: the adapter EnumDisplayDevices and DXGI name, not
+         * "WinDisc" (see ios_vmon_ids_enabled). */
+        else if (monitor == &virtual_monitor && ios_vmon_ids_enabled()) strcpy( buffer, "\\\\.\\DISPLAY1" );
+#endif
         else strcpy( buffer, "WinDisc" );
         asciiz_to_unicode( ((MONITORINFOEXW *)info)->szDevice, buffer );
+#ifdef WINE_IOS
+        {
+            static int logged;
+            if (logged++ < 4)
+                dprintf( 2, "[vmon] GetMonitorInfo(EX) monitor=%p szDevice=%s rc={%d,%d,%d,%d} flags=%#x "
+                         "(MADEIRA_VMON_IDS=0 restores \"WinDisc\")\n", monitor->handle, buffer,
+                         (int)info->rcMonitor.left, (int)info->rcMonitor.top, (int)info->rcMonitor.right,
+                         (int)info->rcMonitor.bottom, (unsigned)info->dwFlags );
+        }
+#endif
     }
 }
 
@@ -3636,6 +3697,14 @@ LONG WINAPI NtUserGetDisplayConfigBufferSizes( UINT32 flags, UINT32 *num_path_in
     if (flags & QDC_VIRTUAL_MODE_AWARE)
         *num_mode_info += count;
     TRACE( "returning %u paths %u modes\n", *num_path_info, *num_mode_info );
+#ifdef WINE_IOS
+    {
+        static int logged;   /* madeira-bcd: docs/got-gpu-check.md */
+        if (logged++ < 4)
+            dprintf( 2, "[vdcfg] GetDisplayConfigBufferSizes flags=%#x -> %u paths %u modes\n",
+                     (unsigned)flags, (unsigned)*num_path_info, (unsigned)*num_mode_info );
+    }
+#endif
     return ERROR_SUCCESS;
 }
 
@@ -3906,6 +3975,14 @@ LONG WINAPI NtUserQueryDisplayConfig( UINT32 flags, UINT32 *paths_count, DISPLAY
 
 done:
     unlock_display_devices();
+#ifdef WINE_IOS
+    {
+        static int logged;   /* madeira-bcd: the virtual monitor has no path (no source) */
+        if (logged++ < 4)
+            dprintf( 2, "[vdcfg] QueryDisplayConfig flags=%#x -> %ld, %u paths %u modes\n",
+                     (unsigned)flags, (long)ret, (unsigned)path_index, (unsigned)mode_index );
+    }
+#endif
     return ret;
 }
 
@@ -4467,7 +4544,15 @@ NTSTATUS WINAPI NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
         if (!is_adapter &&
             (device->Length != (sizeof(display1W) - sizeof(WCHAR)) ||
              wcsnicmp( device->Buffer, display1W, ARRAY_SIZE(display1W) - 1 )))
+        {
+            /* madeira-bcd: a name this port never handed out (e.g. a
+             * GetMonitorInfo "WinDisc" fed back in) -- say which. */
+            static int refused;
+            if (refused++ < 4)
+                dprintf( 2, "[vmode] EnumDisplayDevices refused device=%s idx=%u flags=%#x\n",
+                         debugstr_us( device ), (unsigned)index, (unsigned)flags );
             return STATUS_UNSUCCESSFUL;
+        }
 
         if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceName) + sizeof(info->DeviceName))
             asciiz_to_unicode( info->DeviceName,
@@ -4488,30 +4573,35 @@ NTSTATUS WINAPI NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
          * PCI ids and the driver key, so engines that read the driver version
          * through EnumDisplayDevices find one (Ghost of Tsushima). */
         if (is_adapter) ios_register_virtual_gpu();
-        if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceID) + sizeof(info->DeviceID))
         {
+            /* madeira-bcd: what DeviceID / DeviceKey said, for the log line. */
+            char id[MAX_PATH] = "", key[MAX_PATH] = "";
+
             if (is_adapter && !(flags & EDD_GET_DEVICE_INTERFACE_NAME))
             {
                 UINT16 vendor, device_id;
-                char id[64];
                 ios_virtual_gpu_ids( &vendor, &device_id );
                 snprintf( id, sizeof(id), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_00000000&REV_00", vendor, device_id );
-                asciiz_to_unicode( info->DeviceID, id );
             }
-            else *info->DeviceID = 0;
-        }
-        if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceKey) + sizeof(info->DeviceKey))
-        {
+            /* madeira-bcd: the monitor's ids, which upstream left empty (an
+             * adapter has no interface name, on Windows either). */
+            else if (!is_adapter && ios_vmon_ids_enabled()) ios_vmon_device_id( flags, id, sizeof(id) );
             if (is_adapter)
-                asciiz_to_unicode( info->DeviceKey, "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\"
-                                   "{8C0C2A5B-0E7E-4B0E-9E3F-1D0A6B5C4D21}\\0000" );
-            else *info->DeviceKey = 0;
-        }
-        {
-            static int logged;
-            if (logged++ < 4)
-                dprintf(2, "[vmode] synthesized EnumDisplayDevices %s idx=%u\n",
-                        is_adapter ? "adapter" : "monitor", index);
+                snprintf( key, sizeof(key), "%s\\Video\\%s\\0000", control_keyA,
+                          "{8C0C2A5B-0E7E-4B0E-9E3F-1D0A6B5C4D21}" );
+            else if (ios_vmon_ids_enabled()) ios_vmon_device_key( key, sizeof(key) );
+
+            if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceID) + sizeof(info->DeviceID))
+                asciiz_to_unicode( info->DeviceID, id );
+            if (info->cb >= offsetof(DISPLAY_DEVICEW, DeviceKey) + sizeof(info->DeviceKey))
+                asciiz_to_unicode( info->DeviceKey, key );
+            {
+                static int logged;
+                if (logged++ < 8)
+                    dprintf(2, "[vmode] synthesized EnumDisplayDevices %s idx=%u flags=%#x cb=%u id=%s key=%s\n",
+                            is_adapter ? "adapter" : "monitor", index, (unsigned)flags,
+                            (unsigned)info->cb, id[0] ? id : "(empty)", key[0] ? key : "(empty)");
+            }
         }
         return STATUS_SUCCESS;
     }
@@ -8452,7 +8542,13 @@ ULONG_PTR WINAPI NtUserCallTwoParam( ULONG_PTR arg1, ULONG_PTR arg2, ULONG code 
 /***********************************************************************
  *           NtUserDisplayConfigGetDeviceInfo    (win32u.@)
  */
+#ifdef WINE_IOS
+/* madeira-bcd: the body is upstream's; NtUserDisplayConfigGetDeviceInfo below
+ * wraps it to log what a game asks (docs/got-gpu-check.md). */
+static NTSTATUS display_config_get_device_info( DISPLAYCONFIG_DEVICE_INFO_HEADER *packet )
+#else
 NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEADER *packet )
+#endif
 {
     NTSTATUS ret = STATUS_UNSUCCESSFUL;
     char buffer[CCHDEVICENAME];
@@ -8708,6 +8804,23 @@ NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEAD
     }
 }
 
+#ifdef WINE_IOS
+NTSTATUS WINAPI NtUserDisplayConfigGetDeviceInfo( DISPLAYCONFIG_DEVICE_INFO_HEADER *packet )
+{
+    NTSTATUS ret = display_config_get_device_info( packet );
+    static int logged;
+
+    /* type: 1 source name, 2 target name, 3 preferred mode, 4 adapter name,
+     * 9 advanced colour info ... (DISPLAYCONFIG_DEVICE_INFO_TYPE) */
+    if (logged++ < 12)
+        dprintf( 2, "[vdcfg] DisplayConfigGetDeviceInfo type=%d id=%u adapter=%08x:%08x -> %#x\n",
+                 packet ? (int)packet->type : -1, packet ? (unsigned)packet->id : 0,
+                 packet ? (unsigned)packet->adapterId.HighPart : 0, packet ? (unsigned)packet->adapterId.LowPart : 0,
+                 (unsigned)ret );
+    return ret;
+}
+#endif
+
 /******************************************************************************
  *           NtGdiDdDDIEnumAdapters2    (win32u.@)
  */
@@ -8785,6 +8898,14 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
     desc->NumAdapters = idx;
 
 done:
+#ifdef WINE_IOS
+    {
+        static int logged;   /* madeira-bcd: the virtual-monitor regime lists no GPU here */
+        if (logged++ < 4)
+            dprintf( 2, "[vkmt] D3DKMTEnumAdapters2 -> %#x, %u adapters (registered GPU is not in the list)\n",
+                     (unsigned)status, (unsigned)count );
+    }
+#endif
     while (count) gpu_release( current_gpus[--count] );
     return status;
 }
