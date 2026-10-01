@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build DXMT's nvapi64.dll (research/dxmt/src/nvapi) for arm64ec and ship it.
+# Build DXMT's nvapi64.dll (dxmt/src/nvapi) for arm64ec and ship it.
 #
 # Upstream's DXMT build leaves it out (meson install_tag 'nvext'), so a game
 # that asks NVAPI for the driver finds nothing. With DXMT_ENABLE_NVEXT=1 (the
@@ -14,13 +14,13 @@
 set -eu
 R="$(pwd)"
 MINGW="${MINGW:-$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin}"
-D="$R/research/dxmt"
+D="$R/dxmt"
 U="$D/src/util"
 SHIP="$R/app/Madeira/arm64ec-windows"
 OUT="$R/build/dxmt-nvapi"
 mkdir -p "$OUT"
 
-[ -f "$D/external/nvapi/nvapi.h" ] || { echo "::error::research/dxmt/external/nvapi is not checked out"; exit 1; }
+[ -f "$D/external/nvapi/nvapi.h" ] || { echo "::error::dxmt/external/nvapi is not checked out"; exit 1; }
 
 for dll in winemetal dxgi; do
     { echo "LIBRARY $dll.dll"; echo "EXPORTS"
@@ -48,4 +48,4 @@ python3 "$R/tools/patch-dxmt-nvapi.py" "$OUT/nvapi.cpp"
 "$MINGW/llvm-readobj" --coff-exports "$OUT/nvapi64.dll" | grep -q "Name: nvapi_QueryInterface" \
     || { echo "::error::nvapi64.dll lacks nvapi_QueryInterface"; exit 1; }
 cp "$OUT/nvapi64.dll" "$SHIP/nvapi64.dll"
-echo "::notice::nvapi64.dll built from research/dxmt/src/nvapi ($(wc -c < "$OUT/nvapi64.dll" | tr -d ' ') bytes) and shipped"
+echo "::notice::nvapi64.dll built from dxmt/src/nvapi ($(wc -c < "$OUT/nvapi64.dll" | tr -d ' ') bytes) and shipped"

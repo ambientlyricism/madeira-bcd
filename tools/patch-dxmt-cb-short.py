@@ -27,7 +27,7 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path("research/dxmt/src")
+ROOT = pathlib.Path("dxmt/src")
 MARKER = "madeira-bcd: short constant buffers"
 
 

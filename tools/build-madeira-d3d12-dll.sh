@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build madeira_d3d12.dll (arm64ec) from research/madeira-d3d12 and ship it in
+# Build madeira_d3d12.dll (arm64ec) from madeira-d3d12 and ship it in
 # place of upstream's tracked binary, as both madeira_d3d12.dll and d3d12.dll;
 # then the x64 D3D12 cube test the home screen starts.
 #
-# build/madeira-d3d12/build-pe.sh links against research/dxmt/build-arm64ec's
+# build/madeira-d3d12/build-pe.sh links against dxmt/build-arm64ec's
 # libwinemetal.a, which only a full meson build of DXMT's PE half produces. The
 # only thing taken from it is winemetal.dll's import table, so derive the import
 # library from the winemetal.dll that ships next to it instead: same exports,
@@ -14,7 +14,7 @@
 set -eu
 R="$(pwd)"
 MINGW="$R/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
-SRC="$R/research/madeira-d3d12/src/pe"
+SRC="$R/madeira-d3d12/src/pe"
 OUT="$R/build/madeira-d3d12/out-pe"
 SHIP="$R/app/Madeira/arm64ec-windows"
 mkdir -p "$OUT"
@@ -40,8 +40,8 @@ python3 "$SRC/gen_vtables.py" \
 # staging steps, so it sees exactly what this build ships.
 scid_inputs() {
     local f x
-    for f in research/madeira-d3d12/src/unix research/madeira-d3d12/src/madeira_ir_abi.h \
-             build/dxmt-ios/build.sh research/dxmt/src/airconv research/dxmt/libs \
+    for f in madeira-d3d12/src/unix madeira-d3d12/src/madeira_ir_abi.h \
+             build/dxmt-ios/build.sh dxmt/src/airconv dxmt/libs \
              toolchains/llvm-ios-build/include/llvm/Config/llvm-config.h \
              app/Madeira/d3d12/libmetalirconverter.dylib ${MADEIRA_MSC_INCLUDE:+"$MADEIRA_MSC_INCLUDE"}; do
         [ -e "$f" ] || { echo "absent ${f#"$R"/}"; continue; }
@@ -78,7 +78,7 @@ fi
 echo "=== madeira_d3d12.dll (arm64ec) ==="
 "$MINGW/arm64ec-w64-mingw32-clang" -shared -O2 -Wall -DMAD_SC_CONVERTER_ID="\"$SCID\"" $KDEF ${PACKDEF[@]+"${PACKDEF[@]}"} \
     -o "$OUT/madeira_d3d12.dll" "$SRC/madeira_d3d12.c" "$SRC/d3d12.def" \
-    -I"$SRC" -I"$OUT" -I"$R/research/madeira-d3d12/src" -I"$R/research/dxmt/src/winemetal" \
+    -I"$SRC" -I"$OUT" -I"$R/madeira-d3d12/src" -I"$R/dxmt/src/winemetal" \
     -L"$OUT" -lwinemetal -luuid -lole32 2> "$OUT/madeira_d3d12.err" \
     || { grep -m 20 "error:" "$OUT/madeira_d3d12.err"; exit 1; }
 echo "  built $(wc -c < "$OUT/madeira_d3d12.dll" | tr -d ' ') bytes (tracked: $(wc -c < "$SHIP/madeira_d3d12.dll" | tr -d ' '))"
@@ -95,10 +95,10 @@ echo "  all $(wc -l < "$OUT/tracked.exports" | tr -d ' ') tracked exports presen
 
 cp "$OUT/madeira_d3d12.dll" "$SHIP/madeira_d3d12.dll"
 cp "$OUT/madeira_d3d12.dll" "$SHIP/d3d12.dll"
-echo "::notice::madeira_d3d12.dll and d3d12.dll rebuilt from research/madeira-d3d12 and shipped"
+echo "::notice::madeira_d3d12.dll and d3d12.dll rebuilt from madeira-d3d12 and shipped"
 
 echo "=== d3d12-cube-x64.exe (x86_64 guest, visible) ==="
-TESTS="$R/research/madeira-d3d12/tests/windows"
+TESTS="$R/madeira-d3d12/tests/windows"
 if "$MINGW/x86_64-w64-mingw32-clang" -O2 -Wall -mwindows \
        -o "$OUT/d3d12-cube-x64.exe" "$TESTS/cube_window.c" -I"$TESTS" -luuid -lole32 2> "$OUT/cube.err"; then
     cp "$OUT/d3d12-cube-x64.exe" "$SHIP/d3d12-cube-x64.exe"

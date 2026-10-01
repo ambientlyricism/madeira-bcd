@@ -30,8 +30,8 @@ Idempotent; fails by name if an anchor moves. Run from the repository root.
 import pathlib
 import sys
 
-HDR = pathlib.Path("research/dxmt/src/winemetal/winemetal.h")
-UNIX = pathlib.Path("research/dxmt/src/winemetal/unix/winemetal_unix.c")
+HDR = pathlib.Path("dxmt/src/winemetal/winemetal.h")
+UNIX = pathlib.Path("dxmt/src/winemetal/unix/winemetal_unix.c")
 MARKER = "madeira-bcd: DXIL tessellation"
 
 HDR_OLD = """  uint32_t gs_vertex_size_bytes;

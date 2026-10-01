@@ -24,7 +24,7 @@ on:
   push:
     branches: [claude/madeira-bcd-repo-ymg5cb]
     paths:
-      - research/madeira-d3d12/src/pe/**
+      - madeira-d3d12/src/pe/**
       - tools/build-madeira-d3d12-dll.sh
       - .github/workflows/build-pack.yml
 
@@ -47,8 +47,8 @@ jobs:
       - name: Fetch the DXMT submodule
         shell: bash
         run: |
-          git submodule update --init --depth 1 research/dxmt \
-            || git submodule update --init research/dxmt
+          git submodule update --init --depth 1 dxmt \
+            || git submodule update --init dxmt
 
       - name: Select newest Xcode
         shell: bash

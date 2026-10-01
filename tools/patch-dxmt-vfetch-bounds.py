@@ -25,7 +25,7 @@ Idempotent; fails by name if an anchor moves. Run from the repository root.
 import pathlib
 import sys
 
-ROOT = pathlib.Path("research/dxmt/src")
+ROOT = pathlib.Path("dxmt/src")
 MARKER = "madeira-bcd: vertex fetch bounds"
 
 

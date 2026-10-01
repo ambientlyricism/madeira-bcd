@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add 30 and 40 FPS present-pacing modes to DXMT's winemetal unix side.
 
-research/dxmt/src/winemetal/unix/winemetal_unix.c paces every present
+dxmt/src/winemetal/unix/winemetal_unix.c paces every present
 (D3D11 through DXMT, and D3D12, whose runtime presents through the same
 winemetal call) by g_madeira_vsync_mode: 1 = afterMinimumDuration(1/60),
 0 = display maximum, 2 = raw. This adds
@@ -16,7 +16,7 @@ exactly as mode 1 does for 60. Idempotent; fails by name if the anchor moves
 import pathlib
 import sys
 
-PATH = pathlib.Path("research/dxmt/src/winemetal/unix/winemetal_unix.c")
+PATH = pathlib.Path("dxmt/src/winemetal/unix/winemetal_unix.c")
 MARKER = "madeira-bcd: 30/40 FPS pacing"
 
 ANCHOR = """  } else if (mode == 2) {

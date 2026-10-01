@@ -10021,7 +10021,7 @@ static WCHAR g_sc_root[MAX_PATH], g_sc_build[64], g_sc_dir[MAX_PATH];
 static volatile LONG g_sc_hit, g_sc_miss, g_sc_store;
 /* bc1: converted with IRCompatibilityFlagBoundsCheck. madeira-bcd: the CI
  * build passes MAD_SC_CONVERTER_ID, a hash of everything that shapes a
- * conversion (the service in research/madeira-d3d12/src/unix and the IR ABI,
+ * conversion (the service in madeira-d3d12/src/unix and the IR ABI,
  * its build script, DXMT's DXBC compiler and parser as patched, LLVM's
  * configuration, Apple's converter library and headers -- see
  * tools/build-madeira-d3d12-dll.sh), so a new Madeira build keeps the device's

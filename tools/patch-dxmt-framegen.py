@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Experimental frame generation in DXMT's winemetal present path.
 
-research/dxmt/src/winemetal/unix/winemetal_unix.c presents every frame
+dxmt/src/winemetal/unix/winemetal_unix.c presents every frame
 (D3D11 through DXMT, and D3D12, whose runtime presents through the same
 winemetal call) in _MTLCommandBuffer_presentDrawable. With MADEIRA_FRAMEGEN=1
 (a game's config: env.MADEIRA_FRAMEGEN = 1) that call now:
@@ -29,7 +29,7 @@ from the repository root.
 import pathlib
 import sys
 
-PATH = pathlib.Path("research/dxmt/src/winemetal/unix/winemetal_unix.c")
+PATH = pathlib.Path("dxmt/src/winemetal/unix/winemetal_unix.c")
 MARKER = "madeira-bcd: frame generation"
 
 ANCHOR_MODULE = "static NTSTATUS\n_MTLCommandBuffer_presentDrawable(void *obj) {"

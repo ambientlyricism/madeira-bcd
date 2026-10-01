@@ -61,7 +61,7 @@ can reach the phone without a new IPA.
   `arm64ec-windows/` (also accepted: `aarch64-windows/`, `i386-windows/`).
   Today it carries `madeira_d3d12.dll` and the same file as `d3d12.dll`.
 - **Build.** `build-pack.yml` runs on every push to the dev branch that touches
-  `research/madeira-d3d12/src/pe` (or by hand): DXMT submodule only, the four
+  `madeira-d3d12/src/pe` (or by hand): DXMT submodule only, the four
   DXMT source patches, llvm-mingw, `tools/build-madeira-d3d12-dll.sh`. The
   artifact is the pack itself. `tools/pack-index.py` publishes it on the rolling
   public prerelease `packs` with `index.json` (newest 25 packs; plus the last
@@ -101,7 +101,7 @@ line there is appended to DXMT_CONFIG. The game sheet has pickers for
 ## WoW64 and D3D9 (upstream since build 222)
 
 Until build 221 this fork carried 125hz's PR #28 (WoW64 + DXMT D3D9) with the
-`wine`/`research/dxmt` submodules on `125hz/wine pr/wow64-core` and
+`wine`/`dxmt` submodules on `125hz/wine pr/wow64-core` and
 `125hz/dxmt pr/d3d9`. Build 222 switched to upstream, which now has its own
 WoW64 and D3D9 and pins wine `daa17d0`, DXMT `a5e0cd3`, FEX `2838f3b`. Lost
 until 125hz re-upstreams them: fastsync, the fs caches and the networking
@@ -172,7 +172,7 @@ the update pack, the game's options and starts the per-game session log.
   syncs the PE side into the running copy and would wipe the DLL's state. A local build reproduces upstream's
   `msvcr120.dll` section for section. About +11 MB compressed.
 - `nvapi64.dll` (`tools/build-dxmt-nvapi.sh`): DXMT's own NVAPI
-  (`research/dxmt/src/nvapi`), which its build leaves out, compiled for
+  (`dxmt/src/nvapi`), which its build leaves out, compiled for
   arm64ec against import libraries of the shipped `winemetal.dll`/`dxgi.dll`.
   The library's per-game "Report an NVIDIA GPU" switch sets
   `DXMT_ENABLE_NVEXT=1`: DXGI then reports vendor 0x10DE and NVAPI answers
@@ -233,7 +233,7 @@ the update pack, the game's options and starts the per-game session log.
   turns it off.
   The identity is `MAD_SC_CONVERTER_ID`, which `tools/build-madeira-d3d12-dll.sh`
   computes from everything that shapes a conversion (the service in
-  `research/madeira-d3d12/src/unix` and the IR ABI, `build/dxmt-ios/build.sh`,
+  `madeira-d3d12/src/unix` and the IR ABI, `build/dxmt-ios/build.sh`,
   DXMT's airconv and DXBC parser as patched, LLVM's `llvm-config.h`, the iOS
   `libmetalirconverter.dylib` and the MSC headers), plus the runtime switches
   that change the output (`vsps-fill`, `MADEIRA_IR_NO_BOUNDS_CHECK`,
@@ -374,7 +374,7 @@ the update pack, the game's options and starts the per-game session log.
   in the background at the first compute pipeline (`removed N old
   compute-shader dumps`). Faulting shaders are still kept by hash
   (`fault-shaders.txt`, `fault_<hash>.dxil`).
-- CAP contact sheets (`research/madeira-d3d12/src/pe/madeira_d3d12.c`,
+- CAP contact sheets (`madeira-d3d12/src/pe/madeira_d3d12.c`,
   `mad_sheet_*`, `mad_capture_drain`, `mad_capture_dispatch_outputs`): the
   overlay's CAP button now turns every render-pass attachment of the captured
   frame AND the texture UAVs each compute dispatch can write (bounded table
@@ -496,7 +496,7 @@ the update pack, the game's options and starts the per-game session log.
   Downloads, Music, Pictures, Videos, Saved Games and AppData\{Local,
   LocalLow,Roaming} are made real directories for both names at launch.
 
-- `device_Release` (`research/madeira-d3d12/src/pe/madeira_d3d12.c`) released
+- `device_Release` (`madeira-d3d12/src/pe/madeira_d3d12.c`) released
   the device's GPU-timeline `MTLSharedEvent` before the heap reclaim that
   reads it; a device created and dropped at once (Ghost of Tsushima's adapter
   probe) crashed in `objc_msgSend` and the game reported "No installed

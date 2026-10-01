@@ -21,7 +21,7 @@ changed). Run from the repository root.
 import pathlib
 import sys
 
-PATH = pathlib.Path("research/dxmt/src/winemetal/unix/winemetal_unix.c")
+PATH = pathlib.Path("dxmt/src/winemetal/unix/winemetal_unix.c")
 MARKER = "madeira-bcd: GPU fault attribution"
 
 ANCHOR = """  case 2: {

@@ -28,7 +28,7 @@ repository root.
 import pathlib
 import sys
 
-ROOT = pathlib.Path("research/dxmt/src")
+ROOT = pathlib.Path("dxmt/src")
 MARKER = "madeira-bcd: ld bounds"
 
 

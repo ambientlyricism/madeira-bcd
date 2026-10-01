@@ -770,11 +770,11 @@ jobs:
 
       # build/dxmt-ios/shader-headers/ is gitignored and nothing generated it,
       # so airconv_context.cpp could not find air_msad.h / air_samplepos.h.
-      # Mirrors the metalir + hexdump generators in research/dxmt/meson.build.
+      # Mirrors the metalir + hexdump generators in dxmt/meson.build.
       - name: Generate DXMT shader headers
         shell: bash
         run: |
-          SHADERS="$GITHUB_WORKSPACE/research/dxmt/src/airconv/shaders"
+          SHADERS="$GITHUB_WORKSPACE/dxmt/src/airconv/shaders"
           OUT="$GITHUB_WORKSPACE/build/dxmt-ios/shader-headers"
           mkdir -p "$OUT"
           cd "$OUT"
@@ -982,7 +982,7 @@ jobs:
       - name: i386 farm revision
         id: i386rev
         shell: bash
-        run: echo "key=i386-farm-$(git -C wine rev-parse HEAD)-$(git -C research/dxmt rev-parse HEAD)-${{ hashFiles('build/wine-i386/build.sh', 'tools/patch-dxmt-*.py') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=i386-farm-$(git -C wine rev-parse HEAD)-$(git -C dxmt rev-parse HEAD)-${{ hashFiles('build/wine-i386/build.sh', 'tools/patch-dxmt-*.py') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore i386 farm
         id: i386cache
@@ -1035,7 +1035,7 @@ jobs:
           echo "::notice::libdxmt_combined.a $(wc -c < libdxmt_combined.a | tr -d ' ') bytes"
 
       # The native D3D12 runtime is ours to fix now, so build it from
-      # research/madeira-d3d12 instead of shipping upstream's binary as is.
+      # madeira-d3d12 instead of shipping upstream's binary as is.
       # madeira-bcd: a failed build FAILS the run. It used to keep the tracked
       # DLL -- upstream's old binary without any of this fork's D3D12 fixes --
       # and the run still went green, so a broken build could reach the phone.
@@ -1044,7 +1044,7 @@ jobs:
           MAD_PACK_ID: ipa ${{ github.run_number }}
         run: bash tools/build-madeira-d3d12-dll.sh
 
-      # DXMT's NVAPI (research/dxmt/src/nvapi), which its DXMT build leaves
+      # DXMT's NVAPI (dxmt/src/nvapi), which its DXMT build leaves
       # out; answers games that want a known vendor's driver version once the
       # library's "Report an NVIDIA GPU" switch sets DXMT_ENABLE_NVEXT=1.
       - name: Build DXMT nvapi64.dll

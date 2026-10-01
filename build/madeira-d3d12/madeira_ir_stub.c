@@ -12,7 +12,7 @@
  * and build/dxmt-ios/build.sh compiles the real service instead. */
 #include <stdint.h>
 #include <stdio.h>
-#include "../../research/madeira-d3d12/src/madeira_ir_abi.h"
+#include "../../madeira-d3d12/src/madeira_ir_abi.h"
 
 int madeira_ir_convert(void *args)
 {
@@ -31,7 +31,7 @@ int madeira_ir_convert(void *args)
     return 0;   /* the call itself succeeded; ret_status carries the outcome */
 }
 
-/* The in-app converter canary (research/madeira-d3d12/tests/native/msc_canary.mm)
+/* The in-app converter canary (madeira-d3d12/tests/native/msc_canary.mm)
  * needs the same headers. ContentView's canary button links against it, so
  * answer here: one failed check, and say why. */
 int madeira_d3d12_canary_run_log(const char *fixture_dir, const char *dylib_path,

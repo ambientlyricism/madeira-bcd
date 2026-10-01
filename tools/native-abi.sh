@@ -15,7 +15,7 @@
 # it in madeira-pack.json; the app installs a pack only when the two match.
 #
 # Deliberately left OUT, because a pack may replace them: the D3D12 runtime's
-# PE source (research/madeira-d3d12/src/pe) and its build script, and the PE
+# PE source (madeira-d3d12/src/pe) and its build script, and the PE
 # files packs ship (madeira_d3d12.dll, d3d12.dll, xtajit64.dll, the D3D12 cube).
 # Also out: docs and the workflows. A workflow change that alters the native
 # build must bump EPOCH below.
@@ -29,9 +29,9 @@ EPOCH=1
 entries() {
     echo "epoch $EPOCH"
     git ls-files -s -- \
-        app build research/dxmt research/madeira-d3d12 \
+        app build dxmt madeira-d3d12 \
         'tools/patch-*.py' wine FEX \
-        ':(exclude)research/madeira-d3d12/src/pe' \
+        ':(exclude)madeira-d3d12/src/pe' \
         ':(exclude,glob)app/Madeira/*-windows/madeira_d3d12.dll' \
         ':(exclude,glob)app/Madeira/*-windows/d3d12.dll' \
         ':(exclude,glob)app/Madeira/*-windows/xtajit64.dll' \
