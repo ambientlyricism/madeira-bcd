@@ -1313,6 +1313,56 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     1.51 GB; main fast-forwarded to 873fd2c (no workflow change, no push
     run). **Build 295** dispatched from cfec843 (run 36890462072): 294 + the
     GTA V child-ntdll fix (7212ed5).
+  - **GoT "No installed graphics card": the real regression found (agent),
+    merged as f5baf40; details docs/got-gpu-check.md.** The 09-26 19:58 log
+    shows GoT's order: NVAPI enumerates the GPU -> DXGI GetDesc ->
+    EnumDisplayDevices(NULL, 0) -> NvAPI_GetAssociatedNvidiaDisplayHandle /
+    GetAssociatedDisplayOutputId -> EnumDisplayDevices("\\.\DISPLAY1", 0,
+    EDD_GET_DEVICE_INTERFACE_NAME) -> probe device -> "[NxApp] Failed to get
+    GPU Driver Info" -> dialog: it builds an adapter -> NV display ->
+    output -> monitor-interface table. The same calls happen in good and bad
+    runs; the ANSWERS differ: 17088ab (09-29, "upstream's sysparams_ios.c
+    with our GPU registration on top") dropped the fork's virtual-monitor
+    identity -- GetMonitorInfo now names the monitor "WinDisc" (Windows' name
+    for a disconnected display) instead of "\\.\DISPLAY1", and the
+    synthesized monitor EnumDisplayDevices returns an empty DeviceID /
+    DeviceKey (was `\\?\DISPLAY#Default_Monitor#...` and the class key);
+    with "WinDisc", DXMT's NvAPI_DISP_GetDisplayIdByDisplayName fails for
+    "\\.\DISPLAY1" too. So today's three earlier theories (stale adapter,
+    NVAPI strings, DXGI monitor identity) were not it; they stay (correct on
+    their own; the NUL fix probably explains the one intermittent failure on
+    09-28 20:41). Ruled out by source diffs: dxgi (old pin 462a77e vs
+    a5e0cd3), nvapi.cpp, madeira-d3d12 pack 5 vs HEAD for the probe,
+    winemetal, wine d3dkmt and the PE DLLs. Changes:
+    * build/win32u-unix/sysparams_ios.c: GetMonitorInfo says
+      "\\.\DISPLAY1" again; the synthesized monitor EnumDisplayDevices gets
+      the pre-222 DeviceID (interface path with
+      EDD_GET_DEVICE_INTERFACE_NAME, `MONITOR\Default_Monitor\{4D36E96E-...}
+      \0000` without) and DeviceKey; adapter answers unchanged;
+      `MADEIRA_VMON_IDS=0` restores upstream's. Logs `[vmon]`, `[vmode] ...
+      flags= cb= id= key=`, `[vdcfg]`, `[vkmt]`.
+    * tools/patch-wine-guest-log.py (CI step "Patch wine with the game
+      text-log mirror", before Build ntdll-unix; patches
+      wine/dlls/ntdll/unix/file.c in place, no cache-key change): the
+      `[guest-log]` mirror of a game's own *.log lines is back (125hz's old
+      NtWriteFile mirror lived in their wine, not in this repo). Default:
+      error / gpu / driver / adapter / display / nvapi lines, 64 per
+      session; MADEIRA_GUEST_LOG=all (400) or =0; MADEIRA_GUEST_LOG_LIMIT.
+    * tools/patch-nvapi-trace.py (run by build-dxmt-nvapi.sh): the
+      `[nvapi] query` trace now goes through DXMT's Logger (the fprintf
+      never reached a log), 30 adapter / display / driver entry points log
+      `[nvapi] NvAPI_X -> status`; GetDisplayIdByDisplayName returns the
+      primary display for the primary adapter's name.
+    Host checks check-vmon-identity / check-guest-log / check-nvapi-trace
+    PASS (the agent also built nvapi64.dll with llvm-mingw as CI does);
+    after the merge: catalog regenerated (PASS), nvapi chain
+    (dxmt-nvapi -> nvapi-strings -> nvapi-trace) and the guest-log patch
+    applied on copies and re-applied idempotently. God of War risk low: no
+    EnumDisplayDevices in its logs, NVIDIA reporting off (no NVAPI), and
+    "\\.\DISPLAY1" is what every build up to 221 answered;
+    env.MADEIRA_VMON_IDS = 0 / env.MADEIRA_GUEST_LOG = 0 undo it. Still
+    open, identical in the good run: NVAPI says RTX 4090 / 999.99 / PCI id
+    0x000010DE vs DXGI + registry RTX 3060 10DE:2544 / 35.0.15.6094.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
