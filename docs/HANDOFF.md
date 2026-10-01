@@ -1522,6 +1522,37 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     dxgi.dll from source in CI, check that the committed binary matches the
     submodule source, and keep upstream's binary selectable by a switch so
     God of War / Ghost of Tsushima cannot regress. Open until it reports.
+  - **GoW below-1080p darkening agent finished; merged (c47dbc5, merge
+    2da3dd3). Root cause NOT proven yet; nothing changes by default.**
+    Evidence (docs/gow-darkening.md): in the still title menu the game's
+    exposure readback (`[rb-buf] x e z w`) depends on the internal
+    resolution -- 1920x1080 x 4.37 / z 4460, 1280x720 2.26 / 3120, 754x424
+    (FSR) -0.84 / 1095 -- so below 1080p the luminance chain reads wrong,
+    mostly black, input; a sampler with border colour (32,32,32,32) that
+    Metal turns into 1.0 is created just before the luminance targets.
+    Ranked candidates: edge / stale-binding reads (border colour, missing
+    D3D11 hazard rules -- both PE d3d11.dll side --, out-of-range typed
+    buffer / atomic / resinfo), warp-synchronous groupshared reductions,
+    DontCare tile memory, fast math, sample_l bias, NaN/Inf. **Added, all
+    OFF by default** (converted shaders byte-identical, cache salt
+    unchanged without a switch): `tools/patch-airconv-gow-experiments.py`
+    (`MADEIRA_TGSM_SYNC`, `MADEIRA_SAMPLE_L_BIAS`, `MADEIRA_PRECISE_MATH`,
+    `MADEIRA_BOUNDS_EXTRA`, `MADEIRA_SHADER_DUMP`, each with its own salt),
+    `tools/patch-winemetal-gpu-trace.py` (`MADEIRA_GPU_TRACE=T[,S[,N]]`,
+    `MADEIRA_BORDER=black`, `MADEIRA_RP_LOAD=1`; `[gpu-trace]`, `[gpu-val]`,
+    `[rb-src]`, at most 8 `[border]` lines by default), two CI steps right
+    after "Patch winemetal GPU timeline for [frame]",
+    `tests/host/check-dxmt-patch-chain.py` (all 21 workflow patch scripts in
+    order, twice: PASS here after the merge), `tools/host-airconv.sh`.
+    Catalog check PASS (the switches live in patched submodule code, not in
+    the catalog). First real compile of the winemetal hooks is in CI.
+    **Owner's device plan:** 7 runs, docs/gow-darkening.md section 6 (720p
+    with `env.MADEIRA_GPU_TRACE = 45,2,4` + 1080p reference, then
+    `MADEIRA_BORDER = black`, `MADEIRA_RP_LOAD = 1`, `MADEIRA_TGSM_SYNC = 1`
+    + `MADEIRA_BOUNDS_EXTRA = 1`, `MADEIRA_PRECISE_MATH = 1`, FSR with
+    `MADEIRA_SAMPLE_L_BIAS = 1`); success = menu `[rb-buf]` ~4.37 / 4460 at
+    720p. A PE-side cause (border colour, hazards) would need d3d11.dll
+    built from source -- the same question as GTA's dxgi.dll (agent running).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
