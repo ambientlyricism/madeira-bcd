@@ -1298,6 +1298,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     crs-handler's emulator, so GoW's x64 calls into them take the ~33 us
     exec-fault redirect -- a possible GoW performance item; the new lines
     measure it). FEX never retires a dead process's JIT ranges.
+  - **Owner (2026-10-01 ~19:15 UTC+3): God of War is dark overall now,
+    much darker in some scenes, "never looks normal".** No log yet; build /
+    resolution not stated. Native 1080p looked right on build 279 (log
+    15:06:44); the texture-load bounds (282) and typed-UAV-store bounds
+    (284) are default-on since then and were only ever judged at 720p.
+    Asked for the A/B `env.MADEIRA_LD_BOUNDS = 0` (turns both off; first
+    launch re-converts shaders), screenshots of the same spot with and
+    without it, the session log (292 has the [rb-buf] exposure values), and
+    whether the in-game brightness / HDR setting changed. If it is the
+    bounds checks, make them default-off.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
