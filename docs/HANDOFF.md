@@ -279,6 +279,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     bucket, an R2 API token with Object Read & Write on that bucket only,
     upload the two signing files, add the four secrets. After the first R2
     build mails a working link, B2 secrets can be removed.
+  - **Upstream sync 2026-10-01 (12h routine):** merged 40d5e74 "Library:
+    ambient light around grid cards, a card press and a new not-installed
+    look" (AmbientGlow/AmbientMovie behind grid cards, LibraryCardButtonStyle
+    press, fainter not-installed cards; env.MADEIRA_LIBRARY_AMBIENT = 0 turns
+    it off). One conflict in Library.swift: upstream's
+    `.libraryCardButtonStyle(grid: !list)` kept together with our long-press
+    context menu (Play / Game settings). ConfigCatalog regenerated (check
+    PASS). No submodule changes. Build dispatched (it also carries the
+    prepared, still inactive R2 support).
 
 ---
 
