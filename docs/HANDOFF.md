@@ -1120,6 +1120,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Expect `[WineProc] madeira-bcd: the main process exited but 1 child
     process(es) ... (playgtav.exe)` and later only gta5_enhanced.exe in the
     "still running" lines.
+    API: the owner thought GTA V is D3D11. That is the Legacy edition
+    (GTA5.exe, DX10/10.1/11). This install is the Enhanced edition
+    (GTA5_Enhanced.exe, internal name game_win64_gdk_master_llvm.exe), which
+    is D3D12-only and loads DirectStorage (DSTORAGE.dll, the game's own copy)
+    at start-up; it got no further than that in these logs, so no d3d12.dll
+    load is visible yet. It will run on madeira-d3d12 (the GoT path), not
+    DXMT's D3D11.
   - **DualSense / HID pad, first device test: WORKS in God of War (owner,
     build 286, screenshots 2026-10-01 ~17:40 UTC+3).** Session menu >
     Controller > Controller API = "DirectInput / HID", status "Live in this
