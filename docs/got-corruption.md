@@ -32,6 +32,10 @@
 * Test planı aşağıda (bölüm 6): her blok ayrı bir açılış, satırları oyunun
   dosyasına yaz, oyna, ateşe bak, logu (ve istenen yerde ekran kaydını / CAP
   klasörünü) gönder, sonra satırı sil.
+* **Güncelleme (aynı gece, build 303):** `dxil-tess = 0` kareleri kaldırdı.
+  Kalan "havada şekiller" (tek karelik, yanlış yerde kaya / sürtme izleri)
+  bölüm 8'de: kare kare inceleme, nedenler, yeni tanı anahtarları ve yeni test
+  planı (G1 ve G2 yeni build beklemeden).
 
 ## 1. Evidence used
 
@@ -357,3 +361,375 @@ pipeline'ları yeniden çevrilir. Ekran: kareler gidip duman yumuşadıysa sebep
   `skip-ps-cycle` run with a screen recording, `dxil-dump` + `capture-ps` + CAP,
   `dxil-tess-patch-topology = 1`. Open: the actual fix depends on which block
   removes the squares.
+
+## 8. One-frame shapes after `dxil-tess = 0` (build 303, 2026-10-01 21:30)
+
+### 8.0 Özet (sahibi için, Türkçe)
+
+* **Kareler gitti, `dxil-tess = 0` bunu kanıtladı:** duman kareleri DXIL
+  tessellation ile çizilen aydınlatılmış duman geçişiydi (bölüm 4'ün 1.
+  sırası). Bu satır şimdilik oyun dosyasında kalsın.
+* **"Havada oluşan anlamsız şekiller" kare kare:** 21:33 kaydının oyun
+  kısmında (0-5.2 s) **en az 12 bozuk kare** var, yani kabaca her 6-8 oyun
+  karesinden biri. Bozukluk **tek kare** sürüyor; bir önceki ve bir sonraki
+  kare temiz (bazen iki ardışık kare, iki farklı bozuklukla). Üç tür:
+  1. **Koyu bir kaya** yanlış yerde: köprünün önünde arabayı örten dev kaya
+     (4.67 s, fenerin ışığı üstünde parlıyor), arabanın önünde (2.80 s, 4.92
+     s), yerde ölü düşmanın yanında (3.93 s), hatta **gökyüzünde uçan** küçük
+     bir kaya (1.37 s).
+  2. **Sürtme / iz**: köprü tahtaları ya da bir ağaç tepesi, hareket
+     bulanıklığıyla çekilmiş gibi sarı-turuncu dikey/çapraz izler (1.32, 1.97,
+     2.78, 3.53, 3.98, 4.87 s).
+  3. Bir kare boyunca **mavi ay ışığı**: soldaki kaya yüzü ve karakterin
+     zırhı mavi aydınlanıyor (0.92 s).
+  Kamera neredeyse sabitken de oluyor; HUD'daki kare süresi grafiğindeki
+  sıçramalarla eşleşmiyor.
+* **Ne anlama geliyor:** objenin kendisi doğru (kaya kaya gibi görünüyor), ama
+  o kare için **başka bir objenin ya da başka bir karenin konum verisini**
+  okuyor: kaya başka bir objenin yerinde/boyutunda çiziliyor; hareket
+  bulanıklığı bu yanlış konum ile önceki karenin konumu arasındaki farkı dev
+  bir hız sanıp sürtüyor. Bu veriyi oyun her kare CPU'dan **UPLOAD
+  belleğine** yazıyor (GoT'un 8-32 MB'lık 7 büyük upload tamponu var).
+* **Madeira tarafında olası nedenler (sırayla):**
+  1. **GPU bayat sayfa okuyor:** bu büyük upload tamponları Madeira'nın kendi
+     belleğinde (ml1154, `upload-swap`) ve senin `swap-mb = 3072` ayarınla
+     **dosya destekli takas belleğinde** duruyor; dosya neredeyse dolu (3069 /
+     3072 MB), bellek baskısı yüksek (6.5 GB, 1.3 GB sıkıştırılmış). GPU'nun
+     gördüğü sayfa CPU'nun son yazdığı olmayabilir.
+  2. **Oyun veriyi GPU işini bitirmeden yeniden yazıyor** (çit erken "bitti"
+     görünüyor). Kodda gerçek bir yarış penceresi var: Queue::Wait, başka bir
+     iş parçacığının Signal'i "istendi" ama henüz Metal'e gönderilmedi iken
+     geçebiliyor. Ayrıca "GPU seri N'ye ulaştı = N'ye kadar her şey bitti"
+     varsayımı çit zincirine dayanıyor, kendiliğinden garanti değil.
+  3. Bizim GPU içi sıralamamız (dolaylı argüman sondası `ind-probe` render
+     geçişini bölüyor) -- zayıf aday: saniyede ~1 küme, bozukluklar daha sık.
+  4. Descriptor yuvalarının GPU kullanırken yeniden yazılması.
+* **Hazır olanlar:** `upload-swap = 0` ve `ind-probe = 0` **303/306'da
+  zaten var** (yeni build beklemeden). Yeni build ile gelenler (hepsi
+  varsayılan KAPALI, God of War'a dokunmaz): `fence-strict` (1/2),
+  `upload-guard` (1/2, + `upload-guard-bytes`), `desc-guard`,
+  `cbv-snapshot`. En değerlisi `upload-guard = 2`: **tek oturumda** 1 ile 2
+  arasında karar verir (`CHANGED` = oyun erken yazdı; `GPU SAW DIFFERENT
+  BYTES` = GPU bayat bellek gördü).
+* Plan bölüm 8.6'da: her blok ayrı açılış, `dxil-tess = 0` her blokta kalsın,
+  bozuklukların olduğu yerde (ateşli köprü) 30-60 sn oyna, ekran kaydı al,
+  logu gönder, sonra bloğun diğer satırlarını sil.
+
+### 8.1 Evidence
+
+| file | build / settings | what it shows |
+|---|---|---|
+| `47955180-GhostOfTsushima.exe-2026-10-01_21-30-15.txt` (113,364 lines) | `[build] v0.1.303` (l.12); `library launch ... nvidia=1 game-config=1 metalfx=off` (l.21); `madeira.cfg: swap-mb=3072` (l.26); `[game-cfg] dxil-tess = 0` (l.163); 1280x720 | DXIL tessellation off (l.12878); `async-submit = 0` (l.9118); `fence-chain = 1` (l.10997); `upload-swap = 1` (l.10495) |
+| `13fbab5d-ScreenRecording_10-01-2026_21-33-21_1.mp4` (7.8 s) | the same session, recorded from ~21:33:21 | gameplay 0-5.2 s, then Control Center |
+
+Frames: all 200 native frames extracted with their pts (`ffmpeg -fps_mode
+passthrough -frame_pts 1`); a one-frame transient detector (|frame -
+mean(prev, next)| beyond what prev->next explains, over sky and bridge, HUD
+and touch controls masked); every hit viewed as a prev/cur/next strip.
+
+### 8.2 The artefact, frame by frame
+
+Native frame index and time in the recording (the game runs at ~15-20 FPS, so
+several recording frames show one game frame):
+
+| frame | t (s) | what is wrong for ONE frame |
+|---|---|---|
+| #20 | 0.917 | a large rock face on the left lit by blue moonlight, blue rim light on Jin's armour and on the dead enemy |
+| #29 | 1.317 | horizontal streaks across the bridge deck (motion-blur smear) |
+| #30 | 1.367 | a small dark rock floating in the sky right of the lantern pole |
+| #44 | 1.967 | a tall yellow-green streaked plume (a tree crown?) from the top of the frame down to the bridge; the right side of the bridge smeared |
+| #62 | 2.783 | bridge planks smeared upward around the lantern |
+| #63 | 2.800 | a dark boulder in front of the cart |
+| #79 | 3.533 | a horizontal smear across the bridge deck |
+| #87 | 3.933 | a dark rock body on the ground right of the cart, next to the dead enemy |
+| #88 | 3.983 | the bridge smeared again |
+| #102 | 4.667 | a huge dark rock over the bridge in front of the cart, lit by the lantern (specular spot) |
+| #106 | 4.867 | a diagonal orange streak from the bridge upward |
+| #107 | 4.917 | a dark rock with a fire-lit spot in front of the cart |
+
+The parent's a008 (dark smudge over the cart) and a015/a016 (streaked
+ellipses around the lanterns) are the same two kinds. Every broken frame is
+followed by a clean one; the shapes neither persist nor grow. The HUD
+frame-time graph shows no spike at #20 and only unrelated spikes elsewhere.
+
+Reading: the meshes are right (the rock is a rock, textured, with the
+lantern's specular on it); their **per-object data** is not: a rock drawn with
+the transform of another instance or another frame (#30, #63, #87, #102,
+#107); objects whose current and previous transforms disagree, which the
+motion-blur pass turns into long streaks (#29, #44, #62, #79, #88, #106); once
+the lighting / moon-shadow constants of another frame (#20). All of it is data
+the game writes from the CPU every frame -- per-draw constants and per-instance
+streams in UPLOAD memory -- and reads on the GPU in GoT's GPU-driven passes
+(`vs_HighLod` / `vs_LowLod` / `vs_SetMaterial_*` ExecuteIndirect, instance
+stream "vb 1: 16 MB, stride 8", section 3).
+
+### 8.3 What the log says
+
+* Submission per frame (l.50807, 21:33:24): `ExecuteCommandLists 9.0, Signal
+  8.0, fence waits 1.1, GetCompletedValue polls 6.0, Queue::Wait sleeps 0.0`.
+  Queues: DIRECT (l.9117), COMPUTE (l.9894), COPY x2 (l.9895, l.10516; one is
+  destroyed). Queue::Wait never slept: either GoT issues no cross-queue Wait,
+  or every one took the early return `f->submitted >= value` (see 8.4, cause
+  2); the log cannot tell which.
+* GPU health: `35543 retired, 0 ENDED IN ERROR` (l.50729); the encoder fence
+  chain is complete (`807376 waits, 807376 updates`, l.50731); no GPU faults.
+* Skips: `15 skipped` per 600 lists, all at one site (`L4653` in 303 = `draw
+  without a pipeline state`): the tessellated smoke's placeholder pipeline,
+  which is what `dxil-tess = 0` is meant to do.
+* UPLOAD memory: `ml1154 CPU-visible buffers on file-backed storage: 8, 82 MB`
+  (l.50616); at load 32 MB (l.10497), 8, 16, 12, 12 MB (l.10949-10981), 8 MB
+  READBACK (l.11611), 10 and 8 MB (l.11797, l.11885): every large UPLOAD
+  buffer of the game lives on Madeira's own storage, i.e. on the swap tier.
+  Swap tier: `2888 MB file-backed now (peak 3022), 133 extents, file used 3069
+  of 3072 MB, backs 76 releases 491 unbacks 0 refused 2` (l.50263). Footprint:
+  `phys=6546 MB (peak 6575) ... compressed=1276 MB` (l.50790): heavy memory
+  pressure.
+* Render targets: each placed render target sits alone in its own heap at +0
+  (`[placed] r#465..r#508 ... in heapNN ... at +0`), so render-target aliasing
+  is **ruled out**.
+* Placed small textures (heap5, 32 MB, flags 0x44): r#739 (256x256 BC3) went
+  to +26148864, a 64 KB slot, but Metal needs 98304 bytes for it; it overlaps
+  r#325's slot (+26214400) by 32 KB. That corrupts texture CONTENT (a patch of
+  a texture), not geometry; a separate finding.
+* ExecuteIndirect: only single-argument signatures (`stride 16/20/12`,
+  l.10990-10992), no count buffers; culled records carry InstanceCount 0 (the
+  probes show e.g. `vs_HighLod first record: 4836 0 40 0 0`), so "records past
+  the count" is **ruled out**.
+* Occlusion queries: `994 begun, 0 results delivered` (l.50730): GoT resolves
+  into a GPU-only buffer, which we never write. Constant, not a flicker; noted.
+* Indirect-argument probes (`ind-probe`, default ON): 1194 `[probe]` lines;
+  clusters every ~3 s per pipeline group, i.e. roughly one probe frame a second
+  (between the `[xp]` stamps 21:33:21.9-22.3, 22.3-22.8, 23.7-24.2, 25.0-25.4,
+  25.4-26.1). Each probe ends the open render pass and runs one compute
+  dispatch. The recording's start is only known to the second, so frames
+  cannot be matched to probes; the shapes (2-3 a second) are more frequent
+  than the probe frames.
+
+### 8.4 Ranked causes
+
+1. **The GPU reads UPLOAD pages that do not hold the CPU's latest writes
+   (ml1154 storage on the swap tier).** All of GoT's large per-frame upload
+   buffers are VirtualAlloc'd by us and handed to Metal as no-copy buffers;
+   with `swap-mb = 3072` a >= 8 MB guest commit is file-backed, the file is
+   full and the device is under pressure. If a page the GPU maps is not the
+   page the CPU last wrote, the GPU reads an older packing of the game's ring:
+   another object's instance index or transform -> a rock somewhere else, a
+   plank with a wild velocity. Fits "one frame, random, always the same few
+   kinds of object". Not proven (Metal may wire no-copy pages).
+   Discriminators: `upload-swap = 0` (Metal-owned storage; available now) and
+   `upload-guard = 2` (`GPU SAW DIFFERENT BYTES` with unchanged CPU bytes).
+2. **The game rewrites upload data the GPU has not finished with (a fence or
+   Wait that completes early).** One real window in the code: queue_Signal
+   sets `fence->submitted` BEFORE its batch is committed (mad_signal_run
+   flushes after), and the synchronous Queue::Wait returns as soon as
+   `submitted >= value` -- a Wait on another thread can return and commit its
+   own batch ahead of the signalling one. Second, "GPU event >= serial s" is
+   taken to mean "every batch <= s finished"; that holds through the encoder
+   fence chain, not by construction. Discriminators: `upload-guard`
+   (`CHANGED` lines), `fence-strict = 1` (counts the Wait window, orders
+   batches on the GPU), `fence-strict = 2` (no CPU/GPU overlap at all: if the
+   shapes survive this, it is not a CPU/GPU race).
+3. **GPU-internal ordering around work we insert ourselves** (indirect probe
+   render-pass splits; the present copy outside the fence chain). Weak: too
+   infrequent, and the passes it splits re-bind everything. Discriminators:
+   `ind-probe = 0`, `fence-strict = 1`.
+4. **Descriptor slots rewritten while a batch still uses them** (would rather
+   show wrong textures or wrong structured buffers than wrong transforms).
+   Discriminator: `desc-guard = 1`.
+
+Ruled out above: render-target aliasing, count-buffer records, GPU faults,
+dropped draws (only the smoke placeholder is skipped).
+
+### 8.5 What changed (code)
+
+`madeira-d3d12/src/pe/madeira_d3d12.c`: one block "SYNC DIAGNOSTICS" right
+before `exec_arg_slot_for`, plus hooks; the keys are read once by
+`mad_sync_diag_load`. With every key unset `g_sd_state` is 0, nothing below
+runs and nothing is logged (every hook is `if (g_sd_state > 0 ...)`). D3D12
+runtime only: God of War (D3D11/DXMT) never reaches it. One line when anything
+is on: `[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=F upload-guard=U (B
+bytes a range) desc-guard=D cbv-snapshot=S bytes`, and every 300 presents
+`[sync-diag] present #N: upload-guard ... ranges noted, ... checked, ...
+CHANGED while in flight (+... in approximate windows; ...), ... copied by the
+GPU, ... of them DIFFERENT from the CPU's bytes; desc-guard ...; fence-strict:
+K Queue::Wait calls found the Signal asked for but not yet committed;
+cbv-snapshot ...`.
+
+* `fence-strict = 1`: Queue::Wait's early return requires the signalling batch
+  to be COMMITTED (`fence->committed`); otherwise it waits for the commit (the
+  first 8 logged: `[fence-strict] Queue::Wait for V: the Signal was asked for
+  but its batch was not committed yet; waited N ms for the commit`). Every new
+  batch command buffer and the present's command buffer start with
+  `encodeWaitForEvent(gpu_event, newest committed serial)`, so batches finish
+  in serial order on the GPU. A batch that fails on the GPU has its serial
+  signalled from the CPU (else every later batch would wait for it forever).
+* `fence-strict = 2`: also Signal is synchronous and waits until the GPU has
+  finished everything committed so far (all queues) before the fence advances,
+  and Present waits for the frame it presents. CPU and GPU no longer overlap;
+  FPS drops; diagnosis only.
+* `upload-guard = 1`: at replay the UPLOAD/CUSTOM-heap ranges each draw or
+  dispatch reads are hashed and kept (with a reference on the resource): a
+  root CBV's first 256 bytes and a direct indexed draw's indices exactly; root
+  SRVs and vertex buffers as a window of `upload-guard-bytes` (default 256,
+  16..4096) from their start. Once the GPU has passed the batch -- before the
+  fence the game waits on advances (fence worker, synchronous Signal) and
+  before Present returns -- they are hashed again: `[upload-guard] CHANGED while
+  the GPU used it: root CBV 1 of 'ps_...' (list#N) -> r#R (UPLOAD heap, 32768
+  KB, ml1154 storage) +offset, 256 bytes; batch serial S, GPU at G` (48 lines).
+  A window that may reach data the game places after it later is tagged
+  "(approximate window: may be data placed after it)" and counted apart.
+* `upload-guard = 2`: also, at each batch's commit, one blit copies every noted
+  range into a shared buffer (what the GPU sees there at the end of the
+  batch); a copy that differs from CPU bytes that never changed is
+  `[upload-guard] GPU SAW DIFFERENT BYTES than the CPU wrote: ... first
+  difference at +N; batch serial S`.
+* `desc-guard = 1`: every shader-visible descriptor heap is watched
+  (`[desc-guard] watching shader-visible heap type T, N descriptors`); each
+  draw/dispatch stamps the descriptors of its tables (bounded ranges, at most
+  256 per table; bindless ranges are not tracked) with its batch; a
+  CreateShaderResourceView / CreateConstantBufferView /
+  CreateUnorderedAccessView / CreateSampler / CopyDescriptors(Simple) into a
+  stamped descriptor whose batch has not finished logs `[desc-guard]
+  CopyDescriptorsSimple rewrote descriptor 1234 of the shader-visible heap
+  (type 0) while the batch that uses it runs (serial S, GPU at G)` (48 lines).
+* `cbv-snapshot = N` (1 = 4096, else 256..16384): every root CBV that points
+  into UPLOAD/CUSTOM memory is copied (N bytes, or what is left of the buffer)
+  into the list's argument ring at replay, 256-aligned and in the same ring
+  chunk as the draw's argument table, and the copy is bound instead. The GPU
+  then reads what the game had written at ExecuteCommandLists. A fix attempt
+  for root constant buffers only; a cbuffer larger than N reads ring bytes
+  past the copy; costs ring memory (N per CBV per draw, reused within a list).
+
+Host test `tests/host/check-got-diagnostics.py` (PASS): static checks that
+every hook is behind `g_sd_state`, that the checks run before the fence
+advances / Present returns, that Queue::Wait's fast path is unchanged with the
+key unset; then the whole block is compiled on the host with stubs and run:
+option clamps, batch tickets, CHANGED / approximate / GPU-copy differences,
+descriptor writes into an unfinished batch, root-CBV copies (alignment, chunk,
+reuse, buffer tail), the strict GPU wait. Clean under ASan/UBSan. The runtime
+builds and links for arm64ec (new imports `MTLCommandBuffer_encodeWaitForEvent`
+and `MTLSharedEvent_signalValue`, both exported by winemetal). The config
+catalog is regenerated, so this ships in an IPA (the catalog is part of the
+native ABI), not in a pack.
+
+### 8.6 Device plan
+
+Every block is **one launch**, written into the game's file (Ghost of
+Tsushima -> game settings -> "Advanced: this game's config"). Keep
+`dxil-tess = 0` in every block. Play 30-60 s at the burning bridge where the
+shapes appear, take a screen recording (HUD visible), quit, send log +
+recording, then delete the block's other lines.
+
+**Blok G1 -- 303/306, yeni build gerekmez (ilk ve en önemli test):**
+```
+dxil-tess = 0
+upload-swap = 0
+```
+Log: `ml1154 upload-swap = 0 (Metal-owned storage)`, later `ml1154
+CPU-visible buffers on file-backed storage: 0, 0 MB`. Bellek ~100 MB artar
+(anonim); oyun bellekten kapanırsa söyle. Ekran: şekiller **tamamen
+gittiyse** neden 1 (takas belleğindeki upload tamponları) -> düzeltme: upload
+tamponlarını takas katmanının dışında tutmak.
+
+**Blok G2 -- 303/306, yeni build gerekmez:**
+```
+dxil-tess = 0
+ind-probe = 0
+```
+Log: hiç `[probe]` satırı yok. Ekran: şekiller gittiyse neden 3 (sonda).
+
+**Blok H -- yeni IPA (bu değişiklikler), tek oturumda 1 mi 2 mi:**
+```
+dxil-tess = 0
+upload-guard = 2
+upload-guard-bytes = 4096
+```
+Log: `[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=0 upload-guard=2 (4096
+bytes a range) ...`, then every 300 presents `[sync-diag] present #N: ...`.
+Reading:
+* `[upload-guard] CHANGED while the GPU used it: root CBV ...` (without
+  "approximate") -> cause 2: the game rewrote live data, so it was told too
+  early -> Blok I, J.
+* `[upload-guard] GPU SAW DIFFERENT BYTES than the CPU wrote ... ml1154
+  storage` -> cause 1, even without G1.
+* neither while shapes are on screen -> not root CBV / index data: G1, G2, K.
+FPS drops a little (hashing).
+
+**Blok I -- yeni IPA:**
+```
+dxil-tess = 0
+fence-strict = 1
+```
+Log: `[fence-strict] Queue::Wait for ...` lines (each one is cause 2's window
+actually happening) and `fence-strict: K` in `[sync-diag]`. Ekran: şekiller
+gittiyse sıralama düzeltmesi bu.
+
+**Blok J -- yeni IPA, ağır (FPS düşer):**
+```
+dxil-tess = 0
+fence-strict = 2
+```
+Ekran: şekiller **bu modda da** varsa CPU/GPU yarışı değil (neden 2 elenir);
+yoksa neden 1 veya 2 -- H ayırt eder.
+
+**Blok K -- yeni IPA:**
+```
+dxil-tess = 0
+desc-guard = 1
+```
+Log: `[desc-guard] watching shader-visible heap type 0, 999000 descriptors`,
+then any `[desc-guard] ... rewrote descriptor ...` lines (cause 4).
+
+**Blok L -- yeni IPA, yalnız H root CBV için CHANGED gösterirse:**
+```
+dxil-tess = 0
+cbv-snapshot = 1
+```
+Log: `cbv-snapshot N copies (M MB)` in `[sync-diag]`. Ekran: şekiller
+gittiyse geçici düzeltme bu; kalıcısı, çitin neden erken bittiğini bulmak.
+
+Order: G1 and G2 first (now, no build), then H. G1 plus H decide; I, J, K, L
+only as H points.
+
+### 8.7 Paragraph for HANDOFF (ready to paste)
+
+* **GoT one-frame "shapes in the air" after `dxil-tess = 0` (agent,
+  2026-10-01; docs/got-corruption.md section 8).** Build 303, log
+  `GhostOfTsushima.exe-2026-10-01_21-30-15`, video
+  `ScreenRecording_10-01-2026_21-33-21`: `dxil-tess = 0` removed the smoke
+  squares (confirms the lit-smoke DXIL tessellation pass). The remaining
+  artefact, frame by frame: at least 12 broken frames in 5.2 s of play (one
+  game frame in ~6-8), each ONE frame, three kinds -- a dark boulder drawn at
+  a wrong place/scale (in front of the cart, on the ground, once floating in
+  the sky: 1.37/2.80/3.93/4.67/4.92 s), motion-blur streaks of the bridge
+  planks or a tree (1.32/1.97/2.78/3.53/3.98/4.87 s), once blue moonlit
+  lighting (0.92 s); no frame-time spike correlation. Reading: right meshes
+  with another object's / another frame's per-object data (CPU-written UPLOAD
+  data: per-draw constants, the GPU-driven passes' instance stream). Log: all
+  8 large UPLOAD/READBACK buffers (82 MB) are on ml1154 storage, which with
+  the owner's `swap-mb = 3072` is the file-backed swap tier (file 3069/3072
+  MB, footprint 6.5 GB, 1.3 GB compressed); Queue::Wait never slept; 0 GPU
+  errors, full fence chain; skips are only the smoke placeholder;
+  render-target aliasing and count-buffer records ruled out. Side findings:
+  r#739 (256x256 BC3, Metal size 96 KB) placed in a 64 KB slot overlaps r#325
+  by 32 KB (texture content); occlusion results never reach GoT's GPU-only
+  resolve buffer. Ranked: (1) the GPU reads stale UPLOAD pages on the swap
+  tier, (2) premature reuse through an early fence -- one real window:
+  queue_Signal sets `submitted` before its batch is committed and the
+  synchronous Queue::Wait returns on it, (3) our indirect probe's render-pass
+  splits, (4) descriptors rewritten in flight. **Added, all OFF by default,
+  D3D12 runtime only:** `fence-strict` (1: Wait needs the commit, every
+  batch/present command buffer GPU-waits for the newest committed serial; 2:
+  also a synchronous draining Signal and Present waits for its frame),
+  `upload-guard` (1: re-hash the UPLOAD ranges draws read once the GPU is
+  done, before the fence/Present, `[upload-guard] CHANGED`; 2: also a GPU blit
+  copy per batch, `GPU SAW DIFFERENT BYTES`; `upload-guard-bytes`),
+  `desc-guard` (`[desc-guard] ... rewrote descriptor ...`), `cbv-snapshot`
+  (UPLOAD root CBVs copied into the argument ring at replay). Summary
+  `[sync-diag] present #N` every 300 presents. Catalog regenerated (ships in
+  an IPA); `tests/host/check-got-diagnostics.py` PASS (ASan/UBSan clean);
+  arm64ec build links. **Device plan:** now on 303/306: `upload-swap = 0`,
+  then `ind-probe = 0` (each with `dxil-tess = 0`, one launch each); after
+  the next IPA: `upload-guard = 2` + `upload-guard-bytes = 4096`, then as it
+  points `fence-strict = 1`, `fence-strict = 2`, `desc-guard = 1`,
+  `cbv-snapshot = 1`. Open: the fix depends on G1 / H.

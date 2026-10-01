@@ -1501,6 +1501,7 @@ struct mad_queue {
      * submit_lock (the replay and mad_queue_flush both hold it). */
     obj_handle_t f6_pool[64]; unsigned f6_next;
     struct mad_f6_pend { unsigned char idx, kind, natt; struct mad_resource *att[9]; } f6_pend[40]; unsigned f6_npend;
+    UINT64 open_ticket;   /* madeira-bcd: sync diagnostics (upload-guard / desc-guard), the open batch's ticket; 0 = none */
 };
 
 static HRESULT mad_queue_dxgi_tearoff(struct mad_queue *q, void **out);
@@ -1598,6 +1599,10 @@ struct mad_exec {
     struct mad_pso *cenc_pso;   /* the one pipeline the open compute encoder runs */
     unsigned cenc_seq;          /* its label's C#<seq> */
     struct mad_pso *diag_pso[6]; unsigned diag_npso; int diag_more;   /* pipelines the open render pass drew with */
+    /* madeira-bcd: sync diagnostics -- desc-guard's last marked table per root
+     * parameter, cbv-snapshot's copies already made in this replay */
+    UINT64 dg_va[MAD_ROOT_PARAM_MAX]; UINT dg_n[MAD_ROOT_PARAM_MAX];
+    UINT64 sn_src[8], sn_dst[8]; unsigned sn_chunk[8], sn_n;
 };
 static void mad_capture_pass(struct mad_exec *e, struct mad_resource **rt, unsigned nrt, const struct mad_rtvp *rtp,
                              struct mad_resource *depth, const struct mad_rtvp *dp, unsigned seq, unsigned draws);
@@ -3388,11 +3393,409 @@ static int exec_ring_take(struct mad_exec *e, obj_handle_t *buf, UINT64 *off, vo
     return exec_ring_take_n(e, 1, buf, off, cpu, gpu);
 }
 
+/* ---- madeira-bcd: SYNC DIAGNOSTICS ---------------------------------------
+ * Ghost of Tsushima draws one-frame "shapes in the air" (a rock, a tree
+ * smeared by motion blur, lighting from a frame that never was) about once a
+ * second: per-object data that belongs to another draw or another frame
+ * (docs/got-corruption.md section 8). Every key below is OFF unless set in
+ * madeira.cfg or the game's file; with all of them unset nothing here runs and
+ * nothing is logged.
+ *
+ *   fence-strict = 1  Queue::Wait's early return requires the signalling batch
+ *                     to be COMMITTED (the fast path looked at "asked to
+ *                     signal", which another thread sets before it commits);
+ *                     every batch command buffer, and the present's, first
+ *                     waits on the GPU for the newest committed serial, so
+ *                     batches finish in serial order and "event >= s" really
+ *                     means "everything up to s has finished".
+ *   fence-strict = 2  also: Signal is synchronous and the fence advances only
+ *                     after the GPU has finished EVERYTHING committed so far,
+ *                     and Present waits for the frame it presents. CPU and GPU
+ *                     no longer overlap -- slow, for diagnosis only.
+ *   upload-guard = 1  hashes the UPLOAD-heap bytes each draw/dispatch points at
+ *                     when the list is replayed -- a root CBV's first 256 bytes
+ *                     and a direct indexed draw's indices exactly; root SRVs and
+ *                     vertex buffers as a window of upload-guard-bytes (default
+ *                     256) from their start -- and again once the GPU has
+ *                     finished that batch, before the fence advances or Present
+ *                     returns. A difference in an exact range means the game
+ *                     rewrote data the GPU was still using: something told it
+ *                     too early that the GPU was done. (A window may run into
+ *                     data the game places after it later; those are counted
+ *                     apart as "approximate".)
+ *   upload-guard = 2  also lets the GPU copy every such range at the end of
+ *                     its batch and compares that copy with what the CPU had
+ *                     written: "GPU SAW DIFFERENT BYTES" with an unchanged CPU
+ *                     side means the GPU read memory the CPU's writes had not
+ *                     reached (stale pages: ml1154 storage on the swap tier).
+ *   desc-guard = 1    remembers which batch last referenced each descriptor of
+ *                     the shader-visible heaps (bounded table ranges, at most
+ *                     256 per table) and logs a CPU write (Create*View,
+ *                     CreateSampler, CopyDescriptors*) into a slot whose batch
+ *                     the GPU has not finished.
+ *   cbv-snapshot = N  copies the first N bytes (1 = 4096) an UPLOAD-heap root
+ *                     CBV points at into the list's argument ring at replay and
+ *                     binds the copy, so the GPU reads what the game had written
+ *                     when it called ExecuteCommandLists. A fix attempt for root
+ *                     constant buffers only; a cbuffer larger than N reads ring
+ *                     bytes past the copy. */
+static int g_sd_state = -1;   /* -1 = not read yet, 0 = everything off, 1 = something on */
+static int g_fence_strict, g_upload_guard, g_desc_guard;
+static UINT g_ug_bytes = 256, g_cbv_snap;
+static volatile LONG g_sd_strict_waits, g_sd_ug_noted, g_sd_ug_checked, g_sd_ug_changed, g_sd_ug_changed_approx, g_sd_ug_dropped,
+                     g_sd_ug_gpu_copied, g_sd_ug_gpu_diff, g_sd_dg_checked, g_sd_dg_inflight, g_sd_snaps;
+static volatile LONG64 g_sd_snap_bytes;
+static void mad_sync_diag_load(void) {
+    long long fs, ug, ub, dg, cs;
+    if (g_sd_state >= 0) return;
+    fs = mad_cfg_int_pe("fence-strict", 0);           /* diagnostic: 1 = Queue::Wait waits for the commit and batches finish in serial order; 2 = also synchronous Signal and Present waits for its frame (slow) */
+    ug = mad_cfg_int_pe("upload-guard", 0);           /* diagnostic: 1 = log UPLOAD-heap data the game rewrites while the GPU still uses it; 2 = also compare with what the GPU read */
+    ub = mad_cfg_int_pe("upload-guard-bytes", 256);   /* bytes upload-guard hashes per range (16..4096) */
+    dg = mad_cfg_int_pe("desc-guard", 0);             /* diagnostic: log descriptor writes into shader-visible slots a running batch still uses */
+    cs = mad_cfg_int_pe("cbv-snapshot", 0);           /* fix attempt: copy N bytes (1 = 4096) of every UPLOAD-heap root CBV at replay and bind the copy */
+    g_fence_strict = fs >= 2 ? 2 : fs == 1 ? 1 : 0;
+    g_upload_guard = ug >= 2 ? 2 : ug ? 1 : 0;
+    g_ug_bytes = ub < 16 ? 16u : ub > 4096 ? 4096u : (UINT)ub;
+    g_desc_guard = dg ? 1 : 0;
+    g_cbv_snap = cs <= 0 ? 0u : cs == 1 ? 4096u : cs > 16384 ? 16384u : (UINT)((cs + 255) & ~255LL);
+    if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap)
+        d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=%d upload-guard=%d (%u bytes a range) desc-guard=%d cbv-snapshot=%u bytes\n",
+                  g_fence_strict, g_upload_guard, g_ug_bytes, g_desc_guard, g_cbv_snap);
+    MemoryBarrier();
+    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap) ? 1 : 0;
+}
+
+/* Tickets name a batch before it has a serial: the replay knows its open
+ * command buffer, the serial is assigned when it is committed. */
+#define MAD_TK_RING 4096u
+static volatile LONG64 g_tk_next;
+static volatile UINT64 g_tk_key[MAD_TK_RING], g_tk_serial[MAD_TK_RING];
+static UINT64 mad_ticket_new(void) { return (UINT64)InterlockedIncrement64(&g_tk_next); }
+static void mad_ticket_commit(UINT64 t, UINT64 serial) {
+    if (!t) return;
+    g_tk_serial[t % MAD_TK_RING] = serial;
+    MemoryBarrier();
+    g_tk_key[t % MAD_TK_RING] = t;
+}
+/* 0 = not committed yet; 1 = committed, *serial set (0 = no GPU timeline);
+ * 2 = so old that its ring entry was reused (long finished). */
+static int mad_ticket_state(UINT64 t, UINT64 *serial) {
+    UINT64 k = g_tk_key[t % MAD_TK_RING];
+    MemoryBarrier();
+    if (k == t) { *serial = g_tk_serial[t % MAD_TK_RING]; return 1; }
+    return k > t ? 2 : 0;
+}
+static int mad_ticket_done(struct mad_device *d, UINT64 t) {
+    UINT64 s = 0; int st;
+    if (!t) return 1;
+    st = mad_ticket_state(t, &s);
+    if (st != 1) return st == 2;
+    return !s || s <= mad_gpu_completed(d);
+}
+
+/* upload-guard: one hashed range per (resource, offset, batch). The record
+ * holds a reference so the bytes can be read again after the GPU is done. */
+struct mad_ug_gv { obj_handle_t buf; const unsigned char *cpu; LONG refs; };   /* upload-guard 2: one batch's GPU copies */
+struct mad_ug_rec { struct mad_resource *r; UINT64 off, hash, ticket; UINT32 len; UINT16 kind, idx, exact; unsigned list; char who[40];
+                    struct mad_ug_gv *gv; UINT32 gv_off; };
+static struct mad_ug_rec *g_ug; static unsigned g_ug_n, g_ug_cap;
+static SRWLOCK g_ug_lock = SRWLOCK_INIT;
+#define MAD_UG_MAX 65536u
+enum { MAD_UG_CBV = 0, MAD_UG_SRV, MAD_UG_VB, MAD_UG_IB };
+static UINT64 mad_fnv64(const void *p, size_t n) {
+    const unsigned char *b = p; UINT64 h = 1469598103934665603ull;
+    while (n--) { h ^= *b++; h *= 1099511628211ull; }
+    return h;
+}
+static int mad_ug_cpu_written(const struct mad_resource *r) {
+    return r && r->cpu && (r->heap == D3D12_HEAP_TYPE_UPLOAD || r->heap == D3D12_HEAP_TYPE_CUSTOM);
+}
+/* exact: the window is bytes the draw reads (a root CBV's first 256 -- D3D12
+ * places constant buffers on 256-byte boundaries -- or a direct indexed draw's
+ * indices); otherwise it may run into data placed after it, which the game may
+ * fill later without any race, so a change there is counted apart. */
+static void mad_ug_note(struct mad_exec *e, struct mad_resource *r, UINT64 off, UINT64 max, unsigned kind, unsigned idx, int exact, const char *who) {
+    UINT64 t = e->q->open_ticket, len, h; unsigned k, lo;
+    if (!t || !max || !mad_ug_cpu_written(r) || off >= r->size) return;
+    len = r->size - off; if (len > max) len = max;
+    h = mad_fnv64((const unsigned char *)r->cpu + off, (size_t)len);
+    AcquireSRWLockExclusive(&g_ug_lock);
+    lo = g_ug_n > 32 ? g_ug_n - 32 : 0;
+    for (k = lo; k < g_ug_n; k++) if (g_ug[k].r == r && g_ug[k].off == off && g_ug[k].ticket == t) break;
+    if (k == g_ug_n) {
+        if (g_ug_n >= MAD_UG_MAX || !mad_grow((void **)&g_ug, &g_ug_cap, g_ug_n + 1, sizeof *g_ug)) InterlockedIncrement(&g_sd_ug_dropped);
+        else {
+            struct mad_ug_rec *u = &g_ug[g_ug_n++];
+            u->r = r; u->off = off; u->hash = h; u->ticket = t; u->len = (UINT32)len; u->kind = (UINT16)kind; u->idx = (UINT16)idx; u->exact = exact ? 1 : 0;
+            u->list = g_list_seq; snprintf(u->who, sizeof u->who, "%s", who ? who : "?"); u->gv = NULL; u->gv_off = 0;
+            ID3D12Resource_AddRef((ID3D12Resource *)r);
+            InterlockedIncrement(&g_sd_ug_noted);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_ug_lock);
+}
+/* Every record whose batch has a serial <= upto (the GPU is past it): hash
+ * again, report a difference, drop the record. Runs before the fence the game
+ * waits on advances, and before Present returns. */
+static void mad_ug_verify(struct mad_device *d, UINT64 upto) {
+    static const char *const kn[] = { "root CBV", "root SRV", "vertex buffer", "index buffer" };
+    static LONG said, said_approx, said_gpu;
+    struct mad_resource *rel[256]; obj_handle_t gvrel[256]; unsigned nrel, ngv, k; int more;
+    if (!g_upload_guard || !d) return;
+    do {
+        nrel = 0; ngv = 0;
+        AcquireSRWLockExclusive(&g_ug_lock);
+        for (k = 0; k < g_ug_n && nrel < 256; ) {
+            struct mad_ug_rec *u = &g_ug[k]; UINT64 s = 0, now; int st = mad_ticket_state(u->ticket, &s);
+            if (st == 0 || (st == 1 && s && s > upto)) { k++; continue; }
+            InterlockedIncrement(&g_sd_ug_checked);
+            now = mad_fnv64((const unsigned char *)u->r->cpu + u->off, u->len);
+            if (now != u->hash) {
+                InterlockedIncrement(u->exact ? &g_sd_ug_changed : &g_sd_ug_changed_approx);
+                if (InterlockedIncrement(u->exact ? &said : &said_approx) <= (u->exact ? 48 : 16))
+                    d3d12_log("[upload-guard] CHANGED while the GPU used it%s: %s %u of '%s' (list#%u) -> r#%u (%s heap, %llu KB%s) +%llu, %u bytes; "
+                              "batch serial %llu, GPU at %llu\n", u->exact ? "" : " (approximate window: may be data placed after it)",
+                              kn[u->kind & 3], u->idx, u->who, u->list, u->r->serial,
+                              u->r->heap == D3D12_HEAP_TYPE_UPLOAD ? "UPLOAD" : "CUSTOM", (unsigned long long)(u->r->size >> 10),
+                              u->r->own_mem ? ", ml1154 storage" : "", (unsigned long long)u->off, u->len,
+                              (unsigned long long)s, (unsigned long long)mad_gpu_completed(d));
+            } else if (u->gv && mad_fnv64(u->gv->cpu + u->gv_off, u->len) != u->hash) {
+                /* the CPU's bytes never changed, yet the GPU's copy of them differs */
+                InterlockedIncrement(&g_sd_ug_gpu_diff);
+                if (InterlockedIncrement(&said_gpu) <= 48) {
+                    unsigned j = 0;
+                    while (j + 4 <= u->len && !memcmp(u->gv->cpu + u->gv_off + j, (const unsigned char *)u->r->cpu + u->off + j, 4)) j += 4;
+                    d3d12_log("[upload-guard] GPU SAW DIFFERENT BYTES than the CPU wrote: %s %u of '%s' (list#%u) -> r#%u (%s heap, %llu KB%s) +%llu, "
+                              "%u bytes, first difference at +%u; batch serial %llu\n", kn[u->kind & 3], u->idx, u->who, u->list, u->r->serial,
+                              u->r->heap == D3D12_HEAP_TYPE_UPLOAD ? "UPLOAD" : "CUSTOM", (unsigned long long)(u->r->size >> 10),
+                              u->r->own_mem ? ", ml1154 storage" : "", (unsigned long long)u->off, u->len, j, (unsigned long long)s);
+                }
+            }
+            if (u->gv && !--u->gv->refs) { gvrel[ngv++] = u->gv->buf; free(u->gv); }
+            rel[nrel++] = u->r;
+            *u = g_ug[--g_ug_n];
+        }
+        more = k < g_ug_n && nrel == 256;
+        ReleaseSRWLockExclusive(&g_ug_lock);
+        for (k = 0; k < nrel; k++) ID3D12Resource_Release((ID3D12Resource *)rel[k]);
+        for (k = 0; k < ngv; k++) NSObject_release(gvrel[k]);
+    } while (more);
+}
+/* upload-guard 2, at the commit of a batch: one blit at its end copies every
+ * range its draws were noted reading into a shared buffer -- what the GPU
+ * actually sees there, for mad_ug_verify to compare. */
+static void mad_ug_gpu_copy(struct mad_queue *q) {
+    struct mad_device *d = q->device; UINT64 t = q->open_ticket, total = 0, at = 0; unsigned k, n = 0, i = 0;
+    struct wmtcmd_blit_copy_from_buffer_to_buffer *cp; struct WMTBufferInfo bi; struct mad_ug_gv *gv; obj_handle_t enc;
+    if (!t || !q->open_cb) return;
+    AcquireSRWLockExclusive(&g_ug_lock);
+    for (k = 0; k < g_ug_n; k++)
+        if (g_ug[k].ticket == t && !g_ug[k].gv && g_ug[k].r->buffer && !(g_ug[k].off & 3) && !(g_ug[k].len & 3)) { total += g_ug[k].len; n++; }
+    if (!n) { ReleaseSRWLockExclusive(&g_ug_lock); return; }
+    gv = calloc(1, sizeof *gv); cp = calloc(n, sizeof *cp);
+    memset(&bi, 0, sizeof bi); bi.length = total; bi.options = WMTResourceStorageModeShared;
+    if (gv && cp) { gv->buf = MTLDevice_newBuffer(d->mtl_device, &bi); gv->cpu = (const unsigned char *)bi.memory.ptr; }
+    enc = (gv && gv->buf && gv->cpu) ? MTLCommandBuffer_blitCommandEncoder(q->open_cb) : 0;
+    if (!enc) {
+        if (gv && gv->buf) NSObject_release(gv->buf);
+        free(gv); free(cp); ReleaseSRWLockExclusive(&g_ug_lock); return;
+    }
+    for (k = 0; k < g_ug_n; k++) {
+        struct mad_ug_rec *u = &g_ug[k];
+        if (u->ticket != t || u->gv || !u->r->buffer || (u->off & 3) || (u->len & 3)) continue;
+        cp[i].type = WMTBlitCommandCopyFromBufferToBuffer;
+        cp[i].src = u->r->buffer; cp[i].src_offset = u->off; cp[i].dst = gv->buf; cp[i].dst_offset = at; cp[i].copy_length = u->len;
+        if (i) cp[i - 1].next.ptr = &cp[i];
+        u->gv = gv; u->gv_off = (UINT32)at; gv->refs++; at += u->len; i++;
+    }
+    MTLBlitCommandEncoder_encodeCommands(enc, (const struct wmtcmd_base *)&cp[0]);
+    MTLCommandEncoder_endEncoding(enc);
+    InterlockedExchangeAdd(&g_sd_ug_gpu_copied, (LONG)i);
+    ReleaseSRWLockExclusive(&g_ug_lock);
+    free(cp);
+}
+/* The draw's vertex buffers (approximate windows from the view's start) and,
+ * for a direct indexed draw, exactly the indices it reads. */
+static void mad_ug_note_draw(struct mad_exec *e, const struct mad_cmd *c) {
+    unsigned i;
+    const char *who = e->pso ? e->pso->vs_name : "?";
+    for (i = 0; i < 16; i++) if (e->vb[i].res) mad_ug_note(e, e->vb[i].res, e->vb[i].off, g_ug_bytes, MAD_UG_VB, i, 0, who);
+    if (e->ib && c->kind == MC_DRAW_INDEXED) {
+        UINT64 isz = e->ib_type == WMTIndexTypeUInt32 ? 4u : 2u, n = (UINT64)c->u.drawi.icount * isz;
+        mad_ug_note(e, e->ib, e->ib_off + (UINT64)c->u.drawi.start * isz, n < g_ug_bytes ? n : g_ug_bytes, MAD_UG_IB, 0, 1, who);
+    }
+}
+
+/* desc-guard: shader-visible heaps and, per descriptor, the ticket of the
+ * batch that last referenced it. The Metal buffer of such a heap is never
+ * freed (heap_Release keeps it), so the address ranges stay valid. */
+#define MAD_DG_HEAPS 8
+static struct { struct mad_device *d; UINT64 gpu_lo, gpu_hi; ULONG_PTR cpu_lo, cpu_hi; volatile UINT64 *tag; UINT count, type; } g_dg[MAD_DG_HEAPS];
+static volatile LONG g_dg_n;
+static void mad_dg_register(struct mad_heap *h) {
+    LONG i;
+    volatile UINT64 *tag;
+    if (!g_desc_guard || !h->cpu || !h->gpu_address || !h->count) return;
+    tag = calloc(h->count, sizeof *tag);
+    if (!tag) return;
+    i = InterlockedIncrement(&g_dg_n) - 1;
+    if (i >= MAD_DG_HEAPS) { free((void *)tag); return; }
+    g_dg[i].d = h->owner; g_dg[i].count = h->count; g_dg[i].type = (UINT)h->type;
+    g_dg[i].gpu_lo = h->gpu_address; g_dg[i].gpu_hi = h->gpu_address + (UINT64)h->count * sizeof(struct mad_descriptor);
+    g_dg[i].cpu_lo = (ULONG_PTR)h->cpu; g_dg[i].cpu_hi = (ULONG_PTR)h->cpu + (ULONG_PTR)h->count * sizeof(struct mad_descriptor);
+    MemoryBarrier();
+    g_dg[i].tag = tag;
+    d3d12_log("[desc-guard] watching shader-visible heap type %u, %u descriptors\n", g_dg[i].type, h->count);
+}
+/* Descriptors one table covers: its BOUNDED ranges (an unbounded range is
+ * bindless, not tracked), at most 256. */
+static unsigned mad_dg_extent(const struct mad_rootsig *rs, unsigned i) {
+    unsigned k, pos = 0, end = 0;
+    for (k = 0; k < rs->params[i].num_ranges; k++) {
+        unsigned ri = rs->params[i].first_range + k, start, nd;
+        if (ri >= rs->nranges) break;
+        nd = rs->ranges[ri].num_descriptors;
+        start = rs->ranges[ri].table_offset == 0xffffffffu ? pos : rs->ranges[ri].table_offset;
+        if (nd == 0xffffffffu || nd > 4096) break;
+        if (start + nd > end) end = start + nd;
+        pos = start + nd;
+    }
+    return end > 256 ? 256 : end;
+}
+static void mad_dg_mark(struct mad_exec *e, const struct mad_rootsig *rs, unsigned i, UINT64 va) {
+    UINT64 t = e->q->open_ticket; unsigned n, h, s, k;
+    if (!t) return;
+    n = mad_dg_extent(rs, i);
+    if (!n || (e->dg_va[i] == va && e->dg_n[i] == n)) return;
+    e->dg_va[i] = va; e->dg_n[i] = n;
+    for (h = 0; h < MAD_DG_HEAPS && h < (unsigned)g_dg_n; h++) {
+        if (!g_dg[h].tag || va < g_dg[h].gpu_lo || va >= g_dg[h].gpu_hi) continue;
+        s = (unsigned)((va - g_dg[h].gpu_lo) / sizeof(struct mad_descriptor));
+        for (k = s; k < s + n && k < g_dg[h].count; k++) g_dg[h].tag[k] = t;
+        return;
+    }
+}
+/* A CPU write of n descriptors at dst. */
+static void mad_dg_write(const void *dst, UINT n, const char *api) {
+    static LONG said;
+    ULONG_PTR p = (ULONG_PTR)dst; unsigned h, s, k;
+    if (g_sd_state <= 0 || !g_desc_guard || !p) return;
+    for (h = 0; h < MAD_DG_HEAPS && h < (unsigned)g_dg_n; h++) {
+        if (!g_dg[h].tag || p < g_dg[h].cpu_lo || p >= g_dg[h].cpu_hi) continue;
+        s = (unsigned)((p - g_dg[h].cpu_lo) / sizeof(struct mad_descriptor));
+        for (k = s; k < s + n && k < g_dg[h].count; k++) {
+            UINT64 t = g_dg[h].tag[k], ser = 0;
+            InterlockedIncrement(&g_sd_dg_checked);
+            if (!t || mad_ticket_done(g_dg[h].d, t)) continue;
+            InterlockedIncrement(&g_sd_dg_inflight);
+            if (InterlockedIncrement(&said) <= 48) {
+                int st = mad_ticket_state(t, &ser);
+                d3d12_log("[desc-guard] %s rewrote descriptor %u of the shader-visible heap (type %u) while the batch that uses it %s "
+                          "(serial %llu, GPU at %llu)\n", api, k, g_dg[h].type, st == 0 ? "is still being recorded" : "runs",
+                          (unsigned long long)ser, (unsigned long long)mad_gpu_completed(g_dg[h].d));
+            }
+        }
+        return;
+    }
+}
+
+/* cbv-snapshot: copies for this draw's UPLOAD-heap root CBVs. Taken BEFORE the
+ * argument slot and in the same ring chunk, so the chunk the copies live in is
+ * the one bound to the encoder (bound buffers are resident for the GPU). */
+static void mad_cbv_snapshot(struct mad_exec *e, const struct mad_rootsig *rs, UINT64 *root) {
+    struct mad_list *l = e->l;
+    const unsigned per = MAD_ARG_RING_BYTES / MAD_ARG_SLOT_BYTES;
+    struct { unsigned i; struct mad_resource *r; UINT64 off, len; unsigned slots; } w[MAD_ROOT_PARAM_MAX];
+    unsigned nw = 0, need = 1, i, k, chunk;
+    for (i = 0; i < rs->nparams && i < MAD_ROOT_PARAM_MAX; i++) {
+        UINT64 off = 0; struct mad_resource *r;
+        if (rs->params[i].type != MADEIRA_IR_PARAM_CBV || !root[i]) continue;
+        r = mad_resolve_address(e->q->device, root[i], &off);
+        if (!mad_ug_cpu_written(r) || off >= r->size) continue;
+        w[nw].i = i; w[nw].r = r; w[nw].off = off;
+        w[nw].len = r->size - off < g_cbv_snap ? r->size - off : g_cbv_snap;
+        w[nw].slots = (unsigned)((w[nw].len + 255 + MAD_ARG_SLOT_BYTES - 1) / MAD_ARG_SLOT_BYTES);
+        need += w[nw].slots; nw++;
+    }
+    if (!nw || need > per) return;
+    if ((l->ring_used % per) + need > per) l->ring_used += per - (l->ring_used % per);
+    chunk = l->ring_used / per;
+    for (k = 0; k < nw; k++) {
+        obj_handle_t b; UINT64 boff, gpu, va; void *cpu; unsigned j;
+        for (j = 0; j < e->sn_n && j < 8; j++)   /* already copied into this chunk by this replay */
+            if (e->sn_src[j] == root[w[k].i] && e->sn_chunk[j] == chunk) break;
+        if (j < e->sn_n && j < 8) { root[w[k].i] = e->sn_dst[j]; continue; }
+        if (!exec_ring_take_z(e, w[k].slots, 0, &b, &boff, &cpu, &gpu)) return;
+        va = (gpu + boff + 255) & ~(UINT64)255;   /* D3D12's CBV alignment */
+        memcpy((unsigned char *)cpu + (va - gpu - boff), (const unsigned char *)w[k].r->cpu + w[k].off, (size_t)w[k].len);
+        j = e->sn_n++ % 8;
+        e->sn_src[j] = root[w[k].i]; e->sn_dst[j] = va; e->sn_chunk[j] = chunk;
+        root[w[k].i] = va;
+        InterlockedIncrement(&g_sd_snaps); InterlockedExchangeAdd64(&g_sd_snap_bytes, (LONG64)w[k].len);
+    }
+}
+/* Before a draw's or dispatch's argument slot: note (upload-guard), mark
+ * (desc-guard), copy (cbv-snapshot). Returns the root values to encode. */
+static const UINT64 *mad_sd_root(struct mad_exec *e, const struct mad_rootsig *rs, const UINT64 *root, UINT64 *tmp, const struct mad_pso *pso) {
+    unsigned i;
+    for (i = 0; i < rs->nparams && i < MAD_ROOT_PARAM_MAX; i++) {
+        UINT type = rs->params[i].type;
+        if (!root[i]) continue;
+        if (g_upload_guard && (type == MADEIRA_IR_PARAM_CBV || type == MADEIRA_IR_PARAM_SRV)) {
+            UINT64 off = 0; struct mad_resource *r = mad_resolve_address(e->q->device, root[i], &off);
+            if (mad_ug_cpu_written(r))
+                mad_ug_note(e, r, off, type == MADEIRA_IR_PARAM_CBV ? 256u : g_ug_bytes, type == MADEIRA_IR_PARAM_CBV ? MAD_UG_CBV : MAD_UG_SRV, i,
+                            type == MADEIRA_IR_PARAM_CBV,
+                            pso ? (pso->ps_name[0] ? pso->ps_name : pso->vs_name) : "?");
+        }
+        if (g_desc_guard && type == MADEIRA_IR_PARAM_TABLE) mad_dg_mark(e, rs, i, root[i]);
+    }
+    if (!g_cbv_snap) return root;
+    memcpy(tmp, root, MAD_ROOT_PARAM_MAX * sizeof *tmp);
+    mad_cbv_snapshot(e, rs, tmp);
+    return tmp;
+}
+static void mad_sd_report(UINT64 presents) {
+    d3d12_log("[sync-diag] present #%llu: upload-guard %ld ranges noted, %ld checked, %ld CHANGED while in flight (+%ld in approximate windows; "
+              "%ld not noted: table full), %ld copied by the GPU, %ld of them DIFFERENT from the CPU's bytes; "
+              "desc-guard %ld descriptor writes checked, %ld into slots in flight; fence-strict: %ld Queue::Wait calls found the Signal asked for "
+              "but not yet committed; cbv-snapshot %ld copies (%lld MB)\n", (unsigned long long)presents,
+              (long)g_sd_ug_noted, (long)g_sd_ug_checked, (long)g_sd_ug_changed, (long)g_sd_ug_changed_approx, (long)g_sd_ug_dropped,
+              (long)g_sd_ug_gpu_copied, (long)g_sd_ug_gpu_diff,
+              (long)g_sd_dg_checked, (long)g_sd_dg_inflight, (long)g_sd_strict_waits, (long)g_sd_snaps, (long long)(g_sd_snap_bytes >> 20));
+}
+/* fence-strict >= 1: a new batch command buffer (or the present's) starts
+ * behind everything committed before it. */
+static void mad_strict_cb_wait(struct mad_device *d, obj_handle_t cb) {
+    UINT64 c;
+    if (!cb || !d->gpu_event) return;
+    c = (UINT64)d->gpu_serial_committed;
+    if (c) MTLCommandBuffer_encodeWaitForEvent(cb, d->gpu_event, c);
+}
+/* fence-strict = 2: wait until the GPU has finished everything committed. */
+static void mad_strict_drain(struct mad_device *d) {
+    UINT64 c; unsigned waited = 0; static LONG said;
+    if (!d->gpu_event) return;
+    c = (UINT64)d->gpu_serial_committed;
+    if (!c) return;
+    while (!MTLSharedEvent_waitUntilSignaledValue(d->gpu_event, c, 100)) {
+        if ((LONG64)c <= d->gpu_serial_failed) return;
+        if ((waited += 100) >= 5000) {
+            if (InterlockedIncrement(&said) <= 4)
+                d3d12_log("[fence-strict] serial %llu not reached in 5 s (GPU at %llu); continuing\n", (unsigned long long)c, (unsigned long long)mad_gpu_completed(d));
+            return;
+        }
+    }
+}
+
 static int exec_arg_slot_for(struct mad_exec *e, const struct mad_rootsig *rs, const UINT64 *root,
                              const UINT32 (*consts)[64], obj_handle_t *buf, UINT64 *off, const UINT *ovr, const struct mad_pso *pso) {
     struct mad_list *l = e->l;
-    unsigned chunk = l->ring_used / (MAD_ARG_RING_BYTES / MAD_ARG_SLOT_BYTES);
-    unsigned slot = l->ring_used % (MAD_ARG_RING_BYTES / MAD_ARG_SLOT_BYTES);
+    unsigned chunk, slot;
+    UINT64 sd_root[MAD_ROOT_PARAM_MAX];   /* madeira-bcd: sync diagnostics, see mad_sd_root */
+    if (g_sd_state > 0 && rs && root) root = mad_sd_root(e, rs, root, sd_root, pso);
+    chunk = l->ring_used / (MAD_ARG_RING_BYTES / MAD_ARG_SLOT_BYTES);
+    slot = l->ring_used % (MAD_ARG_RING_BYTES / MAD_ARG_SLOT_BYTES);
     if (chunk >= l->nrings && !mad_list_ring_grow(e)) return 0;   /* ml1061: pooled, GPU-lifetime aware */
     {
         unsigned char *dst = (unsigned char *)l->ring_cpu[chunk] + slot * MAD_ARG_SLOT_BYTES;
@@ -4931,6 +5334,7 @@ static void exec_draw(struct mad_exec *e, const struct mad_cmd *c) {
 tess_go:
     if (!exec_arg_slot(e, &argbuf, &argoff)) { MAD_SKIP(e); return; }
     arg_slot_used = e->l->ring_used - 1;   /* ml1084: the slot exec_arg_slot took, see the draw-params block */
+    if (g_sd_state > 0 && g_upload_guard) mad_ug_note_draw(e, c);   /* madeira-bcd: sync diagnostics */
 
     memset(&c_pso, 0, sizeof c_pso); c_pso.type = WMTRenderCommandSetPSO; c_pso.pso = tv ? tv->obj[tfmt].rps : e->pso->rps;
     if (e->pso->has_vd && !gsemu && !tv) {
@@ -6020,6 +6424,7 @@ static void mad_ecl_run(ID3D12CommandQueue *This, UINT count, ID3D12CommandList 
     if (ml1021_q) EnterCriticalSection(&ml1021_q->submit_lock);
 
     struct mad_queue *q = (struct mad_queue *)This;
+    if (g_sd_state < 0) mad_sync_diag_load();   /* madeira-bcd: sync diagnostics, read once */
     mad_prebuild_lists(count, lists);   /* madeira-bcd */
     for (UINT i = 0; i < count; i++) {
         struct mad_list *l = (struct mad_list *)lists[i];
@@ -6044,6 +6449,10 @@ static void mad_ecl_run(ID3D12CommandQueue *This, UINT count, ID3D12CommandList 
             /* commandBuffer returns an AUTORELEASED object locally and an interned
              * one remotely; holding it across calls means taking our own reference. */
             NSObject_retain(q->open_cb);
+            if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics */
+                if (g_fence_strict) mad_strict_cb_wait(q->device, q->open_cb);
+                if (g_upload_guard || g_desc_guard) q->open_ticket = mad_ticket_new();
+            }
         }
         if (l) mad_exec_list(q, l, q->open_cb);
         q->open_lists++;
@@ -6313,6 +6722,7 @@ static void mad_queue_flush(struct mad_queue *q) {
         q->npending = 0;
     }
     f6_join(q);   /* ml1134: mode 6 only; the batch's last encoder waits for all of it and moves the device fence */
+    if (g_sd_state > 0 && g_upload_guard >= 2 && q->open_ticket) mad_ug_gpu_copy(q);   /* madeira-bcd: what the GPU sees */
     {   /* ml1061: serial assignment, the signal and the commit are ONE step under a
          * device lock, so serials reach the GPU in strictly increasing order no
          * matter which queue or thread commits (a shared event's value is just
@@ -6333,6 +6743,7 @@ static void mad_queue_flush(struct mad_queue *q) {
         mad_vis_flush(q, q->open_cb);            /* ml1099: under fence_lock, so the pending list is in SERIAL order (Astra) */
         MTLCommandBuffer_commit(q->open_cb);
         if (serial) { q->last_serial = serial; InterlockedExchange64(&sd->gpu_serial_committed, (LONG64)serial); }
+        if (q->open_ticket) { mad_ticket_commit(q->open_ticket, serial); q->open_ticket = 0; }   /* madeira-bcd: sync diagnostics */
         LeaveCriticalSection(&sd->fence_lock);
         q->batch_serial[(q->batches + 1) & 63] = serial;
     }
@@ -6411,6 +6822,7 @@ static DWORD WINAPI mad_fence_worker(void *arg) {
                 if (failed) {
                     static LONG said;
                     if ((LONG64)job.serial > d->gpu_serial_failed) InterlockedExchange64(&d->gpu_serial_failed, (LONG64)job.serial);
+                    if (g_fence_strict) MTLSharedEvent_signalValue(d->gpu_event, job.serial);   /* madeira-bcd: later batches wait on the GPU for this serial */
                     if (InterlockedIncrement(&said) <= 12)
                         d3d12_log("[madeira-d3d12] ml1062 batch serial %llu FAILED on the GPU; advancing its fence anyway "
                                   "(the frame's work is lost, the game keeps running)\n", (unsigned long long)job.serial);
@@ -6430,6 +6842,7 @@ static DWORD WINAPI mad_fence_worker(void *arg) {
         {   /* ml1109: from "GPU reached the serial" to "fence advanced" = our retire overhead */
             LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
             for (k = 0; k < job.ncbs; k++) mad_cb_retire(d, job.cbs[k]);
+            if (g_upload_guard) mad_ug_verify(d, job.serial);   /* madeira-bcd: before the game may reuse the data */
             ID3D12Fence_Signal(job.fence, job.value);
             QueryPerformanceCounter(&t1);
             InterlockedExchangeAdd64(&g_perf_sig_lat_ticks, t1.QuadPart - t0.QuadPart); InterlockedIncrement(&g_perf_sig_lat_n);
@@ -6444,6 +6857,7 @@ static int mad_signal_async(struct mad_queue *q, ID3D12Fence *fence, UINT64 valu
     struct mad_fence_job *job;
     int ok = 0;
     if (!d->gpu_event || d->ncap) return 0;   /* no timeline, or a capture wants its readback synchronously */
+    if (g_fence_strict >= 2) return 0;        /* madeira-bcd: fence-strict 2, synchronous and draining */
     EnterCriticalSection(&q->submit_lock);   /* lock order everywhere: submit_lock, THEN fence_lock (as in flush) */
     EnterCriticalSection(&d->fence_lock);
     if (!d->fence_thread) {
@@ -6485,7 +6899,22 @@ static HRESULT STDMETHODCALLTYPE queue_Wait(ID3D12CommandQueue *This, ID3D12Fenc
      * here feeds ONE Metal queue in commit order, so once the signalling batch has
      * been COMMITTED anything submitted afterwards already runs behind it. Only a
      * signal that has not been submitted yet still needs the CPU-side wait. */
-    if ((UINT64)f->submitted >= value) return S_OK;
+    if (g_sd_state < 0) mad_sync_diag_load();   /* madeira-bcd */
+    if ((UINT64)f->submitted >= value) {
+        /* madeira-bcd: fence-strict. "submitted" is set by queue_Signal BEFORE
+         * its batch is committed (mad_signal_run flushes after), so a Wait on
+         * another thread can see it, return, and commit its own batch first:
+         * the GPU then runs the waiting queue's work ahead of the signalling
+         * queue's. Strict mode waits for the commit itself. */
+        if (g_fence_strict && (UINT64)f->committed < value && f->value < value) {
+            LONG n = InterlockedIncrement(&g_sd_strict_waits);
+            while ((UINT64)f->committed < value && f->value < value && waited < 5000) { Sleep(1); waited++; }
+            if (n <= 8)
+                d3d12_log("[fence-strict] Queue::Wait for %llu: the Signal was asked for but its batch was not committed yet; "
+                          "waited %u ms for the commit (%ld so far)\n", (unsigned long long)value, waited, (long)n);
+        }
+        return S_OK;
+    }
     while (waited < 5000) {
         UINT64 v;
         EnterCriticalSection(&f->lock);
@@ -6522,6 +6951,7 @@ static HRESULT STDMETHODCALLTYPE queue_Signal(ID3D12CommandQueue *This, ID3D12Fe
     return mad_signal_run(q, fence, value);
 }
 static HRESULT mad_signal_run(struct mad_queue *q, ID3D12Fence *fence, UINT64 value) {
+    if (g_sd_state < 0) mad_sync_diag_load();       /* madeira-bcd */
     mad_queue_flush(q);                              /* ml884: commit the batch this signal covers */
     InterlockedIncrement(&g_perf_signals);           /* ml1109 */
     if (mad_signal_async(q, fence, value)) { mad_fence_committed((struct mad_fence *)fence, value); return S_OK; }
@@ -6540,6 +6970,10 @@ static HRESULT mad_signal_run(struct mad_queue *q, ID3D12Fence *fence, UINT64 va
     for (unsigned i = 0; i < q->npending; i++) mad_cb_retire(q->device, q->pending[i]);   /* ml1049: checks status */
     q->npending = 0;
     LeaveCriticalSection(&q->submit_lock);
+    if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics */
+        if (g_fence_strict >= 2) mad_strict_drain(q->device);   /* every queue's committed work, not just this one's */
+        if (g_upload_guard) mad_ug_verify(q->device, mad_gpu_completed(q->device));
+    }
     mad_capture_flush(q->device);   /* ml910 */
     return ID3D12Fence_Signal(fence, value);
 }
@@ -7625,6 +8059,7 @@ static void STDMETHODCALLTYPE device_CreateConstantBufferView(ID3D12Device *This
         const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE h) {
     struct mad_descriptor *e = (struct mad_descriptor *)h.ptr;
     if (!e) return;
+    if (g_sd_state > 0) mad_dg_write(e, 1, "CreateConstantBufferView");   /* madeira-bcd: desc-guard */
     if (!desc || !desc->BufferLocation) {   /* a null view: defined to read as zeros (ml1049) */
         struct mad_device *nd = (struct mad_device *)This;
         memset(e, 0, sizeof *e);
@@ -7708,6 +8143,7 @@ static void STDMETHODCALLTYPE device_CreateUnorderedAccessView(ID3D12Device *Thi
     struct mad_descriptor *e = (struct mad_descriptor *)h.ptr;
     static int said_counter, said_kind;
     if (!e) return;
+    if (g_sd_state > 0) mad_dg_write(e, 1, "CreateUnorderedAccessView");   /* madeira-bcd: desc-guard */
     if (!r) { memset(e, 0, sizeof *e); return; }                                /* a null view */
     if (counter && !said_counter++)
         d3d12_log("[madeira-d3d12] CreateUnorderedAccessView: counter resources are bound (madeira-bcd)\n");
@@ -7820,6 +8256,7 @@ static void STDMETHODCALLTYPE device_CopyDescriptorsSimple(ID3D12Device *This, U
         D3D12_CPU_DESCRIPTOR_HANDLE dst, D3D12_CPU_DESCRIPTOR_HANDLE src, D3D12_DESCRIPTOR_HEAP_TYPE type) {
     (void)This;
     if (!n || !dst.ptr || !src.ptr) return;
+    if (g_sd_state > 0) mad_dg_write((const void *)dst.ptr, n, "CopyDescriptorsSimple");   /* madeira-bcd: desc-guard */
     memmove((void *)dst.ptr, (const void *)src.ptr, (size_t)n * mad_descriptor_stride(type));
 }
 
@@ -7834,6 +8271,8 @@ static void STDMETHODCALLTYPE device_CopyDescriptors(ID3D12Device *This,
     while (di < ndst && si < nsrc) {
         UINT dlen = dst_sizes ? dst_sizes[di] : 1, slen = src_sizes ? src_sizes[si] : 1;
         UINT take = (dlen - dpos < slen - spos) ? dlen - dpos : slen - spos;
+        if (take && dsts[di].ptr && srcs[si].ptr && g_sd_state > 0)   /* madeira-bcd: desc-guard */
+            mad_dg_write((const char *)dsts[di].ptr + (size_t)dpos * stride, take, "CopyDescriptors");
         if (take && dsts[di].ptr && srcs[si].ptr)
             memmove((char *)dsts[di].ptr + (size_t)dpos * stride,
                     (const char *)srcs[si].ptr + (size_t)spos * stride, (size_t)take * stride);
@@ -9796,6 +10235,8 @@ static HRESULT STDMETHODCALLTYPE device_CreateDescriptorHeap(ID3D12Device *This,
         h->cpu = (struct mad_descriptor *)bi.memory.ptr;
         h->gpu_address = bi.gpu_address;
         if (h->cpu) memset(h->cpu, 0, (size_t)bi.length);
+        if (g_sd_state < 0) mad_sync_diag_load();   /* madeira-bcd: desc-guard watches shader-visible heaps */
+        if (g_sd_state > 0 && g_desc_guard) mad_dg_register(h);
     }
     HRESULT hr = heap_QI((ID3D12DescriptorHeap *)h, riid, out);
     heap_Release((ID3D12DescriptorHeap *)h);
@@ -9871,6 +10312,7 @@ static void STDMETHODCALLTYPE device_CreateShaderResourceView(ID3D12Device *This
     struct mad_resource *r = (struct mad_resource *)res;
     struct mad_descriptor *e = (struct mad_descriptor *)h.ptr;
     if (!e) return;
+    if (g_sd_state > 0) mad_dg_write(e, 1, "CreateShaderResourceView");   /* madeira-bcd: desc-guard */
     if (!r) { memset(e, 0, sizeof *e); return; }                                /* a null view */
     if (r->buffer) {
         UINT64 stride = 4, first = 0, num = r->size / 4;
@@ -10007,6 +10449,7 @@ static void STDMETHODCALLTYPE device_CreateSampler(ID3D12Device *This,
     struct mad_device *d = (struct mad_device *)This;
     struct mad_descriptor *e = (struct mad_descriptor *)h.ptr;
     if (!e) return;
+    if (g_sd_state > 0) mad_dg_write(e, 1, "CreateSampler");   /* madeira-bcd: desc-guard */
 
     struct WMTSamplerInfo si;
     if (desc) {
@@ -13955,6 +14398,7 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
         UINT lat = s->max_latency ? s->max_latency : 2; if (lat > 3) lat = 3;
         UINT64 need = s->present_serial[(s->presents + 8 - lat) & 7];
         s->present_serial[s->presents & 7] = (UINT64)dv->gpu_serial_committed;
+        if (g_sd_state > 0 && g_fence_strict >= 2) need = (UINT64)dv->gpu_serial_committed;   /* madeira-bcd: fence-strict 2, the frame being presented */
         if (dv->gpu_event && need && (UINT64)mad_gpu_completed(dv) < need) {
             static LONG waits, said;
             LONG64 tl = mad_qpc();   /* ml1128 */
@@ -13965,6 +14409,10 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
                 d3d12_log("[madeira-d3d12] ml1070 present #%llu waited for the GPU to finish frame N-%u (serial %llu; %ld such waits so far)\n",
                           (unsigned long long)s->presents, lat, (unsigned long long)need, waits);
         }
+    }
+    if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics -- a game that paces by Present reuses frame N-lat's data as soon as this returns */
+        if (g_upload_guard) mad_ug_verify(s->queue->device, mad_gpu_completed(s->queue->device));
+        if ((s->presents % 300) == 299) mad_sd_report(s->presents + 1);
     }
     { LONG64 td = mad_qpc();   /* ml1128 */
     drawable = MetalLayer_nextDrawable(s->layer);
@@ -13977,6 +14425,7 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
     { LONG64 tc = mad_qpc();   /* ml1128: blit + presentDrawable + commit */
     tex = MetalDrawable_texture(drawable);
     cb = MTLCommandQueue_commandBuffer(s->queue->device->mtl_queue);
+    if (cb && g_sd_state > 0 && g_fence_strict) mad_strict_cb_wait(s->queue->device, cb);   /* madeira-bcd: the copy starts after the frame's batches */
     if (cb && tex) {
         obj_handle_t copy_src = src->texture;
         UINT copy_w = src->width, copy_h = src->height;
