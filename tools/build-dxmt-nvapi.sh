@@ -32,6 +32,8 @@ done
 # submodule stays untouched).
 cp "$D/src/nvapi/nvapi.cpp" "$OUT/nvapi.cpp"
 python3 "$R/tools/patch-dxmt-nvapi.py" "$OUT/nvapi.cpp"
+# Strings handed back without their NUL (driver branch, adapter name).
+python3 "$R/tools/patch-nvapi-strings.py" "$OUT/nvapi.cpp"
 
 "$MINGW/arm64ec-w64-mingw32-clang++" -std=c++20 -O2 -shared -o "$OUT/nvapi64.dll" \
     "$OUT/nvapi.cpp" "$D/src/nvapi/nvapi64.def" \

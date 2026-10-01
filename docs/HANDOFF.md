@@ -960,6 +960,35 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     after God of War), God of War not regressed (it now removes the NVIDIA
     entry on launch), PS5 pad via game sheet "madeira-bcd: controller ->
     DirectInput / HID" or Session menu > Controller (`[hid-pad]` lines).
+  - **GoT on build 286 (log GhostOfTsushima.exe 2026-10-01 17:04:41): the
+    stale-adapter cleanup worked but did NOT fix the dialog.** `[vgpu]
+    removed the stale 106b:0001 adapter (3 keys) ...` then `[vgpu]
+    registered ...10DE&DEV_2544`, and still: probe device created ->
+    destroyed -> "No installed graphics card" -> presents=0 after 30 s (the
+    dialog was not dismissed). So the two-adapter hypothesis is refuted (the
+    cleanup stays: it is correct and harmless). Ruled out as well: video
+    budget (1536 MB in good and bad runs alike), module set before the probe
+    (65 identical DLLs in 09-28 20:39 good / 20:41 bad / today), Wine's
+    cleanup_devices (never runs on iOS: is_service_process() is always TRUE).
+    External: on Linux (Bazzite issue #2102, Intel Arc B580) the same popup
+    appears and **the game loads normally once it is closed**; on 09-28 20:41
+    the owner closed it and the game went on too. -> Workaround: tap Tamam.
+    Real bug found while looking: DXMT's nvapi.cpp copies every returned
+    string with memcpy(dst, s.c_str(), s.size()) -- no NUL -- so
+    NvAPI_SYS_GetDriverAndBranchVersion's branch string ("r<sdk>_000"),
+    NvAPI_GetDisplayDriverVersion's strings, GetInterfaceVersionString and
+    GPU_GetFullName carry whatever the caller's stack held after the text.
+    That is a run-to-run varying input to the game's driver-info read and
+    fits the intermittent pattern (not proven). Fix:
+    tools/patch-nvapi-strings.py (5 copies -> bounded, terminated copy;
+    tested on a copy after patch-dxmt-nvapi.py, idempotent; helper compiled
+    and tested on the host), run by tools/build-dxmt-nvapi.sh. Named
+    patch-nvapi-* so the i386 farm key (tools/patch-dxmt-*.py) is kept.
+    Remaining inconsistencies, unchanged: NVAPI says driver 999.99 and
+    "NVIDIA GeForce RTX 4090" (GetFullName) while DXGI / the registry say
+    RTX 3060 (2544) with driver 35.0.15.6094 (560.94). If the dialog stays
+    after this, next candidates are making those agree and logging the
+    game's own text log again (the `[guest-log]` mirror is gone, see above).
 
 ### DualSense / DirectInput (second agent)
 
