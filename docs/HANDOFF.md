@@ -1176,6 +1176,46 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (`[WineProc] madeira-bcd: the main process exited but ... still run`),
     God of War unchanged (its window must show `presents through Metal` /
     `not drawn (covers the guest desktop)`, never a drawn layer).
+  - **GoW 1080p performance agent finished; its branch merged (862905a).**
+    Full write-up: docs/perf-gow-1080p.md (Turkish summary on top). Findings
+    from the 15:06:44 log, ranked: (1) the chip's shared power budget, not
+    thread QoS -- during 1080p play the P cores sit at ~1.3 GHz doing 0-0.9
+    cores of work while the process uses ~3.4 E cores at 1.6-1.7 GHz, 6-8
+    threads in the run queue, CPU power only 0.45-0.8 W; the GPU takes the
+    budget (guest threads are already USER_INTERACTIVE, ECO was off). (2) the
+    wineserver is the 2nd-busiest thread (~47 % of an E core, 10-16k
+    requests/s, select + release_semaphore = the game's job semaphores;
+    fastsync runs with sem=off; a madsync run on 09-30 had 249 req/s). (3)
+    per-thread CPU: DxRenderThread 179 ms / 300 ms, main 131,
+    TaskManager00-03 ~87 each, dxmt-encode 58. (4) the "43 % inside
+    kernel32" was a profiler artefact: the calls are kernel32!Sleep and
+    kernel32!GetCurrentThreadId, RUNNING includes queued threads and FEX's
+    guest RIP is stale; [cpu-split] puts most host time in sched_yield.
+    (5) ~280 Mach exceptions/s from GetProcAddress'd functions called at
+    their PE address (DXMT logger __wine_dbg_output ~50 %, libc++ atomic
+    wait's WaitOnAddress / RtlWakeAddressAll ~45 %). (6) DXMT logs ~130
+    lines/s at Info level. (7) GPU time was never logged.
+    Merged (all diagnostics or default off): ml1112 names IAT callees
+    (`kernel32.dll!Sleep (import KERNEL32.dll!Sleep)`); `[xp-api]` counters
+    for D3D11 games (follows the busiest process, ml1131c); `[frame]`
+    instrument in server_ios.c (was empty stubs in virtual_ios.c) behind
+    `MADEIRA_FRAME_STATS=1`, fed GPU start/end by
+    tools/patch-winemetal-gpu-span.py (new CI step "Patch winemetal GPU
+    timeline for [frame]", native only); `MADEIRA_PROBES=light|0`. After the
+    merge: ConfigCatalog regenerated (check PASS), the whole DXMT patch
+    chain applied on a scratch copy in CI order and re-applied idempotently,
+    check-fastsync / launch-routing / library-sections / hidpad PASS.
+    Proposed, not done: translate arm64x_check_call targets to the pool copy
+    (upstream, committed PE ntdll), FEX fast path for trivial getters, no
+    yield before a timed Sleep, framebufferOnly when MetalFX / framegen are
+    off, GPU work reduction once [frame] shows numbers. Owner tests on the
+    next build, one at a time in God of War's config, same outdoor spot 3-5
+    min, HUD screenshot each: `inproc-sync = 1` (Madsync; biggest CPU lever),
+    `env.DXMT_LOG_LEVEL = none` (+ drop env.WINEDEBUG), MetalFX off at
+    native 1080p, `env.DXMT_WAIT_ON_ADDRESS = 1` (moderate risk),
+    `env.MADEIRA_LD_BOUNDS = 0` (native 1080p only; re-converts shaders);
+    with `env.MADEIRA_FRAME_STATS = 1` in the game config and
+    `env.MADEIRA_DEVICE_STATS = 1` in madeira.cfg.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

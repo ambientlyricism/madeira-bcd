@@ -502,6 +502,26 @@ the update pack, the game's options and starts the per-game session log.
   probe) crashed in `objc_msgSend` and the game reported "No installed
   graphics card". The event is now released last.
 
+- Game sessions show launcher and message-box windows again
+  (`build/win32u-unix/driver_ios.c` `winios_game_windows`,
+  `app/Madeira/Winios/Winios.m` game-mode overlay): top-level windows that do
+  not cover the guest desktop and do not present through Metal are drawn in a
+  transparent overlay in the game rect. `MADEIRA_GAME_WINDOWS=0` turns it off.
+- A launcher that starts the game and exits no longer ends the session
+  (`build/ntdll-unix/process_ios.c` `madeira_live_game_children`,
+  `WineProcessBridge.m`): the session waits while a non-helper child started
+  in the last 60 s runs. `MADEIRA_WAIT_CHILDREN=0` turns it off.
+- "Report an NVIDIA GPU" also exports `DXMT_WSI_MONITOR_IDENTITY=1` and
+  `DXMT_WSI_MODE_TABLE=1` (`LibraryBCD.swift`), so DXGI's output carries
+  user32's monitor and mode list (Ghost of Tsushima's adapter / monitor check).
+- Performance diagnostics (`build/ntdll-unix/server_ios.c`, see
+  `docs/perf-gow-1080p.md`): `[rip-profile] ml1112` names a hot IAT callee as
+  `module!export`; `[xp-api]` follows the busiest process in D3D11 games;
+  `[frame]` (presents/s, GPU busy from command-buffer GPU start/end via
+  `tools/patch-winemetal-gpu-span.py`, nextDrawable wait) when
+  `MADEIRA_FRAME_STATS=1`; `MADEIRA_PROBES=light|0` trims the always-on
+  profilers.
+
 ## App
 
 - `HomeView.swift`: a library-first home screen (games with covers and
