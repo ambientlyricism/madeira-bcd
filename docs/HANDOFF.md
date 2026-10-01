@@ -313,6 +313,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     log by exe; DXMT short-cb / 16-bit index realign / SM4 vfetch bounds +
     byte-aligned fetch (the last three not yet proven to fix anything).
     Fork-only (not for upstream): OTA signing/mail, owner-specific secrets.
+  - **OTA moved to Cloudflare R2 (2026-10-01).** The owner created a private
+    R2 bucket and an Account API token (Object Read & Write, that bucket
+    only), uploaded Development.p12 + Development.mobileprovision to the
+    bucket root and added R2_ACCOUNT_ID / R2_ACCESS_KEY_ID /
+    R2_SECRET_ACCESS_KEY / R2_BUCKET. **Build 271 green** (run 36831528440,
+    head 8bfa683, dispatch; no code change since 270): notices "Madeira
+    0.1.271 signed ... kurulum-0.1.271.html written to the private R2 bucket
+    (links valid until 2026-10-08 07:53 UTC)" and "install link for 0.1.271
+    e-mailed to the owner" (07:53 UTC). Open: owner to confirm the mailed
+    link installs on the phone; then the B2_* secrets can be deleted (the
+    script falls back to B2 only when an R2_* secret is missing) and the B2
+    bucket emptied. Run 270 still shows "in progress" (GitHub glitch); it did
+    not block 271's concurrency group.
 
 ---
 
@@ -432,6 +445,8 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
 * **Cloudflare R2** (prepared 2026-09-30, owner switches 2026-10-01): with the
   four `R2_*` secrets the same script uses R2 instead of B2 (no egress fees;
   B2's free plan allows 1 GB of downloads a day, ~6 installs).
+  In use since build 271 (2026-10-01): the four `R2_*` secrets exist, the
+  signing files are at the R2 bucket root, the log says "private R2 bucket".
 * Signing keeps the IPA's own bundle ids (`com.willfaust.mythicemu`, extension
   `.MemoryHost`), like the owner's Feather install, so an OTA install updates
   the installed app in place. `SIGN_USE_PROFILE_BUNDLE_ID=1` would rename to
