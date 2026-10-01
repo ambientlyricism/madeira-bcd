@@ -246,3 +246,182 @@ the whole log. Expected:
   and its pool ranges are reused, an emulator that holds entries for them
   (images pushed to it while it was the registrant) can reverse-translate the
   new copy to the dead image's PE VA. Not observed yet.
+
+## 7. Build 296: the child runs; the game stops at ERR_GFX_D3D_NOD3D12
+
+> **Türkçe özet:** Çocuk süreç düzeltmesi cihazda çalıştı (build 296). Oyun
+> artık çok daha ileri gidiyor ve kendi isteğiyle duruyor: 0x80000003, oyunun
+> kendi ölümcül hata yolundaki `int3`. Hata kodu kayıtta görünüyor: RSI =
+> 0x17b133bd = joaat("ERR_GFX_D3D_NOD3D12"), yani "DirectX 12 ekran kartı
+> bulunamadı". Oyun Streamline'ı kurduktan sonra DXGI fabrikasını yeniden
+> açıyor ve D3D12CreateDevice'ı hiç çağırmadan bu hataya gidiyor; yani bir
+> adaptör/çıkış kontrolünü geçemiyor. Oyunun kendi imajına yazmaları doğru
+> işleniyor. Madeira tarafında bulunup düzeltilen fark: çocuk süreçte
+> GetDesktopWindow() hep NULL dönüyordu (masaüstü penceresi sınıfı yalnızca
+> ilk sürece kayıtlıydı). Bir sonraki cihaz kaydı için oyunun dosyasına
+> `env.MADEIRA_GUEST_LOG = all` (oyunun kendi crashcontext.log'u tamamen
+> gelsin); hâlâ olmazsa ek olarak `env.DXMT_WSI_MONITOR_IDENTITY = 1` ve
+> `env.DXMT_WSI_MODE_TABLE = 1` (Ghost of Tsushima'daki "ekran kartı yok"
+> sorununun aynısı olabilir).
+
+Logs: PlayGTAV.exe 2026-10-01 19:53:36 (PlayGTAV main -> GTA5_Enhanced child,
+peb 0x10592c000) and GTA5_Enhanced.exe 19:54:23 (GTA5 main -> PlayGTAV child
+-> GTA5 grandchild, peb 0x11c59c000). Line numbers below are the first log's.
+
+### 7.1 The child-ntdll fix works
+
+`[alias-push] ... emulator maps ntdll.dll 0x71ffcd0000+0x130000 to this
+process's own copy 0x14fba8000` (1783), the child's `[pool-rip-fix] #1..#24
+guest RIP 0x14fc2f050 ... PE 0x71ffd57050` (2885-2930), a second `[pc2fh]`
+line for the child's copy, no NoExec; both start paths reach the game.
+
+### 7.2 What raised 0x80000003
+
+The game's own `int3` at GTA5_Enhanced.exe RVA 0x100798 (`[int3-guest]
+guest_rip=0x140100799`, 6734; FEX turns it into `brk #0`, wine first reports
+c000001d at the JIT pc, FEX rebuilds it as `80000003 addr=0000000140100798`,
+6799-6803 -- the Windows shape, the address of the int3). The bytes after it
+are `mov rax,[rip+...]; test rax,rax; je ...` (a fatal-error hook).
+
+* First int3 (RSP 0x7070e2ee00): handled by the game's own handler
+  GTA5_Enhanced.exe+0x2479e30, execution continues at RVA 0x15b8ed6 (6768-6770).
+* Second int3, same RIP (RSP 0x7070e2ee70): no handler up to the root
+  (`[unwind-root] ml633 ACCEPTING terminal root frame`, 6804); the game's
+  unhandled-exception filter runs: thread 003c writes a minidump (refused by
+  `[minidump-gate]`, 6822) and crashcontext.log (6895-6897), connects to port
+  443 to send the report, and the process ends with `NtTerminateProcess(...,
+  0x80000003)` (7114). There are no `[unwind-why]` / invalid-frame lines, so no
+  frame was skipped: this is the game's decision, not an unwinding failure.
+* **Which error:** RSI = 0x17b133bd at all four int3s in both logs (6736, 6780;
+  second log 8398, 8442). That is Rockstar's string hash (joaat, lower-case) of
+  `ERR_GFX_D3D_NOD3D12`, the D3D12 counterpart of the legacy edition's
+  ERR_GFX_D3D_NOD3D11 ("DirectX 11 adapter or runner not found"). Neighbouring
+  labels do not match: ERR_GFX_D3D_INIT 0x9cf7bd06, ERR_GFX_D3D_NOD3D11
+  0x24c04ddb, ERR_GFX_D3D_NOFEATURELEVEL 0x2bcec5fa.
+
+### 7.3 Where in start-up it gives up
+
+* Thread 0054 (a hardware-info worker: WMI via wbemprox fails, 4526-4529)
+  loads D3D12/winemetal/DXGI and creates a device on the default adapter at
+  FL 12_0 (4654-4677) -- fine -- and destroys it.
+* The game thread 0034: self-modifying writes into its own image (7.4), then
+  D3D12/DXGI (5322-5383): factory, `IDXGIFactory7` not supported
+  (`DXGIFactory: Unknown interface query a4966eed-...`; DXMT implements up to
+  IDXGIFactory6), three `get_desktop_window ... top_window stays 0`,
+  `[display] virtual monitor 1280x720`, `[vgpu] registered
+  PCI\VEN_106B&DEV_0001` (Apple; "Report an NVIDIA GPU" is off for this game)
+  -- no abort yet.
+* Streamline: sl.interposer (5773), WinVerifyTrust on its plugins
+  (`CryptDecodeObjectEx Unsupported decoder for 1.3.6.1.4.1.311.2.1.4`,
+  SPC_INDIRECT_DATA -- the plugins load anyway), nvapi64 six times with
+  `NvAPI_Initialize -> -6` (NVIDIA_DEVICE_NOT_FOUND, expected without NVIDIA
+  reporting), sl.common, `[vkmt] D3DKMTEnumAdapters2 -> 0, 0 adapters` (6304),
+  `vulkan_init_once Wine was built without Vulkan support`, sl.dlss, sl.dlss_g,
+  sl.pcl, sl.reflex.
+* Then D3D12/DXGI a last time (6699-6727): factory (IDXGIFactory7 again), three
+  more `top_window stays 0`, and the int3 (6732). **No D3D12CreateDevice is
+  logged after the probe on 0054** (madeira-d3d12 logs every call, probe or
+  create), so the game rejected the adapter(s) during DXGI enumeration, before
+  it asked D3D12 anything.
+
+### 7.4 The self-writes into the read-only image are handled correctly
+
+`[fault_rip] ... addr=0x140265bd5 kr=2(PROTECTION_FAILURE)` (4983/5081) and
+`addr=0x14122be51` (5191/5229): the anti-tamper patches its own .text. FEX's
+self-modifying-code path handles both: `Handled self-modifying code: pc:
+16DA4E61C fault: 140265BD5` and `[smc-atomic] ml657 #1 handled` (5182-5184);
+the next fault reports `previous SMC store at 0x140265bd0 ... changed the bytes
+(store landed)` with the new bytes (5260-5262); the second store is retried
+(`[smc-byte] ml1018 #1 DECLINED backpatch ... retrying at the same pc`, 5273)
+and never faults again. The `[exc-disp] raise ... c0000005` lines (5173, 5264)
+are this internal SMC round trip, not guest exceptions. Also seen and
+survived: RUNE64's `We don't support modifying GS/FS selector in 64bit mode!`
+and `IRET only implemented for 64bit and 32bit sizes` (FEX warnings about the
+anti-tamper's probes).
+
+### 7.5 Madeira-side difference found and fixed: no desktop window in a child
+
+`get_desktop_window ... top_window stays 0` appears 9 times in each GTA log,
+always on the game thread, and never in a God of War or Ghost of Tsushima log.
+Cause: win32u's `init_user` (class_ios.c, `pthread_once`) runs only for the
+session's first pseudo-process: only that process connects to the window
+station and registers the desktop (#32769) and "Message" window classes. The
+wineserver keeps classes per process and creates a missing desktop window in
+the context of the process that asks (get_desktop_window with force, or the
+first top-level CreateWindowEx). GoW/GoT create it from their main process.
+GTA's main process is a launcher that never opens a window, so the shared
+desktop has none and the child cannot create it -- GetDesktopWindow() returns
+NULL for the rest of the run, and with it GetDC(NULL), GetWindowRect(desktop),
+the child's first top-level CreateWindowEx (its game window) and whatever the
+adapter/monitor check derives from them. register_builtin_classes() was made
+per-process earlier for the same reason (Steam's update UI).
+
+Fix (build/win32u-unix/winstation_ios.c `ios_child_desktop_fixup`; class_ios.c
+publishes the session PEB at the end of init_user): when the server gives a
+thread no desktop window and the process is not the session's own, once per
+process: register the desktop/message classes for this process and ask again;
+if the thread has no desktop at all, run winstation_init for this process (what
+init_user did for the session) and ask once more. The server detaches the
+desktop window from its creator at once (and releases the class), so it
+outlives the child. The session process never takes this path, so God of War
+and Ghost of Tsushima are unchanged. `MADEIRA_CHILD_DESKTOP=0` turns it off.
+Host check: `python3 tests/host/check-child-desktop.py` (compiles
+get_desktop_window and the helper against a model of the server's per-process
+classes; PASS with ASan/UBSan).
+
+Whether this alone clears ERR_GFX_D3D_NOD3D12 is not known: the first DXGI
+pass also met a NULL desktop window and did not abort.
+
+### 7.6 Other suspects, not changed here
+
+* **DXGI output identity.** With "Report an NVIDIA GPU" off, DXMT's 64-bit
+  DXGI_OUTPUT_DESC::Monitor is its private sentinel (1), not user32's HMONITOR,
+  and the output lists only 640x480 / 800x600 / the current mode. That is what
+  Ghost of Tsushima's "No installed graphics card ... monitor is connected"
+  came from (HANDOFF, build 289). GTA's crash report says "Display : 1920 x
+  1080"; the virtual monitor is 1280x720. Test: `env.DXMT_WSI_MONITOR_IDENTITY
+  = 1` and `env.DXMT_WSI_MODE_TABLE = 1` in GTA's game file (no build needed).
+* **D3DKMT lists no adapter** (`[vkmt] ... 0 adapters (registered GPU is not in
+  the list)`, sysparams_ios.c, the virtual-monitor regime): a game or
+  Streamline that maps DXGI's adapter LUID to a D3DKMT adapter (driver
+  version, WDDM caps) finds none.
+* **IDXGIFactory7** and `EnumAdapterByLuid` are not implemented in DXMT (the
+  latter would log `DXGIFactory::EnumAdapterByLuid: not implemented`; that line
+  does not appear, so it was not called).
+* OutputDebugString text after the first four per process is not logged: the
+  PE ntdll's `[exc] ml811/ml812` probe allows 4 hits per exception code, and
+  madeira-d3d12's own four messages used them up (4646-4669). On ARM64EC,
+  RtlRaiseException dispatches in PE code, so the unix side never sees it.
+
+### 7.7 Next device log
+
+On the build with this change, start GTA V Enhanced (either way) with this
+line in its game file and send the whole log:
+
+```
+env.MADEIRA_GUEST_LOG = all
+```
+
+Look for:
+
+* `[child-desktop] madeira-bcd pid=... : no desktop window (status ..., thread
+  desktop ...); registered the desktop/message classes for this process; retry 0
+  -> top_window=0x...` once, and no `top_window stays 0` after it. If it says
+  `thread had no desktop, winstation_init gave it ...`, the child had no
+  desktop at all (worth knowing).
+* `[guest-log] file .../CrashLogs/crashcontext.log` followed by the whole
+  report (adapter, driver, error text) if the game still stops. The mirror
+  takes every line of *.log files, 400 lines (`MADEIRA_GUEST_LOG_LIMIT`
+  raises it).
+* Whether `D3D12CreateDevice(adapter=0x...` now appears after the Streamline
+  loads, and whether a game window is created.
+
+If it still ends in 0x80000003 with RSI=0x17b133bd, run once more with
+
+```
+env.MADEIRA_GUEST_LOG = all
+env.DXMT_WSI_MONITOR_IDENTITY = 1
+env.DXMT_WSI_MODE_TABLE = 1
+```
+
+(`[monitor-identity] ml1190 using user32 primary=...` confirms the first).
