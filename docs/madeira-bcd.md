@@ -489,6 +489,20 @@ the update pack, the game's options and starts the per-game session log.
   descriptors a running batch references. `cbv-snapshot = N` copies N bytes
   (1 = 4096) of each UPLOAD root CBV into the argument ring at replay and
   binds the copy. Summary line `[sync-diag] present #N` every 300 presents.
+- D3D12 tiled resources, opt-in (`madeira_d3d12.c`, TILED RESOURCES block;
+  docs/gta5-d3d12-caps.md): `d3d12-tiled-resources = 1` (madeira.cfg or the
+  game's file, default 0) answers OPTIONS.TiledResourcesTier 2 and
+  MaxGPUVirtualAddressBitsPerResource 40, gives R32G32B32_FLOAT/UINT/SINT
+  `IA_VERTEX_BUFFER` format support, creates CreateReservedResource(1,2)
+  resources fully backed (as committed DEFAULT-heap resources; tiles x 64 KB
+  above `d3d12-reserved-max-mb`, default 1024, refused with E_OUTOFMEMORY),
+  answers GetResourceTiling with D3D12's standard tiling (64 KB tiles,
+  standard 2D/3D/BC/MSAA shapes, Tier 2 per-slice mip packing) and counts
+  UpdateTileMappings / CopyTileMappings as no-ops (`[d3d12-tiled]` lines).
+  Unmapped tiles read their backing, not zeros. Without the key the methods
+  are the generated stubs and the answers unchanged. For GTA V Enhanced's
+  feature-level 12_0 check (ERR_GFX_D3D_NOD3D12). Host test
+  `tests/host/check-d3d12-tiled.py`.
 - RtlPcToFileHeader knows JIT-pool aliases (`build/ntdll-unix/virtual_ios.c`,
   `ios_patch_rtl_pc_to_file_header`, called from both ntdll hook sites in
   `loader_ios.c`): the pool copy of the prebuilt PE ntdll's RtlPcToFileHeader
