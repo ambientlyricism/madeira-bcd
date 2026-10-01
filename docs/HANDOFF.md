@@ -1161,6 +1161,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     GPU vs CPU bound, present latency, existing DXMT / sync switches; it
     writes docs/perf-gow-1080p.md and low-risk or switchable changes on its
     branch for the main session to merge and build.
+  - **Build 291 green** (run 36877858410, head 05f67f3, 2026-10-01 14:57
+    UTC; 288 / 289 / 290 were cancelled by it): monitor identity + mode
+    table with "Report an NVIDIA GPU", game-mode launcher / dialog windows
+    (Winios.m / driver_ios.c / IOSDisplayShim / WineProcessBridge -- the
+    ObjC compiled first time), NVAPI NUL-terminated strings, launcher-child
+    session wait (process_ios.c), plus everything of 286. Native ABI
+    8c81d07a4878eaea, shader cache identity 19111887a738ea3a. OTA: "bucket
+    holds 10 builds, 1.51 GB of the 8 GB budget", kurulum-0.1.291 mailed.
+    main fast-forwarded (no workflow change since 286, so no duplicate run).
+    Waiting on device: GoT launcher visible + no "No installed graphics
+    card" (`[monitor-identity] ml1190 using user32 primary`, `[winios]
+    game-mode window overlay attached`), GTA V Enhanced past the launcher
+    (`[WineProc] madeira-bcd: the main process exited but ... still run`),
+    God of War unchanged (its window must show `presents through Metal` /
+    `not drawn (covers the guest desktop)`, never a drawn layer).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
