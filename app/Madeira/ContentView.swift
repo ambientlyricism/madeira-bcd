@@ -2824,8 +2824,23 @@ struct ContentView: View {
             // their shipped size.
             do {
                 var parts: [String] = []
+                // DXMT splits DXMT_CONFIG on ";" only (config.cpp) and a newline is
+                // not whitespace to its parser, so options joined with "\n" became
+                // one option: "dxgi.customDeviceId=2544\nd3d11.metal..." left DXGI
+                // with Device 0 and Ghost of Tsushima without its GPU (build 296,
+                // 2026-10-01 20:08). Every source is split on ";" and newlines and
+                // the options are joined with ";".
+                func dxmtOptions(_ s: String) -> String {
+                    s.components(separatedBy: CharacterSet(charactersIn: ";\n\r"))
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: ";")
+                }
+                // DXMT options for every game, "a=b;c=d" (Documents/madeira-dxmt.txt is
+                // read the same way); d3d11.mipClampBC=N caps the BC textures this GPU
+                // has to expand to uncompressed (2-8x their shipped size).
                 if let txt = MadeiraConfig.get("dxmt") {
-                    let v = txt.replacingOccurrences(of: ";", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)   /* ml1095: "a=b;c=d" on one line */
+                    let v = dxmtOptions(txt)   /* ml1095: "a=b;c=d" on one line */
                     if !v.isEmpty {
                         parts.append(v)
                         logStore.log("DXMT config: \(v) via madeira.cfg dxmt")
@@ -2833,18 +2848,18 @@ struct ContentView: View {
                 }
                 // madeira-bcd: the game's own file (GameProfiles.swift) adds its dxmt line.
                 if let g = MadeiraConfig.gameValue("dxmt") {
-                    let v = g.replacingOccurrences(of: ";", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let v = dxmtOptions(g)
                     if !v.isEmpty {
                         parts.append(v)
                         logStore.log("DXMT config: \(v) via the game's config")
                     }
                 }
                 // madeira-bcd: per-game options from the library (LaunchRequest).
-                if let c = getenv("MADEIRA_DXMT_EXTRA"), case let extra = String(cString: c), !extra.isEmpty {
+                if let c = getenv("MADEIRA_DXMT_EXTRA"), case let extra = dxmtOptions(String(cString: c)), !extra.isEmpty {
                     parts.append(extra)
                     logStore.log("DXMT config: \(extra) via the game's settings")
                 }
-                if parts.isEmpty { unsetenv("DXMT_CONFIG") } else { setenv("DXMT_CONFIG", parts.joined(separator: "\n"), 1) }
+                if parts.isEmpty { unsetenv("DXMT_CONFIG") } else { setenv("DXMT_CONFIG", parts.joined(separator: ";"), 1) }
             }
 
             // Native D3D9 frontend A/B. The i386 d3d9.dll a 32-bit program imports

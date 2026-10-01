@@ -482,6 +482,15 @@ the update pack, the game's options and starts the per-game session log.
   `dxgi.customDeviceId=2544` too (appended to `DXMT_CONFIG`), so DXGI,
   EnumDisplayDevices, SetupAPI and NVAPI name one GPU. Ghost of Tsushima still
   said "Failed to get GPU Driver Info" with NVAPI alone.
+- DXMT_CONFIG separator (`app/Madeira/ContentView.swift`,
+  `LibraryBCD.swift`): DXMT splits `DXMT_CONFIG` on ";" only and its line
+  parser does not treat a newline as whitespace, but the app joined the
+  options with "\n" (and turned ";" in madeira.cfg `dxmt` into "\n"). Two
+  options became one: with MetalFX on, `dxgi.customDeviceId` got the value
+  `2544\nd3d11.metalSpatialUpscaleFactor=2.0`, which is not four hex digits,
+  so DXGI reported Device 0 and Ghost of Tsushima's NxApp found no active GPU
+  (build 296, log 2026-10-01 20:08:38). Every source is now split on ";" and
+  newlines and the options are joined with ";".
 - Virtual monitor names (`build/win32u-unix/sysparams_ios.c`,
   `ios_vmon_ids_enabled`; docs/got-gpu-check.md): upstream's file (taken in
   17088ab) names the source-less virtual monitor `"WinDisc"` in

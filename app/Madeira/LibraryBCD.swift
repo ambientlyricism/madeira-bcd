@@ -64,7 +64,7 @@ enum BCDLaunch {
             unsetenv("DXMT_METALFX_SPATIAL_SWAPCHAIN")
         }
         if dxmtExtra.isEmpty { unsetenv("MADEIRA_DXMT_EXTRA") }
-        else { setenv("MADEIRA_DXMT_EXTRA", dxmtExtra.joined(separator: "\n"), 1) }
+        else { setenv("MADEIRA_DXMT_EXTRA", dxmtExtra.joined(separator: ";"), 1)   /* DXMT splits on ";" */ }
     }
 
     /// A start from upstream's library: the update pack, this game's

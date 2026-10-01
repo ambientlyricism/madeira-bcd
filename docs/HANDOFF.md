@@ -1412,6 +1412,39 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     GTA agent was resumed on these logs; the owner is asked for a run with
     `env.MADEIRA_GUEST_LOG = all` in GTA's game file so the whole crash
     report is mirrored.
+  - **GoT on build 296 (log GhostOfTsushima.exe 2026-10-01 20:08:38 +
+    screenshot): the launcher dialog is now DRAWN, but it takes no input
+    (no cursor, taps / Enter / Space do nothing) and the game's own log still
+    says "Unable to find active GPU".** The `[guest-log]` lines show why:
+    `[Monitor] Description : Apple A19 Pro GPU / Vendor : nVidia (10de) /
+    Device : 0`, then NxApp lists "Wine Adapter" and "NVIDIA GeForce RTX
+    3060" and finds neither. **Root cause: the DXMT_CONFIG separator.**
+    DXMT splits DXMT_CONFIG on ";" only (`dxmt/src/util/config/config.cpp`
+    `str::split(confLine, ";")`, unchanged since bc6d4c7) and a newline is not
+    whitespace to its line parser, but the app joined the options with "\n"
+    (`ContentView.swift` `parts.joined(separator: "\n")`, LibraryBCD
+    `dxmtExtra.joined(separator: "\n")`, and ml1095 even turned ";" in
+    madeira.cfg `dxmt` into "\n"). With the game's `metalfx = 2.0` the
+    value became `dxgi.customDeviceId=2544\nd3d11.metalSpatialUpscaleFactor=2.0`
+    (log lines 31-32 "DXMT config: ... via the game's settings", 8733-8734
+    "Found config env: ..."), i.e. ONE option whose value is not 4 hex
+    digits, so `parsePciId` returned -1 and DXGI reported Device 0 (and the
+    MetalFX factor was never set either). On 2026-09-28 GoT had no MetalFX,
+    so the config was the single `dxgi.customDeviceId=2544` and the check
+    passed. The earlier trails (stale registry adapter, NVAPI strings,
+    monitor identity, virtual monitor name) were real differences but not
+    this check. **Fix (this commit):** every source (madeira.cfg `dxmt`, the
+    game file's `dxmt`, MADEIRA_DXMT_EXTRA) is split on ";" and newlines,
+    trimmed, and the options are joined with ";"; LibraryBCD joins its extras
+    with ";". Any game that combined two DXMT options (e.g. GoW's
+    `dxmt = d3d11.mipClampBC=2` plus MetalFX or the NVIDIA switch) had the
+    same silent loss. Catalog regenerated (`dxmt` note), check PASS.
+    Workaround on 296: MetalFX off for GoT. **Expected on the next build:**
+    `Found config env: dxgi.customDeviceId=2544;d3d11.metal...` and `Device :
+    9540` (0x2544) in `[guest-log]`. **Open:** input to the game-mode
+    dialog (no cursor in game mode; taps / keys not delivered), the extra
+    "Wine Adapter" in NxApp's adapter list, `[vkmt] D3DKMTEnumAdapters2 -> 0
+    adapters`.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
