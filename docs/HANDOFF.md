@@ -1967,6 +1967,8 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     which drive all of it over Bluetooth on Windows (and in CrossOver on the
     Mac). The DInput/HID pad path already works (GoW buttons became PS
     buttons). An agent was started on it (worktree).
+  - **Build 312 green** (run 36924702830, head 4b5fbbc): `d3d12-msaa8`.
+    main fast-forwarded to 4b5fbbc. DualSense output agent still running.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
