@@ -162,7 +162,7 @@ static const struct object_ops hidpad_file_ops =
     NULL,                             /* unlink_name */
     no_open_file,                     /* open_file */
     no_kernel_obj_list,               /* get_kernel_obj_list */
-    no_close_handle,                  /* close_handle */
+    async_close_obj_handle,           /* close_handle: as named_pipe.c's ends */
     hidpad_file_destroy               /* destroy */
 };
 
@@ -573,6 +573,7 @@ void madeira_hidpad_init( void )
     const unsigned char *desc;
     unsigned int desc_len, size, expect;
     struct unicode_str name;
+    struct object *symlink;
     WCHAR nameW[256];
     char link[200], path[210];
     void *preparsed;
@@ -613,8 +614,15 @@ void madeira_hidpad_init( void )
     hidpad_interface_link( id, link, sizeof(link) );
     snprintf( path, sizeof(path), "\\??\\%s", link );
     hidpad_ascii_name( path, nameW, ARRAY_SIZE(nameW), &name );
-    release_object( create_obj_symlink( NULL, &name, OBJ_PERMANENT | OBJ_CASE_INSENSITIVE,
-                                        &device->obj, NULL ));
+    /* ml2105: no link, no device a game can open -- and ntdll publishes the
+     * registry entries only for a link that exists (server_ios.c). */
+    if (!(symlink = create_obj_symlink( NULL, &name, OBJ_PERMANENT | OBJ_CASE_INSENSITIVE, &device->obj, NULL )))
+    {
+        fprintf( stderr, "[hid-pad] ml2105 cannot create \\??\\%s: %#x; the pad stays invisible\n",
+                 link, get_error() );
+        return;
+    }
+    release_object( symlink );
 
     fprintf( stderr, "[hid-pad] ml2101 device %s %04x:%04x \"%s\" input %u output %u feature %u bytes, "
              "preparsed %u bytes, \\??\\%s\n", id->env, id->vid, id->pid, device->product,

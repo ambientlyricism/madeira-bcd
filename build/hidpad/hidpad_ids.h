@@ -69,7 +69,10 @@ static const struct hidpad_identity hidpad_identities[] =
           "HID\\VID_054C&UP:0001_U:0005", "HID_DEVICE_SYSTEM_GAME", "HID_DEVICE_UP:0001_U:0005",
           "HID_DEVICE" },
         "{4d616465-6972-6148-4944-505330000001}",
-        "Sony Interactive Entertainment", "Wireless Controller", "02a14d616465",
+        /* The USB string descriptors of a CFI-ZCT1W ("Sony Interactive
+         * Entertainment DualSense Wireless Controller" in Linux's hidraw
+         * line); "Wireless Controller" alone is the DualShock 4's product. */
+        "Sony Interactive Entertainment", "DualSense Wireless Controller", "02a14d616465",
     },
     {
         /* pid.codes (no USB-IF membership needed); the same IDs as the opt-in

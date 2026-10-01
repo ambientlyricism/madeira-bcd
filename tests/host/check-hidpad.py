@@ -379,6 +379,252 @@ int main( void )
 }
 '''
 
+# ml2105: the registry half (build/ntdll-unix/server_ios.c, ios_hidpad_publish)
+# against a fake registry with Wine 11's rule -- NtCreateKey makes one key and
+# fails when a parent is missing (server/registry.c key_lookup_name) -- seeded
+# like the prefix template: Enum\HID and DeviceClasses\{4D1E55B2-...} exist,
+# the class key in upper case as Wine wrote it.
+server = (root / 'build/ntdll-unix/server_ios.c').read_text()
+a = server.index('#include "../hidpad/hidpad_ids.h"')
+b = server.index('\n}\n', server.index('static void ios_hidpad_publish(void)')) + 3
+publish = server[a:b].replace('#include "../hidpad/hidpad_ids.h"', '#include "hidpad_ids.h"')
+
+registry = r'''
+#include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include "ntstatus.h"
+#define WIN32_NO_STATUS
+#include "windef.h"
+#include "winternl.h"
+#include "ddk/wdm.h"
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#endif
+
+/* unix_private.h's helpers. */
+static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
+{
+    while (len--) *dst++ = (unsigned char)*src++;
+}
+static inline void init_unicode_string( UNICODE_STRING *str, const WCHAR *data )
+{
+    const WCHAR *p = data;
+    while (*p) p++;
+    str->Length = (p - data) * sizeof(WCHAR);
+    str->MaximumLength = str->Length + sizeof(WCHAR);
+    str->Buffer = (WCHAR *)data;
+}
+
+struct node { char name[160]; struct node *parent; int is_volatile; char values[512]; };
+static struct node nodes[64];
+static unsigned int node_count, creates, log_lines;
+static char live_link[256], last_log[512];
+
+static void narrow( const UNICODE_STRING *s, char *out )
+{
+    unsigned int i, n = s->Length / sizeof(WCHAR);
+    for (i = 0; i < n; i++) out[i] = (char)s->Buffer[i];
+    out[n] = 0;
+}
+static struct node *child( struct node *parent, const char *name )
+{
+    unsigned int i;
+    for (i = 0; i < node_count; i++)
+        if (nodes[i].parent == parent && !strcasecmp( nodes[i].name, name )) return &nodes[i];
+    return NULL;
+}
+static struct node *add( struct node *parent, const char *name, int vol )
+{
+    struct node *n = &nodes[node_count++];
+    assert( node_count < ARRAY_SIZE(nodes) );
+    strcpy( n->name, name );
+    n->parent = parent;
+    n->is_volatile = vol;
+    n->values[0] = 0;
+    return n;
+}
+/* Walk `path` from `n`; *rest gets the first missing element. */
+static struct node *walk( struct node *n, char *path, char **rest )
+{
+    char *p = path, *e;
+    while (*p == '\\') p++;
+    while (*p)
+    {
+        struct node *c;
+        if ((e = strchr( p, '\\' ))) *e = 0;
+        if (!(c = child( n, p ))) { if (e) *e = '\\'; *rest = p; return n; }
+        n = c;
+        if (!e) break;
+        p = e + 1;
+    }
+    *rest = NULL;
+    return n;
+}
+static struct node *root_node;
+
+NTSTATUS WINAPI NtOpenKey( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )
+{
+    char path[512], *rest;
+    struct node *n;
+    narrow( attr->ObjectName, path );
+    n = walk( attr->RootDirectory ? (struct node *)attr->RootDirectory : root_node, path, &rest );
+    if (rest) return STATUS_OBJECT_NAME_NOT_FOUND;
+    *key = n;
+    return STATUS_SUCCESS;
+}
+NTSTATUS WINAPI NtCreateKey( HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, ULONG index,
+                             const UNICODE_STRING *class, ULONG options, ULONG *dispos )
+{
+    char path[512], *rest;
+    struct node *n;
+    narrow( attr->ObjectName, path );
+    n = walk( attr->RootDirectory ? (struct node *)attr->RootDirectory : root_node, path, &rest );
+    if (rest)
+    {
+        if (strchr( rest, '\\' )) return STATUS_OBJECT_NAME_NOT_FOUND;   /* a parent is missing */
+        if (n->is_volatile && !(options & REG_OPTION_VOLATILE)) return STATUS_CHILD_MUST_BE_VOLATILE;
+        n = add( n, rest, !!(options & REG_OPTION_VOLATILE) );
+        creates++;
+    }
+    *key = n;
+    return STATUS_SUCCESS;
+}
+NTSTATUS WINAPI NtSetValueKey( HANDLE key, const UNICODE_STRING *name, ULONG index, ULONG type,
+                               const void *data, ULONG size )
+{
+    struct node *n = key;
+    char value[64], line[256];
+    unsigned int i;
+    narrow( name, value );
+    if (type == REG_DWORD) snprintf( line, sizeof(line), "%s=dword:%u;", value, *(const DWORD *)data );
+    else
+    {
+        const WCHAR *w = data;
+        int len = snprintf( line, sizeof(line), "%s=%s:", value, type == REG_MULTI_SZ ? "multi" : "sz" );
+        assert( size % sizeof(WCHAR) == 0 && size >= sizeof(WCHAR) && !w[size / sizeof(WCHAR) - 1] );
+        if (type == REG_MULTI_SZ) assert( size >= 2 * sizeof(WCHAR) && !w[size / sizeof(WCHAR) - 2] );
+        for (i = 0; i < size / sizeof(WCHAR) - 1; i++) line[len++] = w[i] ? (char)w[i] : '|';
+        line[len++] = ';';
+        line[len] = 0;
+    }
+    strcat( n->values, line );
+    return STATUS_SUCCESS;
+}
+NTSTATUS WINAPI NtOpenSymbolicLinkObject( HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr )
+{
+    char path[512];
+    narrow( attr->ObjectName, path );
+    if (!live_link[0] || strcasecmp( path, live_link )) return STATUS_OBJECT_NAME_NOT_FOUND;
+    *handle = (HANDLE)1;
+    return STATUS_SUCCESS;
+}
+NTSTATUS WINAPI NtClose( HANDLE handle ) { return STATUS_SUCCESS; }
+static void wine_log_write( const char *fmt, ... )
+{
+    va_list args;
+    va_start( args, fmt );
+    vsnprintf( last_log, sizeof(last_log), fmt, args );
+    va_end( args );
+    log_lines++;
+}
+
+''' + publish + r'''
+
+static struct node *find( const char *path )
+{
+    char copy[512], *rest;
+    struct node *n;
+    strcpy( copy, path );
+    n = walk( root_node, copy, &rest );
+    return rest ? NULL : n;
+}
+static void reset( void )
+{
+    struct node *n;
+    node_count = creates = log_lines = 0;
+    last_log[0] = 0;
+    root_node = add( NULL, "", 0 );
+    n = add( add( add( add( root_node, "Registry", 0 ), "Machine", 0 ), "System", 0 ), "CurrentControlSet", 0 );
+    add( add( n, "Enum", 0 ), "HID", 0 );
+    add( add( add( n, "Control", 0 ), "DeviceClasses", 0 ), "{4D1E55B2-F16F-11CF-88CB-001111000030}", 0 );
+}
+#define CCS "\\Registry\\Machine\\System\\CurrentControlSet"
+#define IFACE CCS "\\Control\\DeviceClasses\\{4D1E55B2-F16F-11CF-88CB-001111000030}\\##?#HID#VID_054C&PID_0CE6&MI_03#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+
+int main( void )
+{
+    struct node *n;
+    HANDLE key;
+    OBJECT_ATTRIBUTES attr;
+    UNICODE_STRING name;
+    WCHAR buf[256];
+
+    /* The fake follows Wine 11: one NtCreateKey over a missing parent fails. */
+    reset();
+    ascii_to_unicode( buf, CCS "\\Enum\\HID\\VID_054C&PID_0CE6&MI_03\\x", sizeof(CCS "\\Enum\\HID\\VID_054C&PID_0CE6&MI_03\\x") );
+    init_unicode_string( &name, buf );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, 0, NULL );
+    assert( NtCreateKey( &key, KEY_ALL_ACCESS, &attr, 0, NULL, REG_OPTION_VOLATILE, NULL ) == STATUS_OBJECT_NAME_NOT_FOUND );
+
+    /* XInput mode: MADEIRA_HIDPAD unset, nothing touched, nothing logged. */
+    reset();
+    unsetenv( "MADEIRA_HIDPAD" );
+    strcpy( live_link, "\\??\\HID#VID_054C&PID_0CE6&MI_03#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}" );
+    ios_hidpad_publish();
+    assert( !creates && !log_lines );
+
+    /* DualSense: every level created, volatile, the class key reused as is. */
+    reset();
+    setenv( "MADEIRA_HIDPAD", "dualsense", 1 );
+    ios_hidpad_publish();
+    assert( log_lines == 1 && strstr( last_log, "(4/4 keys)" ) && strstr( last_log, "054C:0CE6" ) );
+    n = find( CCS "\\Enum\\HID\\VID_054C&PID_0CE6&MI_03\\9&4d616465&0&0000" );
+    assert( n && n->is_volatile && n->parent->is_volatile && !n->parent->parent->is_volatile );
+    assert( strstr( n->values, "ClassGUID=sz:{745a17a0-74d3-11d0-b6fe-00a0c90f57da};" ) );
+    assert( strstr( n->values, "Class=sz:HIDClass;" ) );
+    assert( strstr( n->values, "HardwareID=multi:HID\\VID_054C&PID_0CE6&REV_0100&MI_03|HID\\VID_054C&PID_0CE6&MI_03|"
+                               "HID\\VID_054C&UP:0001_U:0005|HID_DEVICE_SYSTEM_GAME|HID_DEVICE_UP:0001_U:0005|HID_DEVICE|;" ) );
+    assert( strstr( n->values, "Mfg=sz:Sony Interactive Entertainment;" ) );
+    n = find( IFACE );
+    assert( n && n->is_volatile && !n->parent->is_volatile );
+    assert( !strcmp( n->values, "DeviceInstance=sz:HID\\VID_054C&PID_0CE6&MI_03\\9&4d616465&0&0000;" ) );
+    n = find( IFACE "\\#" );
+    assert( n && !strcmp( n->values, "SymbolicLink=sz:\\\\?\\HID#VID_054C&PID_0CE6&MI_03#9&4d616465&0&0000"
+                                     "#{4d1e55b2-f16f-11cf-88cb-001111000030};" ) );
+    n = find( IFACE "\\#\\Control" );
+    assert( n && !strcmp( n->values, "Linked=dword:1;" ) );
+    assert( creates == 5 );   /* VID_..., instance, interface, #, Control: no second class key */
+
+    /* The env names another identity: the registry follows the device that exists. */
+    reset();
+    setenv( "MADEIRA_HIDPAD", "generic", 1 );
+    ios_hidpad_publish();
+    assert( find( IFACE "\\#\\Control" ) && !find( CCS "\\Enum\\HID\\VID_1209&PID_4D47" ) );
+
+    /* No device at all: nothing registered, one line saying so. */
+    reset();
+    live_link[0] = 0;
+    setenv( "MADEIRA_HIDPAD", "dualsense", 1 );
+    ios_hidpad_publish();
+    assert( !creates && log_lines == 1 && strstr( last_log, "made no pad" ) );
+
+    /* Generic pad. */
+    reset();
+    strcpy( live_link, "\\??\\HID#VID_1209&PID_4D47#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}" );
+    ios_hidpad_publish();
+    n = find( CCS "\\Enum\\HID\\VID_1209&PID_4D47\\9&4d616465&0&0000" );
+    assert( n && strstr( n->values, "Mfg=sz:Madeira;" ) );
+    assert( find( CCS "\\Control\\DeviceClasses\\{4d1e55b2-f16f-11cf-88cb-001111000030}\\##?#HID#VID_1209&PID_4D47"
+                  "#9&4d616465&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}\\#\\Control" ) );
+    return 0;
+}
+'''
+
 with tempfile.TemporaryDirectory(prefix='madeira-hidpad-') as tmp:
     source = Path(tmp) / 'check.c'
     binary = Path(tmp) / 'check'
@@ -387,6 +633,12 @@ with tempfile.TemporaryDirectory(prefix='madeira-hidpad-') as tmp:
     flags = ['-std=gnu11', '-O1', '-fshort-wchar', '-Wno-format', '-Wno-unused-function',
              '-D__WINESRC__', '-DWINE_UNIX_LIB', '-I', str(wine / 'include'),
              '-I', str(root / 'build/hidpad')]
+    reg_source = Path(tmp) / 'registry.c'
+    reg_binary = Path(tmp) / 'registry'
+    reg_source.write_text(registry)
+    subprocess.run([cc, *flags, '-Wall', '-Werror', '-Wno-unused-variable', str(reg_source), '-o', str(reg_binary)],
+                   check=True)
+    subprocess.run([str(reg_binary)], check=True)
     objs = []
     for name, src, extra in [
         ('hidparse', root / 'build/hidpad/hidparse_ios.c',
@@ -401,4 +653,5 @@ with tempfile.TemporaryDirectory(prefix='madeira-hidpad-') as tmp:
     subprocess.run([cc, *objs, '-pthread', '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
 print('PASS: DualSense and generic descriptors through Wine hidparse + hid.dll, '
-      'sticks/triggers/buttons/hat/touch/motion/battery, feature and output reports, transport')
+      'sticks/triggers/buttons/hat/touch/motion/battery, feature and output reports, transport, '
+      'registry entries (level by level, volatile, only for the device that exists)')

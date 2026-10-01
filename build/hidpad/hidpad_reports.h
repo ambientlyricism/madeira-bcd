@@ -6,7 +6,7 @@
  *
  * Pure C over the app's snapshot (struct winios_hidpad, WiniosGamepad.h): the
  * wineserver device (build/wineserver/hidpad_ios.c) builds every report with
- * these functions, and build/host-tests/check-hidpad.py runs them through
+ * these functions, and tests/host/check-hidpad.py runs them through
  * Wine's own hidparse.sys and hid.dll parsers on the host.
  *
  * DualSense layout: the USB descriptor is the controller's own, byte for byte

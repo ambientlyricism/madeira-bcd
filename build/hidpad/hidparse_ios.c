@@ -59,11 +59,17 @@
 #define TRACE(...) do { } while (0)
 #define TRACE_ON(ch) 0
 
-/* The host check (build/host-tests/check-hidpad.py) points this at its Wine tree. */
+/* The host check (tests/host/check-hidpad.py) points this at its Wine tree. */
 #ifndef MADEIRA_HIDPARSE_MAIN
 #define MADEIRA_HIDPARSE_MAIN "../../wine/dlls/hidparse.sys/main.c"
 #endif
+/* Its debugstr helpers print ULONG/LONG with %lx/%ld, right for the PE build
+ * (LLP64) and a -Wformat warning here (LP64, where Wine's LONG is int). They
+ * are never called -- TRACE is compiled out above -- so only the noise goes. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
 #include MADEIRA_HIDPARSE_MAIN
+#pragma GCC diagnostic pop
 
 #include "hidparse_ios.h"
 

@@ -715,6 +715,128 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     outdoor darkening with the old config (mipClampBC=2 back, no MADEIRA_
     switches) and sends the log -> read `[lum-readback]` / `[f32-mipgen]`.
 
+### DualSense / DirectInput (second agent)
+
+* **2026-10-01 (Claude, second agent, worktree branch
+  `worktree-agent-a508c6faab1405d26`, local only: not pushed, no CI run).**
+  Phase 1 done in code, not device-tested. Feature doc: `docs/CONTROLLERS.md`
+  "Player 1 as a HID controller (DualSense, DirectInput)".
+  - **The stopped agent's WIP `7da53e7` was reviewed and kept.** Verdict: the
+    design is sound and fits how Wine runs on iOS; one real bug, a few small
+    ones. Taken over by cherry-picking it unchanged (commit 4e09bc4, its
+    app/ and build/ trees identical to 7da53e7), fixes in the next commit.
+  - **Why the pad lives in the wineserver, not winebus.sys** (checked in the
+    code): desktop Wine reaches hid.dll through plugplay/winedevice loading
+    winebus/winehid/hidclass/hidparse. Here CI builds no winedevice.exe or
+    plugplay.exe (.gitignore), the IPA ships no .sys, the prefix template has
+    the winebus/winehid/PlugPlay services disabled because winedevice
+    "wedges on iOS" (patches/wine-rpcss-scm-bootstrap.patch), a library game
+    session starts no SCM, and nsiproxy.sys / mountmgr.sys were already
+    replaced the same way (nsi_unixlib_ios.c, ios_create_drive_symlinks). The
+    wineserver runs in the app's task, so it reads the app's snapshot
+    directly, and serves `\Device\MadeiraHidPad0` like ConDrv/named pipes.
+  - **How it works:** the app decides at session start
+    (`GamepadInput.beginPadSession`, before the wineserver starts) from
+    `env.MADEIRA_PAD_MODE` (game file > madeira.cfg; unset = XInput) and
+    exports `MADEIRA_HIDPAD=dualsense|generic`. The wineserver
+    (`build/wineserver/hidpad_ios.c`) creates the device + `\??\HID#...` link
+    and answers ReadFile/WriteFile and the hidclass ioctls (preparsed data from
+    Wine's own hidparse.sys compiled in, `build/hidpad/hidparse_ios.c`);
+    ntdll's first process (`server_ios.c ios_hidpad_publish`) writes the
+    volatile setupapi registry entries. Reports come from a second snapshot
+    (`struct winios_hidpad`, WiniosGamepad.[ch]); the XInput snapshot and
+    `driver_ios.c` are untouched. XInput mode creates nothing (no device, no
+    registry key, no extra log line from native code).
+  - **XInput in HID mode:** player 1 leaves XInput (a DualSense on Windows is
+    not an XInput pad), so God of War, which reads XInput and libScePad, sees
+    one controller; players 2-4 stay XInput; Wine's xinput only adopts
+    WINEXINPUT devices, never this one; `env.MADEIRA_HIDPAD_XINPUT = 1` keeps
+    both views. The opt-in joystick_ios DirectInput pad (MADEIRA_DINPUT_PAD)
+    reads XInput slot 0 and so disappears for player 1 in HID mode.
+  - **Fixes to the WIP (ml2105):** (1) registry: Wine 11 keys are named
+    objects and one NtCreateKey over a missing parent fails
+    (server/registry.c key_lookup_name), so the WIP's single call never
+    created `Enum\HID\VID_054C&PID_0CE6&MI_03\...` and setupapi would have
+    skipped the pad entirely -> keys are now created level by level; (2)
+    ntdll publishes only for the `\??` link the wineserver really made (a
+    hand-set env.MADEIRA_HIDPAD in madeira.cfg is exported after the
+    wineserver started and could have advertised a device that does not
+    exist); (3) DualSense product string "DualSense Wireless Controller" (the
+    WIP had the DualShock 4's "Wireless Controller"); (4) the pad's file
+    objects close like named-pipe ends (`async_close_obj_handle`), and a
+    failed `\??` link no longer reaches `release_object(NULL)`; (5) Wine's
+    debug-format warnings silenced in hidparse_ios.c; (6) Session menu >
+    Controller (under CPU) shows the effective mode (game file, else
+    madeira.cfg), says **Live in this session** / **Needs a relaunch**, and
+    keeps an explicit `xinput` in the game file when madeira.cfg sets HID
+    for every game.
+  - **Evidence (local, Linux host):** `WINE_SRC=<wine 4f5b197>
+    python3 tests/host/check-hidpad.py` PASS with clang and gcc: both
+    descriptors through the pinned Wine hidparse.sys + hid.dll hidp.c, every
+    button/axis/hat/touch/battery/sensor field, feature and output reports,
+    the transport, and the registry block extracted from server_ios.c against
+    a fake registry with Wine 11's parent rule (the WIP's version of that
+    block fails it: "(3/4 keys)"). The DualSense descriptor is byte-identical
+    (273 bytes) to github.com/nondebug/dualsense report-descriptor-usb.txt;
+    report/feature/output offsets match Linux hid-playstation.c and SDL's
+    SDL_hidapi_ps5.c (both master, 2026-10-01). hidpad_ios.c and
+    hidparse_ios.c compile warning-free against the pinned wine/server
+    headers with CI's forced includes; their undefined symbols all exist in
+    libwineserver.a / the app. ConfigCatalog.generated.swift equals what
+    gen-config-catalog.py produces over the pinned submodules (the same
+    method reproduces the committed catalog byte for byte). check-gamepad,
+    check-library-sections, check-launch-routing pass. **Not checked:** the
+    Swift (no swiftc here; read by eye against the iOS SDK APIs),
+    main_ios.c (needs the iOS SDK), anything on device.
+  - **Build:** no workflow change. `build/wineserver/build.sh` compiles the
+    two new objects into libwineserver.a; ntdll compiles server_ios.c in
+    place. Native code changed -> needs an IPA build, not a pack.
+  - **Device test (owner):** IPA with this; God of War's game sheet >
+    "madeira-bcd: controller" > DirectInput / HID (or Session menu >
+    Controller, then quit Madeira and start again); DualSense paired before
+    the start. Log should show `[hid-pad] ml2100 session mode=hid
+    source=game kind=dualsense pad=DualSense... xinput-slot0=off`, `[hid-pad]
+    ml2101 device dualsense 054c:0ce6 "DualSense Wireless Controller" input
+    64 output 48 feature 64 bytes, preparsed ...`, `[hid-pad] ml2102
+    dualsense 054C:0CE6 registered (4/4 keys) ...`, then `ml2101 open #1`,
+    `feature report 0x5/0x9/0x20 read`, `first input report: 64 bytes`. In
+    game: PlayStation prompts, sticks/triggers/buttons/d-pad/touchpad click.
+    A DirectInput-only game: its controller list shows "DualSense Wireless
+    Controller". Back to XInput: the same picker; nothing of the above is
+    logged then except `ml2100 session mode=xinput`.
+  - **Open:** device test. Phase 2: output reports are parsed into
+    `winios_hidpad_get_output` (rumble pair, both trigger effect blocks, light
+    bar, player LEDs, mic LED) but nothing applies them on iOS yet.
+    **Scope, honestly (upstream's author asked "will the iPhone let you send
+    haptics to the DualSense? macOS lets you access the controller entirely
+    over USB; iOS abstracts everything"):** iOS gives an app no HID reports,
+    no USB, no audio channel, no speaker/mic -- only GameController:
+    GCDualSenseGamepad state, GCDualSenseAdaptiveTrigger modes, GCDeviceLight,
+    GCController.playerIndex (4 LED patterns), GCMotion, and CoreHaptics via
+    GCDeviceHaptics. So phase 1 (a synthesized DualSense for libScePad and
+    DirectInput, input only) is the core value; phase 2 can only map the
+    game's output reports best effort: the rumble pair -> CoreHaptics
+    (left/right handle engines), trigger effects -> the closest
+    GCDualSenseAdaptiveTrigger mode, light bar -> GCDeviceLight, player LEDs
+    -> playerIndex. Cannot be reproduced: audio-based ("advanced") haptics,
+    which PC games stream to the pad's USB audio interface (the virtual pad
+    has none, so such a game falls back to rumble or nothing), speaker,
+    headset, microphone and mic LED, arbitrary LED patterns, light bar
+    brightness, trigger parameters Apple's modes lack. Phase 3: touch
+    coordinates (touchpadPrimary/Secondary; finger-up is not reported
+    directly) and GCMotion gyro/accel (axes and signs need a device). Also
+    open: WM_INPUT for this pad (the raw input list shows it, no reports are
+    sent), the PS button reaches the game only when iOS does not keep the
+    Home button (unchanged, as XInput's Guide), GameController has no mute
+    button, the report counter is per device (two readers each see every
+    other value).
+  - **Repository layout:** main has since merged upstream's reorganisation
+    (build/host-tests -> tests/host, research/dxmt -> dxmt, ...); the new
+    host test is therefore already at `tests/host/check-hidpad.py` (it finds
+    the repo root two levels up either way). After merging, rerun
+    `build/tools/gen-config-catalog.py --check` (the catalog's source paths
+    moved on main) and regenerate if it reports stale.
+
 ---
 
 ## 1. What this repository is

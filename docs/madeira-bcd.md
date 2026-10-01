@@ -647,3 +647,12 @@ the update pack, the game's options and starts the per-game session log.
   `ProcessInfo.thermalState`); transitions are logged as `[thermal]` with the
   FPS at that moment, and every `[present]` line carries the state and low
   power mode.
+- Controller API (ml2100-ml2105, `docs/CONTROLLERS.md` "Player 1 as a HID
+  controller"): XInput stays the default and unchanged; `env.MADEIRA_PAD_MODE
+  = hid` (game sheet or the in-game Session menu > Controller) makes player 1
+  a virtual HID pad served by the wineserver (`build/wineserver/hidpad_ios.c`,
+  no winedevice/winebus on iOS): a wired DualSense 054C:0CE6 with Sony's own
+  report descriptor for a PlayStation pad, so libScePad (God of War) and
+  DirectInput see it, else a generic HID gamepad; player 1 then leaves XInput.
+  Read at session start; output reports (rumble, triggers, light bar) are
+  parsed but not applied yet.

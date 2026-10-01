@@ -2914,22 +2914,22 @@ struct LibraryHUD: View {
                     .font(.caption).foregroundStyle(.secondary)
                 // madeira-bcd (ml2100): the API player 1's controller reaches the game
                 // through. Saved in the game's own file (env.MADEIRA_PAD_MODE) and read
-                // when a session starts, so it applies at the game's next start.
+                // when a session starts: the HID pad must exist before the game looks,
+                // and a launch runs one Wine session, so a change needs a relaunch.
                 if let entry = model.activeEntry, entry.desktop != true {
                     Divider()
                     Text("Controller").font(.headline)
                     LabeledContent("Controller API") {
                         Picker("Controller API", selection: Binding(get: { padMode }, set: { value in
                             padMode = value
-                            GameProfile(windowsPath: entry.windowsPath)
-                                .set(GamepadInput.padModeKey, value == "xinput" ? nil : value)
-                            LogStore.shared.log("[hid-pad] ml2100 next start of this game: mode=\(value)")
+                            Self.setPadMode(value, for: entry)
                         })) {
                             ForEach(Array(Self.padModes(padMode).enumerated()), id: \.offset) { item in
                                 Text(item.element.1).tag(item.element.0)
                             }
                         }.pickerStyle(.menu).labelsHidden()
                     }
+                    if GamepadInput.enabled { Self.padModeStatus(padMode) }
                     Text(Self.padModeNote()).font(.caption).foregroundStyle(.secondary)
                 }
                 Divider()
@@ -2957,10 +2957,45 @@ struct LibraryHUD: View {
         .onAppear { padMode = Self.padMode(of: model.activeEntry) }
     }
 
-    /// madeira-bcd (ml2100): the game's env.MADEIRA_PAD_MODE, "xinput" when unset.
+    /// madeira-bcd (ml2100): the mode this game starts with, read as
+    /// GamepadInput.configuredPadMode does: the game's env.MADEIRA_PAD_MODE, else
+    /// madeira.cfg's, else "xinput".
     static func padMode(of entry: LibraryEntry?) -> String {
-        guard let entry else { return "xinput" }
-        return GameProfile(windowsPath: entry.windowsPath).get(GamepadInput.padModeKey)?.lowercased() ?? "xinput"
+        if let entry, let value = GameProfile(windowsPath: entry.windowsPath).get(GamepadInput.padModeKey) {
+            return value.lowercased()
+        }
+        if let value = MadeiraConfig.get(GamepadInput.padModeKey), !value.isEmpty { return value.lowercased() }
+        return "xinput"
+    }
+
+    /// Saves the choice in the game's own file. "xinput" removes the key, unless
+    /// madeira.cfg sets another mode for every game: then this game keeps an
+    /// explicit "xinput", or the global value would come back at its next start.
+    static func setPadMode(_ value: String, for entry: LibraryEntry) {
+        let global = MadeiraConfig.get(GamepadInput.padModeKey)?.lowercased() ?? ""
+        let explicit = value != "xinput" || !(global.isEmpty || global == "xinput")
+        GameProfile(windowsPath: entry.windowsPath).set(GamepadInput.padModeKey, explicit ? value : nil)
+        LogStore.shared.log("[hid-pad] ml2100 next start of this game: mode=\(value)")
+    }
+
+    /// Whether `mode` is what this session runs (GamepadInput.beginPadSession);
+    /// values it does not know run as XInput there too.
+    @MainActor static func padModeIsLive(_ mode: String) -> Bool {
+        let session = GamepadInput.sessionHIDKind
+        switch mode {
+        case "hid": return session != nil
+        case "dualsense", "generic": return session == mode
+        default: return session == nil
+        }
+    }
+
+    /// The owner asked to see whether a switch is live or needs a relaunch.
+    @MainActor static func padModeStatus(_ mode: String) -> some View {
+        let live = padModeIsLive(mode)
+        return Label(live ? "Live in this session" : "Needs a relaunch: quit Madeira, then start this game again",
+                     systemImage: live ? "checkmark.circle" : "arrow.clockwise.circle")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(live ? Color.green : Color.orange)
     }
 
     /// The controller API choices, plus a value typed into the game's file by hand
@@ -2971,19 +3006,22 @@ struct LibraryHUD: View {
         return modes
     }
 
-    /// What the Controller section says: this session's mode, when a change applies, what each does.
+    /// What the Controller section says: this session's mode and what each does.
     @MainActor static func padModeNote() -> String {
+        guard GamepadInput.enabled else {
+            return "Physical controllers are off (env.MADEIRA_XINPUT = 0), so neither mode applies."
+        }
         let session: String
         switch GamepadInput.sessionHIDKind ?? "" {
         case "dualsense": session = "DualSense (HID)"
         case "generic": session = "generic HID gamepad"
         default: session = "XInput"
         }
-        return "This session: \(session). A change applies the next time this game starts "
-            + "(quit and reopen Madeira first). XInput shows every controller as an Xbox pad, which almost "
-            + "every game understands. DirectInput / HID shows player 1 as what it is: a DualSense to Sony's "
-            + "PC ports (PlayStation buttons), a HID gamepad to DirectInput games. It is then no longer an "
-            + "XInput pad, so an XInput-only game will not see it."
+        return "This session: \(session). Read when the game starts, because the game looks for its "
+            + "controllers then. XInput shows every controller as an Xbox pad, which almost every game "
+            + "understands. DirectInput / HID shows player 1 as what it is: a DualSense to Sony's PC ports "
+            + "(PlayStation buttons), a HID gamepad to DirectInput games. It is then no longer an XInput pad, "
+            + "so an XInput-only game will not see it."
     }
 }
 
