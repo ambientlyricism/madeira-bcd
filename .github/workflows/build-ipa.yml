@@ -997,6 +997,25 @@ jobs:
       - name: Patch winemetal GPU timeline for [frame]
         run: python3 tools/patch-winemetal-gpu-span.py
 
+      # God of War darkens below 1080p (docs/gow-darkening.md). Opt-in
+      # converter experiments, each with its own shader-cache table, all OFF
+      # by default (converted shaders unchanged): MADEIRA_TGSM_SYNC=1
+      # (warp-synchronous groupshared code, upstream a4cfaac + sync_g),
+      # MADEIRA_SAMPLE_L_BIAS=1 (upstream eec0b65), MADEIRA_PRECISE_MATH=1,
+      # MADEIRA_BOUNDS_EXTRA=1 (atomics / typed buffers / resinfo out of
+      # range), and MADEIRA_SHADER_DUMP=cs|ps|...|<sha8> (DXBC to
+      # Documents/shader-dump). Native only.
+      - name: Patch airconv God of War experiments
+        run: python3 tools/patch-airconv-gow-experiments.py
+
+      # Same investigation, native winemetal, all OFF by default:
+      # MADEIRA_GPU_TRACE=<s> (one frame's encoders + float-target values,
+      # [gpu-trace] / [gpu-val] / [rb-src]), MADEIRA_RP_LOAD=1 (no DontCare
+      # attachment load/store) and MADEIRA_BORDER=black (samplers DXMT gave
+      # the white border get transparent black).
+      - name: Patch winemetal GPU trace and render-pass experiment
+        run: python3 tools/patch-winemetal-gpu-trace.py
+
       # WoW64's 32-bit Windows farm (app/Madeira/i386-windows), which upstream
       # builds from the pinned wine and DXMT (build/wine-i386) and does not
       # commit. Cached per wine/DXMT revision; a failure only leaves 32-bit
