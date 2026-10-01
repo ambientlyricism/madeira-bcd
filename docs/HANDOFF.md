@@ -927,7 +927,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     ntdll-unix / win32u-unix build.sh, identical upstream and harmless (those
     steps pass; the headers come from build/freetype-ios). Next: build 286 =
     this fix + the GoT GPU registry fix (c2ed0ab); main stays at the last
-    green build until then.
+    green build until then. Build 286 dispatched (run 36870435733, head
+    6182ab4).
+  - **M1 iPad again, log GoW.exe 2026-10-01 14:56:44 (relayed 15:4x UTC+3):
+    still build 277** (`[build] v0.1.277`), game-config=0 this time, 1280x720.
+    Screenshot: fully black, only the Metal HUD (30 FPS, GPU 21.8 ms, App
+    6.24 GB, Available 2.35 GB). The log is long (710k lines, 24,000 SM50
+    shaders created) -> it got into gameplay, and the whole scene is black
+    there. Same float targets as its 14:27 log: R32F 640x360 / 320x180 /
+    20x12, RGBA32F 80x45, i.e. it renders internally at 640x360 (half of
+    1280x720 per axis), where the 32x32 luminance tiles read/write furthest
+    past the texture edge. Nothing new: 277 has neither the ld bounds (282)
+    nor the UAV store bounds (284). The iPad user still has to install 284
+    (or 286). Cheap check on that device: internal resolution 1080p (the
+    owner's iPhone never darkens at native 1080p) -- if the scene appears,
+    it is the same bug.
 
 ### DualSense / DirectInput (second agent)
 
