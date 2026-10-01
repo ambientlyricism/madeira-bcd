@@ -1799,6 +1799,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     then a switchable answer, implemented far enough for what the game uses.
     **Build 308 dispatched** (run 36911439452, head e30b6b1), superseding 307
     (9a40329, cancelled after 4 min; 308 contains it).
+  - **Build 308 green** (run 36911439452, head e30b6b1): the Swift Session
+    panel Diagnostics (CAP, GPU sync) compiled; `[d3d12-caps]` trace in.
+    OTA mailed (bucket 10 builds, 1.52 GB). main fast-forwarded to e30b6b1
+    (no workflow change). Waiting on the owner's GTA log with the trace.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
