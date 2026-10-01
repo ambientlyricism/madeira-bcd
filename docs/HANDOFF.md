@@ -1445,6 +1445,37 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     dialog (no cursor in game mode; taps / keys not delivered), the extra
     "Wine Adapter" in NxApp's adapter list, `[vkmt] D3DKMTEnumAdapters2 -> 0
     adapters`.
+  - **GTA V agent finished on the 296 logs; merged (9fe3ceb + 80ed5fb, merge
+    db2e07d).** The 0x80000003 is the game's own deliberate `int3` at
+    GTA5_Enhanced.exe RVA 0x100798 with RSI = 0x17b133bd = joaat
+    `ERR_GFX_D3D_NOD3D12` ("DirectX 12 adapter or runner not found"): the
+    first int3 is handled by the game, the second is fatal, then it writes
+    crashcontext.log and exits (PlayGTAV 19:53:36 lines 6734-7114). No
+    D3D12CreateDevice after the probe device (4654-4677): the game rejects
+    the adapter during DXGI enumeration, after Streamline loads
+    (`NvAPI_Initialize -> -6` x6, `D3DKMTEnumAdapters2 -> 0 adapters`). The
+    two writes into the read-only image are FEX's self-modifying-code path
+    and are handled ("Handled self-modifying code", "store landed").
+    **Bug fixed (child only):** `top_window stays 0` x9 on the game thread
+    -- init_user runs once per iOS process, so only the session's first
+    pseudo-process registered the desktop / message classes (wineserver
+    keeps classes per process); a launcher main that never opens a window
+    leaves the child without GetDesktopWindow(), GetDC(NULL) and its first
+    top-level window. `get_desktop_window` (winstation_ios.c) now, only on
+    failure, never in the session process and once per process, registers
+    the classes for the child and retries; with no thread desktop it runs
+    `winstation_init` and retries once more. `MADEIRA_CHILD_DESKTOP=0`
+    turns it off; `[child-desktop]` logs it. `tests/host/check-child-
+    desktop.py` PASS (also with the switch off); child-ntdll-alias and the
+    catalog check PASS after the merge. Not yet proven to clear the abort.
+    **Next GTA test (build after 296):** `env.MADEIRA_GUEST_LOG = all`, look
+    for `[child-desktop] ... top_window=0x...`, the full crashcontext.log in
+    `[guest-log]`, and a D3D12CreateDevice after the Streamline loads. If
+    still RSI=0x17b133bd: try "Report an NVIDIA GPU" for GTA (DXMT_ENABLE_
+    NVEXT + monitor identity + mode table; the 64-bit DXGI output otherwise
+    has a placeholder monitor and 3 modes, the game expects 1920x1080).
+    Other suspects (not changed): D3DKMT lists no adapter, DXMT has no
+    IDXGIFactory7, OutputDebugString is logged only 4x per process.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
