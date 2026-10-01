@@ -1012,6 +1012,31 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     registry adapters; NVAPI strings) were wrong as the cause of THIS
     regression; their fixes stay (both are correct on their own). Host
     checks launch-routing / library-sections / config-catalog PASS.
+    Build 288 (NVAPI strings) was cancelled by build 289 (run 36874555477,
+    head b5579cd), which carries both.
+  - **Owner: "the dialog is not even drawn, the screen is dark" -- second
+    regression from the same switch.** 09-28's GoT log has the whole GDI path
+    for the message box (`[surf-create]`, `[surf-flush]` x54, `[overlay] first
+    window hwnd=0x10034 ...`, `[overlay-place] ... game-rect=440x248`,
+    `[winios] present ...`); 17:04 today has none of it: the dialog is
+    created (`[win-name]` "No installed graphics card ...", Tamam / Iptal)
+    but never reaches the screen. That game-mode window overlay was 125hz's
+    "direct-launch overlay" in app/Madeira/Winios/Winios.m (commit 855222e,
+    merged with PR #28 as 47801f7 on 09-26; Winios.m was 3118 lines). The
+    switch to upstream (merge 4ccfcb5, build 222, 09-29) took upstream's
+    Winios.m (now 1765 lines), where GDI window surfaces are composited only
+    in desktop mode (build/win32u-unix/driver_ios.c load_display_driver:
+    pCreateWindowSurface = winios_CreateWindowSurface only when
+    MADEIRA_DESKTOP=1; "Games keep the offscreen (invisible) surface path").
+    So since build 222 **every message box a game opens is invisible** --
+    not only GoT's. Open item, not fixed: porting the overlay back is ~1350
+    lines against upstream's rewritten Winios.m (big, risky for God of War);
+    alternatives to weigh: enable window-surface compositing in game mode
+    only while a top-level dialog exists, or mirror a modal dialog's text and
+    buttons into a native alert. Workarounds now: the on-screen Enter (↵)
+    key should press the invisible dialog's default button (Tamam) -- not
+    verified; GoT's dialog itself goes away with the monitor-identity fix
+    (build 289, or the two env lines in its game file).
 
 ### DualSense / DirectInput (second agent)
 
