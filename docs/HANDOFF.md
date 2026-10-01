@@ -1762,6 +1762,27 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the panel's existing iOS 17 onChange form. Catalog unchanged (PASS).
   - **Build 307 dispatched** (run 36910925828, head 9a40329): 306 + the
     Session panel CAP / GPU sync controls.
+  - **GTA V with `vram-mb = 4096` (build 306, log PlayGTAV.exe 2026-10-01
+    21:58:04): same ERR_GFX_D3D_NOD3D12.** The knob took effect (`[game-cfg]
+    vram-mb = 4096`, `[wmt] ml1042 video memory budget = 4096 MB`, NVAPI
+    `GetPhysicalFrameBufferSize -> 0 4194304 KB`), and the game still
+    destroys the device right after the NVAPI queries (7336-7366). So video
+    memory was not (the only) reason. No device QueryInterface and no
+    CheckFeatureSupport was refused (both are logged when they are), no
+    D3D12GetInterface call: the rejection is in an ANSWER we give. Likely
+    suspects in device_CheckFeatureSupport: ResourceBindingTier 2 (not 3),
+    OPTIONS2-8 / 10 / 12-18 all zero (enhanced barriers, mesh shaders,
+    raytracing, VRS, sampler feedback), shader model capped at 6.6.
+    GTA V Enhanced's minimum GPUs (GTX 1630 / RX 6400 / Arc A380) are all
+    DX12-Ultimate-class, so a DX12U feature check is plausible. **Added
+    (this commit): `[d3d12-caps]` trace** -- every CheckFeatureSupport
+    (feature id, size, HRESULT, first 64 bytes of the answer in hex),
+    format queries excluded, at most 160 lines per process, default on
+    (madeira.cfg `d3d12-caps-log = 0` turns it off). Arm64ec syntax check
+    of madeira_d3d12.c with the hybrid llvm-mingw: no error in the new code
+    (the 4 errors at 11985 come from the unpatched dxmt winemetal.h here);
+    catalog + got-diagnostics checks PASS. Next GTA log answers which
+    feature the game reads last before `destroyed Device`.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

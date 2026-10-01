@@ -7004,6 +7004,35 @@ static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
     }
     }
 }
+/* madeira-bcd: what a game asks the device and what it was told. GTA V
+ * Enhanced creates its device on the real adapter, queries NVAPI and destroys
+ * the device with ERR_GFX_D3D_NOD3D12 even with 4 GB of video memory reported
+ * (build 306, log PlayGTAV.exe 2026-10-01 21:58:04); no QueryInterface or
+ * CheckFeatureSupport was refused, so the rejection is in an answer. One line
+ * per query (feature id, size, HRESULT, the answer's first 64 bytes in hex),
+ * format queries excluded, at most 160 lines per process. madeira.cfg
+ * d3d12-caps-log = 0 turns it off. */
+static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport_logged(ID3D12Device *This,
+        D3D12_FEATURE feature, void *data, UINT size) {
+    static int on = -1;
+    static LONG lines;
+    HRESULT hr = device_CheckFeatureSupport(This, feature, data, size);
+    if (on < 0) on = mad_cfg_int_pe("d3d12-caps-log", 1) ? 1 : 0;
+    if (on && feature != D3D12_FEATURE_FORMAT_SUPPORT && feature != D3D12_FEATURE_FORMAT_INFO &&
+        feature != D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS && InterlockedIncrement(&lines) <= 160) {
+        char hex[2 * 64 + 1];
+        UINT i, n = data && SUCCEEDED(hr) ? (size < 64 ? size : 64) : 0;
+        for (i = 0; i < n; i++) {
+            static const char digits[] = "0123456789abcdef";
+            hex[2 * i] = digits[((const unsigned char *)data)[i] >> 4];
+            hex[2 * i + 1] = digits[((const unsigned char *)data)[i] & 15];
+        }
+        hex[2 * n] = 0;
+        d3d12_log("[d3d12-caps] madeira-bcd CheckFeatureSupport(feature %u, %u bytes) -> 0x%08lx %s\n",
+                  (unsigned)feature, size, (unsigned long)hr, hex);
+    }
+    return hr;
+}
 static ULONG STDMETHODCALLTYPE device_AddRef(ID3D12Device *This) { return mad_addref((struct mad_obj *)This); }
 static ULONG STDMETHODCALLTYPE device_Release(ID3D12Device *This) {
     struct mad_device *d = (struct mad_device *)This;
@@ -13384,7 +13413,7 @@ static void build_vtables(void) {
     g_device_vtbl.CreateSampler = (void *)device_CreateSampler;
     g_device_vtbl.GetDescriptorHandleIncrementSize = (void *)device_GetDescriptorHandleIncrementSize;
     g_device_vtbl.CreateGraphicsPipelineState = (void *)device_CreateGraphicsPipelineState;
-    g_device_vtbl.CheckFeatureSupport = (void *)device_CheckFeatureSupport;
+    g_device_vtbl.CheckFeatureSupport = (void *)device_CheckFeatureSupport_logged;
 
     madeira_fill_ID3D12CommandQueue(&g_queue_vtbl);
     g_queue_vtbl.GetDevice = queue_GetDevice;
