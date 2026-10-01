@@ -577,6 +577,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     supports32BitFloatFiltering + families 7/8/9 once, and the first sampled
     R32/RG32/RGBA32Float textures. The float switches above are worth trying
     there too (the black menu may be the same exposure collapse, permanent).
+  - **Upstream released v0.1.0 (2026-10-01).** The tag points at upstream
+    main 3ccbf9b "Library: liquid metal bar glass, Desktop button and app
+    icon" (Will Faust, 2026-10-01 16:40 +0800) -- one commit after 40d5e74,
+    the last one merged here; the 12h sync will bring it in. The release
+    page / assets (how the IPA was built, its contents) could not be read
+    from this session: the GitHub API and release pages of willfaust/madeira
+    are blocked for unattached repos, and attaching it was denied by the
+    permission classifier. Asked the owner how to proceed (paste the release
+    text/asset list, or allow the access).
 
 ---
 
