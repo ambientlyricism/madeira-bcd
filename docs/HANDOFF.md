@@ -586,6 +586,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     are blocked for unattached repos, and attaching it was denied by the
     permission classifier. Asked the owner how to proceed (paste the release
     text/asset list, or allow the access).
+    Owner's way (2026-10-01): he uploads upstream's v0.1.0 IPA to a DRAFT
+    release of this repo. New `.github/workflows/inspect-ipa.yml`
+    (workflow_dispatch: tag, asset filter) downloads it with the job token,
+    compares it with our newest unsigned IPA artifact and writes the job
+    summary: Info.plist build keys (DTXcode, DTSDKBuild, BuildMachineOSBuild
+    -> CI runner or a personal Mac), signature, LC_BUILD_VERSION, build paths
+    found in the main binary (user names redacted), and the per-file
+    difference of the two .app bundles. It never re-uploads an IPA and prints
+    no URLs. Needs to be on main to be dispatched.
 
 ---
 
