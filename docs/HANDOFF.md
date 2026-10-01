@@ -630,6 +630,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     otherwise) in the release; everything in it is in the repo, and our fork
     already has all of it but the UI commit 3ccbf9b.** inspect-ipa.yml stays
     on the branch (not needed for this one).
+  - **Build 277 green** (run 36849823493, head 1563ac6): "Patch airconv
+    float experiments" applied, native ABI e2565aa5b1737703, OTA mailed,
+    bucket 5 builds 0.75 GB. Waiting on device: MADEIRA_PS_CLAMP=1/2 and
+    MADEIRA_PRECISE_MINMAX=1 on the owner's iPhone (outdoor darkening) and the
+    iPad (black scene, plus `[f32-tex]` lines).
+  - Owner: the cleanup left IPA artifacts older than ~164. Those builds used
+    the fixed name `madeira-unsigned-ipa` (83 artifacts). cleanup-artifacts
+    now deletes that name too.
 
 ---
 

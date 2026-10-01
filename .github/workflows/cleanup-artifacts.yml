@@ -2,7 +2,8 @@ name: Delete old IPA artifacts
 
 # Owner's request (2026-10-01): the unsigned IPA artifacts of old builds are
 # not needed. Deletes every `madeira-0.1.<N>-unsigned-ipa` artifact whose build
-# number N is below the input; other artifacts (build logs) are kept. Prints
+# number N is below the input, and every `madeira-unsigned-ipa` (the older,
+# unnumbered name); other artifacts (build logs) are kept. Prints
 # only artifact names.
 on:
   workflow_dispatch:
@@ -40,7 +41,8 @@ jobs:
               d = call("GET", f"/actions/artifacts?per_page=100&page={page}")
               for a in d["artifacts"]:
                   m = re.fullmatch(r"madeira-0\.1\.(\d+)-unsigned-ipa", a["name"])
-                  if m and int(m.group(1)) < below:
+                  # builds before the numbered names (up to ~164) used one fixed name
+                  if (m and int(m.group(1)) < below) or a["name"] == "madeira-unsigned-ipa":
                       victims.append(a)
               if len(d["artifacts"]) < 100:
                   break
