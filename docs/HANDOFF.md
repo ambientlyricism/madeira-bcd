@@ -665,6 +665,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `dxmt = d3d11.mipClampBC=2` (Madeira's ml670/ml675 clamp, not upstream
     DXMT): remove it, set the in-game texture quality to Low to keep memory
     in bounds, and go outdoors.
+  - Owner: the darkening happens wherever the sky is in view (not in every
+    open area). **mipClampBC removed (log 14:23:35, build 277): still
+    darkens**, footprint up to 6.98 GB (owner: RAM rose for nothing) -> the
+    clamp is not the cause; owner told to put the line back.
+  - Next build: tools/patch-winemetal-lum-probe.py (step "Patch winemetal
+    luminance probe", native, default ON, MADEIRA_LUM_PROBE=0 off).
+    `[lum-readback]`: every texture->buffer copy of <= 4x4 texels from a
+    32-bit float texture is remembered; at the next one the previous copy's
+    CPU-visible destination is read and logged (throttled ~2/s: format,
+    level, size, 4 floats). `[f32-mipgen]`: 32-bit float GenerateMips (fmt,
+    size, levels). Goal: see the luminance value the game reads at the
+    moment it darkens -- huge/Inf/NaN = the GPU computes it wrong; sane
+    values = CPU side / readback timing. Not tested locally (no Metal here);
+    patch applies cleanly and is idempotent on a scratch copy.
 
 ---
 
