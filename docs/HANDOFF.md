@@ -388,6 +388,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     fastsync as the default sync engine (round-3 merge). -dx9 renders the
     trees correctly, so it is a playable mode now; the D3D10 tree streaks
     stay open (271 carries vb-align/vfetch-align, not yet tested in D3D10).
+  - **Build 273 green** (run 36835669781, head 914c951; main fast-forwarded to
+    76a865f, the duplicate push run 274 cancelled): step "Patch airconv lean
+    SM50 shaders" applied and dxmt-ios compiled with it; native ABI
+    199d6904b41b587b; OTA "bucket holds 3 builds, 0.45 GB of the 8 GB
+    budget", link mailed (08:39 UTC). **Waiting on device:** God of War with
+    the same settings -- look for `[sm50-lean]` (mode line, then per-1000
+    counts with KB dropped per shader and malloc in use) and compare
+    `[malloc-zones]` with the 271 log (2887 MB after the loading jump).
 
 ---
 
