@@ -1969,6 +1969,43 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     buttons). An agent was started on it (worktree).
   - **Build 312 green** (run 36924702830, head 4b5fbbc): `d3d12-msaa8`.
     main fast-forwarded to 4b5fbbc. DualSense output agent still running.
+  - **2026-10-01 (Claude, DualSense output agent, worktree branch, local only:
+    not pushed, no CI run).** Phase 2 -- the game's output reaches the real
+    pad -- done in code, not device-tested. Doc: `docs/dualsense-output.md`.
+    Found: the wineserver already parsed output report 0x02 into
+    `winios_hidpad_get_output`, but only rumble with valid_flag0 bits (SDL's
+    firmware-2.24 "vibration v2" sets valid_flag2 0x04 alone and was missed),
+    and nothing on iOS read it; XInputSetState on a host pad returned
+    ERROR_SUCCESS and dropped the motors (xinput1_3 main.c), caps said "no
+    motors". Built (ml2106/ml2107): decoder for USB 0x02 and Bluetooth 0x31
+    (CRC-32 seed 0xA2) with all three rumble bits and the power-reduction byte
+    (`build/hidpad/hidpad_reports.h`); bounded `[hidpad-out]` log + tally and
+    rumble/trigger reset on the last handle close (`hidpad_ios.c`); notify hook +
+    XInput vibration snapshot (`WiniosGamepad.[ch]`); win32u op 2 and motor
+    caps (`driver_ios.c`); xinput patch (`tools/patch-wine-xinput-vibration.py`,
+    SetState/Enable/process detach) applied by `tools/build-wine-extra-dlls.sh`,
+    which now rebuilds arm64ec xinput1_1-1_4 and replaces the shipped copies
+    (only exception to "never replaces"); trigger/rumble/LED mapping
+    (`app/Madeira/Winios/WiniosPadEffects.h`); apply layer `app/Madeira/PadOutput.m`
+    (CoreHaptics left/right handle engines, GCDualSenseAdaptiveTrigger incl.
+    positional modes via objc_msgSend, GCDeviceLight, playerIndex; main thread,
+    event-driven, stops/resets on background), wired from GamepadInput.swift;
+    Xcode project + bridging header; switch `env.MADEIRA_PAD_OUTPUT` (default
+    on; 0 / hid / xinput) in the catalog. Host: check-pad-output (new),
+    check-gamepad, check-hidpad PASS; hidpad_ios.c / patched xinput / PadOutput.m
+    syntax-checked; catalog current. **Open:** device test (God of War
+    `env.MADEIRA_PAD_MODE = dualsense`: `[hidpad-out] ml2106 #n`, `ml2107
+    L2:/R2:`, `slot 0 rumble`, `lightbar`; an XInput game: `ml2107 slot 0
+    rumble`); if GoW's tally shows only "no rumble bit" (audio haptics over USB)
+    -> Bluetooth presentation; 32-bit xinput needs the i386 farm rebuilt with
+    the patch. Impossible on iOS: audio HD haptics, speaker, mic, mic LED, LED
+    brightness, bow snap force / galloping rhythm.
+    Merged as 8737a45 (agent commit ea95f94); host checks after the merge:
+    pad-output, gamepad, hidpad, catalog, tiled PASS. Not compiled against
+    the iOS SDK yet (next CI), not device-tested. Open: 32-bit XInput games
+    (i386 farm xinput unpatched -- patching changes the farm cache key, a
+    one-time full farm rebuild: owner's call); Bluetooth presentation if the
+    Sony ports send audio haptics over the wired-pad path.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
