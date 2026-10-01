@@ -699,6 +699,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     reports -> rumble, adaptive triggers, light bar via GCDualSense APIs;
     (3) touchpad and gyro. Needs the PnP path (winedevice/plugplay) to load
     winebus on device. Multi-day; not started.
+    Owner's go (2026-10-01): XInput stays the default and unchanged; add a
+    DirectInput/HID choice to the in-game session menu (LibraryHUD); he
+    authorised a second agent so this does not block other work. Launched in
+    its own git worktree: it researches first (CrossOver/winebus iohid+sdl,
+    SDL's PS5 HID layout, GameController DualSense APIs), then phase 1
+    (winebus on iOS + virtual DualSense 054C:0CE6 / generic HID pad + menu
+    picker + per-game key), commits locally only (no push, no CI) and writes
+    its notes into a subsection "DualSense / DirectInput (second agent)" at
+    the end of section 0. The main session reviews, merges and builds.
 
 ---
 
