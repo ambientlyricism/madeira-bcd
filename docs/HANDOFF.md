@@ -1881,6 +1881,39 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     cbv-snapshot, [sync-diag]). The GoT agent was resumed on GTA V's tiled
     resources (opt-in `d3d12-tiled-resources`, fully backed reserved
     resources, GetResourceTiling, no-op tile mappings).
+  - **GTA V Enhanced: opt-in tiled resources for the FL 12_0 survey (agent,
+    2026-10-01; docs/gta5-d3d12-caps.md).** Logs PlayGTAV.exe 22:23:48 /
+    22:27:37 (build 308): the survey device's answers contradict the 12_0 we
+    claim in OPTIONS.TiledResourcesTier (0; 12_0 requires Tier 2) and
+    OPTIONS.MaxGPUVirtualAddressBitsPerResource (0, while
+    GPU_VIRTUAL_ADDRESS_SUPPORT says 40), and its FORMAT_SUPPORT pass gets
+    E_FAIL for R32G32B32_FLOAT/UINT/SINT (every 11_0+ device has them as vertex
+    formats; so do our input layouts) right before `destroyed Device`; typed
+    UAV loads alone did not help. **Added, OFF by default (key
+    `d3d12-tiled-resources = 1`, madeira.cfg or game file):** OPTIONS
+    TiledResourcesTier 2 + 40 VA bits per resource; FORMAT_SUPPORT R32G32B32
+    FLOAT/UINT/SINT = IA_VERTEX_BUFFER; CreateReservedResource(1,2) create the
+    resource FULLY BACKED like a committed DEFAULT-heap resource, tile count x
+    64 KB capped by `d3d12-reserved-max-mb` (default 1024, E_OUTOFMEMORY above,
+    checked before allocating), logged with live totals; GetResourceTiling
+    answers D3D12's standard tiling (64 KB tiles, standard 2D/3D/BC/MSAA
+    shapes, Tier 2 per-slice mip packing, D3D12_PACKED_TILE for packed
+    subresources); UpdateTileMappings / CopyTileMappings counted no-ops
+    (first 8 logged). Deviation: unmapped tiles read their backing, not zeros;
+    tile-pool heaps are allocated besides the full backing. Without the key
+    every method is the old stub and every answer unchanged (GoW / GoT
+    untouched). Host test `tests/host/check-d3d12-tiled.py` (new) PASS incl. a
+    GetResourceTiling table test; got-diagnostics PASS; arm64ec builds and
+    links; catalog regenerated (IPA). **Device test** (next IPA): GTA game file
+    `env.MADEIRA_DXGI_SRC = 1`, `env.MADEIRA_GUEST_LOG = all`, `vram-mb = 4096`,
+    `d3d12-typed-uav-load = 1`, `d3d12-tiled-resources = 1`; expect the
+    `tiled-resources=1 (opt-in)` line and OPTIONS bytes 12 = 02, 36 = 28. If
+    the box stays: remaining format failures (B4G4R4A4, R8G8_B8G8),
+    ResourceBindingTier 3, OPTIONS12, SM > 6.6, NVAPI clock query. Later:
+    real residency via Metal sparse textures / Metal 4 placement sparse.
+    Merged as 1baa002 (agent commit 60e87a0); host checks after the merge:
+    check-d3d12-tiled, got-diagnostics, catalog PASS. Build 309 (d4ca619)
+    superseded by the next dispatch, which carries both.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
