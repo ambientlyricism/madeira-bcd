@@ -957,6 +957,11 @@ jobs:
       - name: Patch airconv texture load bounds
         run: python3 tools/patch-airconv-ld-bounds.py
 
+      # The same tiles also WRITE past the bottom; D3D drops out-of-range typed
+      # UAV stores, Metal's write() is undefined there. Branch around them.
+      - name: Patch airconv typed UAV store bounds
+        run: python3 tools/patch-airconv-uav-store-bounds.py
+
       # God of War's outdoor darkening survived the float switches. Read back
       # what the game reads: [lum-readback] logs the 1x1 32-bit float values it
       # copies to the CPU (~2/s), [f32-mipgen] its 32-bit float GenerateMips.

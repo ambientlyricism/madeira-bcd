@@ -792,6 +792,27 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     larger. Very likely the same bug: dimmed on the iPhone at 720p, black at
     360p. The 282 fix (texture load bounds) should cover both; asked the
     owner to have the iPad user try 282. Footprint 5.6 GB, no crash.
+  - **Build 282 on the owner's iPhone (log 15:52:42, 1280x720, `[ld-bounds]
+    ... on`): darkening still there, ~20 % milder ("not pitch black
+    anymore").** Readback census: the game reads back one 32x32 RGBA16Float
+    texture every frame (fmt 115, ~27/s, too big for value dumps) and three
+    small buffers: 16 B, 64 B (always zeros), 208 B. The **16-byte one is the
+    exposure state** (x, e, z, w): outdoors x ~ -0.15, e (exposure factor)
+    ~0.05-0.09, z ~1500; at start x=11.9/z=4384, menu/house x~2.26,
+    e=0.0175, z~3120; e=0.2331 with w=0/1 looks like a reset/default. Every
+    few tens of seconds ONE readback jumps to x=5..6, z=4000..5200 (15:53:53,
+    15:54:25, 15:54:34, 15:55:46) and right after it e falls (0.086 ->
+    0.028) and climbs back over seconds = the darkening. Single-frame spikes
+    in an unchanged scene suggest memory corruption (or a stale read). Note:
+    the probe reads the PREVIOUS small copy at the time of the next one, so a
+    value can be stale if the GPU had not finished; the e drop after each
+    spike is game state, though. Next fix: tools/patch-airconv-uav-store-
+    bounds.py (step "Patch airconv typed UAV store bounds"): store_uav_typed
+    on 2D/2D-array/3D textures branches around the Metal write() when out of
+    range (D3D drops such writes); same switch MADEIRA_LD_BOUNDS; cache salt
+    for "on" 100 -> 200. Texture atomics are not covered yet. DXMT already
+    zero-initialises new textures (ResourceInitializer::initWithZero, used
+    when pInitialData is NULL), so garbage-initialised targets were ruled out.
 
 ---
 
