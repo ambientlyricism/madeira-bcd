@@ -1579,6 +1579,43 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     change, so no push run). **Build 301 dispatched** (run 36901860397, head
     ab800bb): 300 + the GoW darkening experiments (two new CI steps; first
     real compile of the winemetal trace hooks).
+  - **dxgi agent finished; merged (03ba1a1, merge 639cbff): GTA V's
+    IDXGIFactory7, opt-in per game.** `tools/patch-dxgi-factory7.py` (on a
+    copy of `dxmt/src/dxgi/dxgi_factory.cpp`; submodule untouched; name kept
+    out of the i386 `patch-dxmt-*` cache key): MTLDXGIFactory derives from
+    IDXGIFactory7 and answers it; RegisterAdaptersChangedEvent -> S_OK with
+    a cookie (never signalled), Unregister -> S_OK; **EnumAdapterByLuid now
+    works** (matched by the Metal registry-ID LUID that madeira_d3d12
+    reports; was E_NOTIMPL); `[dxgi-src]` line once per process.
+    `tools/build-dxgi-dll.sh` + CI step "Build dxgi-src.dll" (continue-on-
+    error, right after the llvm-mingw cache, before every DXMT patch step and
+    nvapi) builds the arm64ec dxgi.dll like DXMT's meson release build and
+    ships it as **`arm64ec-windows/dxgi-src.dll` beside upstream's
+    dxgi.dll** (never overwritten); exports must equal the committed DLL's;
+    a failure warns and ships nothing. **Evidence the committed binary IS
+    our pin:** the agent rebuilt it unpatched on Linux with llvm-mingw
+    20260421 (macOS target libs): .text/.rdata/.data/.rsrc/.reloc byte-
+    identical, all 9663 symbols at the same addresses, same imports/exports
+    (only timestamp / build-id / dead .pdata differ) = DXMT a5e0cd3 release.
+    The patched build differs only in the factory code; vtable slots 30/31
+    are new (upstream's slot 30 is the destructor, so a binary hack was
+    impossible). **Switch:** `env.MADEIRA_DXGI_SRC = 1` in a game's file
+    (WineProcessBridge.m links dxgi-src.dll as system32\dxgi.dll in x64
+    sessions and sysx64\dxgi.dll, after the per-session relink -- every
+    session relinks all DLLs from the bundle, so other games always get
+    upstream's dxgi.dll). Default off for all games (GoW / GoT untested with
+    it). Host checks after the merge: check-dxgi-factory7, config catalog,
+    patch chain PASS; workflow YAML parses. Only CI (macOS bash 3.2, Xcode)
+    and the device can show the rest. **GTA test:** game file
+    `env.MADEIRA_DXGI_SRC = 1` + `env.MADEIRA_GUEST_LOG = all`; expect
+    `[WineProc] MADEIRA_DXGI_SRC=1: dxgi.dll -> dxgi-src.dll`, `[dxgi-src]
+    ... a5e0cd3`, NO `Unknown interface query a4966eed`, a D3D12CreateDevice
+    with a non-NULL adapter after the sl.* loads, no int3 RSI=0x17b133bd. If
+    `EnumAdapterByLuid: no adapter with LUID` shows, the LUIDs disagree;
+    next suspect D3DKMT (`D3DKMTEnumAdapters2 -> 0 adapters`). Remaining
+    DXGI gaps (not fixed): GetSharedResourceAdapterLuid, occlusion / stereo
+    registration, CreateSwapChainForComposition / CoreWindow (E_NOTIMPL),
+    budget notification without madeira-dxgi-budget.txt, UMD version ~0.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
