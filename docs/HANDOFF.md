@@ -288,6 +288,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     context menu (Play / Game settings). ConfigCatalog regenerated (check
     PASS). No submodule changes. Build dispatched (it also carries the
     prepared, still inactive R2 support).
+  - **Build 269 green** (run 36799153555, head 87830f1, main fast-forwarded),
+    BUT its OTA step failed: `OTA: store B2`, signing fine, then `upload
+    failed ... (InternalError) when calling the UploadPart operation (reached
+    max retries: 2)` -- a transient B2 server error; no IPA, no mail. The
+    main push started run 270 on the same commit; left running on purpose as
+    the OTA retry. sign-and-publish-ota.sh now sets AWS_RETRY_MODE=adaptive,
+    AWS_MAX_ATTEMPTS=10 (next build).
 
 ---
 

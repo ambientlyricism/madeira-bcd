@@ -68,6 +68,9 @@ else
   [ -n "$REGION" ] || { echo "::error::OTA: B2_S3_ENDPOINT is not s3.<region>.backblazeb2.com"; exit 1; }
 fi
 export AWS_ACCESS_KEY_ID="$B2_KEY_ID" AWS_SECRET_ACCESS_KEY="$B2_APP_KEY" AWS_DEFAULT_REGION="$REGION"
+# Build 269's IPA upload died on one B2 "InternalError" in UploadPart after the
+# CLI's default 2 retries; give transient store errors more room.
+export AWS_RETRY_MODE=adaptive AWS_MAX_ATTEMPTS=10
 EP="https://$B2_S3_ENDPOINT"
 s3() { aws s3 "$@" --endpoint-url "$EP" --only-show-errors; }
 
