@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag of the draft release holding the IPA"
+        description: "Draft release: its tag, its name, or the last part of its page address (untagged-...)"
         required: true
       asset:
         description: "Asset name filter (substring), empty = the first .ipa"
@@ -43,7 +43,7 @@ jobs:
               with urllib.request.urlopen(req) as r:
                   return json.loads(r.read())
           rels = get(f"https://api.github.com/repos/{repo}/releases?per_page=100")
-          rel = next((r for r in rels if r["tag_name"] == tag), None)
+          rel = next((r for r in rels if tag in (r["tag_name"], r["name"]) or r["html_url"].endswith("/" + tag)), None)
           if not rel: raise SystemExit(f"no release with tag {tag}")
           ipa = next((a for a in rel["assets"] if a["name"].endswith(".ipa") and flt in a["name"]), None)
           if not ipa: raise SystemExit("no matching .ipa asset")
