@@ -1803,6 +1803,29 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     panel Diagnostics (CAP, GPU sync) compiled; `[d3d12-caps]` trace in.
     OTA mailed (bucket 10 builds, 1.52 GB). main fast-forwarded to e30b6b1
     (no workflow change). Waiting on the owner's GTA log with the trace.
+  - **GTA V on build 308 with the `[d3d12-caps]` trace (log PlayGTAV.exe
+    2026-10-01 22:23:48; DXGI_SRC=1, vram-mb 4096): same box, but now we see
+    what it reads.** Probe device (4703): FEATURE_LEVELS. Survey device
+    (5398-5447): FEATURE_LEVELS (12 levels asked, max answered 12_0),
+    OPTIONS (decoded: TiledResourcesTier 0, ResourceBindingTier 2,
+    **TypedUAVLoadAdditionalFormats 0**, ROVs 0, ConservativeRaster 0,
+    ResourceHeapTier 2), GPU_VA 40/40, ARCHITECTURE (TileBased 1, UMA 0),
+    ARCHITECTURE1, SHADER_MODEL asked 6.0 -> 6.0, OPTIONS1 (wave 32,
+    int64), ROOT_SIGNATURE 1.1, OPTIONS2 0, OPTIONS5 0 (RaytracingTier 0,
+    RenderPassesTier 0), SHADER_CACHE. Real device (7399-7435): NVAPI, then
+    ARCHITECTURE and OPTIONS5 only, then `destroyed Device` + the box. So
+    the verdict comes from the survey answers. Feature level 12_0 on Windows
+    REQUIRES ResourceBindingTier 2, **TiledResourcesTier 2 and
+    TypedUAVLoadAdditionalFormats** -- we claim 12_0 but answer 0 for the
+    last two; the box says "supports DirectX 12 (feature level 12_0)".
+    Raytracing is unlikely to be required (GTX 1630, a minimum GPU, has no
+    DXR). The runtime has NO ray tracing and NO tiled resources at all
+    (CreateReservedResource / CreateStateObject are E_NOTIMPL stubs).
+    **Next test, no build:** GTA game file `d3d12-typed-uav-load = 1`
+    (existing ml1970 opt-in; log `[d3d12-caps] ml1970
+    typed-uav-load-additional=1 (opt-in)` and the OPTIONS hex at offset 24
+    = 01). If it still fails: TiledResourcesTier (would need reserved
+    resources + UpdateTileMappings on Metal sparse textures / heaps).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
