@@ -1553,6 +1553,26 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `MADEIRA_SAMPLE_L_BIAS = 1`); success = menu `[rb-buf]` ~4.37 / 4460 at
     720p. A PE-side cause (border colour, hazards) would need d3d11.dll
     built from source -- the same question as GTA's dxgi.dll (agent running).
+  - **Owner's build-296 runs (2026-10-01 20:26-20:41 UTC+3):**
+    - **GoT 20:26:49, MetalFX off (the workaround): the GPU check PASSES**
+      -- `DXMT config: dxgi.customDeviceId=2544` alone, `[NxApp] NVIDIA
+      GeForce RTX 3060 (active)`, "Successfully found GPU Driver Info",
+      "Driver Version: 560.94" (log lines 37, 9023-9025, 9787-9788). This
+      confirms the DXMT_CONFIG separator diagnosis (a1abebf).
+    - **GoT rendering corruption remains** (owner + recording
+      ScreenRecording_10-01-2026_20-40-37): "with FSR off the artefacts got
+      clearly angular / blocky; with FSR they were more rounded" -- i.e. made
+      at internal resolution before the upscaler. **An agent was started**
+      (worktree) on it with every GoT log / recording / screenshot since
+      09-26 (frames via a pip imageio-ffmpeg), the earlier black-squares
+      work (builds 192-198), and candidates with a block footprint (BC 4x4
+      decode, wave / groupshared conversion, aliasing, barriers). Writes
+      docs/got-corruption.md; open until it reports.
+    - **GTA V 20:41:45 with "Report an NVIDIA GPU" on:** NvAPI now answers
+      (`NvAPI_Initialize -> 0`, one physical GPU), but `Unknown interface
+      query a4966eed...` (IDXGIFactory7) still appears twice (4660, 5339)
+      and the game writes its crash report at "System Init" again (7432).
+      Factory7 stays the blocker; passed on to the dxgi agent.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
