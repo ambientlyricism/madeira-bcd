@@ -1919,6 +1919,27 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     identity unchanged (8d70ae1af2324972, no re-conversion). OTA mailed.
     309 was cancelled (superseded). main fast-forwarded to 3b463c3 (no
     workflow change).
+  - **GTA V on build 310 with `d3d12-tiled-resources = 1` (logs PlayGTAV.exe
+    2026-10-01 23:06:13 and GTA5_Enhanced.exe 23:04:31): same box.** The key
+    worked: `tiled-resources=1 (opt-in)` (5353), OPTIONS byte 12 = 02, byte
+    36 = 0x28 (5354), formats 6/7/8 gone from "no Metal mapping". The real
+    device still reads only ARCHITECTURE (TileBasedRenderer 1, UMA 0) and
+    OPTIONS5 (all 0) before `destroyed Device` (7380-7382). (GTA5_Enhanced.exe
+    started directly has its own game file without these keys: first
+    ERR_SYS_SYSREQ_GPU, then the child's NOD3D12; expected.) Every FL 12_0
+    answer is consistent now, so the last two reads are the suspects:
+    TileBasedRenderer TRUE (desktop GPUs and vkd3d-proton say FALSE; a
+    mobile/tiler answer may be what RAGE refuses) or RaytracingTier 0.
+    **Added (this commit):** `d3d12-tile-based = 0` (game file / madeira.cfg;
+    default 1 = unchanged) makes ARCHITECTURE and ARCHITECTURE1 report
+    TileBasedRenderer FALSE (log `[d3d12-caps] madeira-bcd tile-based=0`);
+    `d3d12-caps-log = 2` also logs every FORMAT_SUPPORT (format, Support1,
+    Support2) and MSAA query (400 lines), in case a supported format's flags
+    decide. Arm64ec syntax check: only the 4 pre-existing errors from the
+    unpatched winemetal.h; catalog, tiled, got-diagnostics checks PASS.
+    If TileBasedRenderer is not it: RaytracingTier (no DXR in the runtime --
+    a report-only switch would need CreateStateObject / acceleration
+    structures at least as safe failures), then the format flags.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

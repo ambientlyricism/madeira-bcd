@@ -7212,6 +7212,17 @@ static UINT mad_clamp_sample_count(UINT requested)
     return 2;                       /* 3 -> 2 */
 }
 
+/* madeira-bcd: ARCHITECTURE(1).TileBasedRenderer; madeira.cfg / game file
+ * d3d12-tile-based = 0 reports FALSE (see D3D12_FEATURE_ARCHITECTURE). */
+static BOOL mad_tile_based_answer(void) {
+    static int v = -1;
+    if (v < 0) {
+        v = mad_cfg_int_pe("d3d12-tile-based", 1) ? 1 : 0;   /* 0: TileBasedRenderer FALSE, as desktop GPUs and vkd3d-proton report */
+        if (!v) d3d12_log("[d3d12-caps] madeira-bcd tile-based=0 (d3d12-tile-based): ARCHITECTURE reports TileBasedRenderer FALSE\n");
+    }
+    return v ? TRUE : FALSE;
+}
+
 static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
         D3D12_FEATURE feature, void *data, UINT size) {
     (void)This;
@@ -7270,15 +7281,20 @@ static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
          * already implements. It costs staging copies. The proper long-term fix
          * is mappable textures (a CPU shadow per subresource, uploaded at Unmap /
          * first GPU use), after which these can go back to TRUE.
-         * TileBasedRenderer stays TRUE: it is a hint and promises nothing. */
-        a->TileBasedRenderer = TRUE; a->UMA = FALSE; a->CacheCoherentUMA = FALSE;
+         * TileBasedRenderer stays TRUE: it is a hint and promises nothing.
+         * madeira-bcd: d3d12-tile-based = 0 answers FALSE, as desktop GPUs and
+         * vkd3d-proton do. GTA V Enhanced reads ARCHITECTURE and OPTIONS5 on its
+         * real device right before it gives up with ERR_GFX_D3D_NOD3D12 (build
+         * 310, log PlayGTAV.exe 2026-10-01 23:06:13), after every feature-level
+         * 12_0 answer was already consistent. */
+        a->TileBasedRenderer = mad_tile_based_answer(); a->UMA = FALSE; a->CacheCoherentUMA = FALSE;
         return S_OK;
     }
     case D3D12_FEATURE_ARCHITECTURE1: {
         D3D12_FEATURE_DATA_ARCHITECTURE1 *a = data;
         if (size < sizeof *a) return E_INVALIDARG;
         /* ml1038: see D3D12_FEATURE_ARCHITECTURE above. */
-        a->TileBasedRenderer = TRUE; a->UMA = FALSE; a->CacheCoherentUMA = FALSE; a->IsolatedMMU = TRUE;
+        a->TileBasedRenderer = mad_tile_based_answer(); a->UMA = FALSE; a->CacheCoherentUMA = FALSE; a->IsolatedMMU = TRUE;
         return S_OK;
     }
     case D3D12_FEATURE_FEATURE_LEVELS: {
@@ -7461,13 +7477,29 @@ static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
  * CheckFeatureSupport was refused, so the rejection is in an answer. One line
  * per query (feature id, size, HRESULT, the answer's first 64 bytes in hex),
  * format queries excluded, at most 160 lines per process. madeira.cfg
- * d3d12-caps-log = 0 turns it off. */
+ * d3d12-caps-log = 0 turns it off; 2 adds every FORMAT_SUPPORT and MSAA
+ * query (format, HRESULT, Support1/Support2 or quality levels; 400 lines). */
 static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport_logged(ID3D12Device *This,
         D3D12_FEATURE feature, void *data, UINT size) {
     static int on = -1;
     static LONG lines;
     HRESULT hr = device_CheckFeatureSupport(This, feature, data, size);
-    if (on < 0) on = mad_cfg_int_pe("d3d12-caps-log", 1) ? 1 : 0;
+    if (on < 0) { on = (int)mad_cfg_int_pe("d3d12-caps-log", 1); if (on < 0) on = 0; }   /* 2: format queries too */
+    if (on >= 2 && (feature == D3D12_FEATURE_FORMAT_SUPPORT || feature == D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)) {
+        static LONG fmt_lines;
+        if (InterlockedIncrement(&fmt_lines) <= 400) {
+            if (feature == D3D12_FEATURE_FORMAT_SUPPORT && size >= sizeof(D3D12_FEATURE_DATA_FORMAT_SUPPORT)) {
+                const D3D12_FEATURE_DATA_FORMAT_SUPPORT *f = data;
+                d3d12_log("[d3d12-caps] madeira-bcd FORMAT_SUPPORT format %u -> 0x%08lx support1 0x%08x support2 0x%08x\n",
+                          (unsigned)f->Format, (unsigned long)hr, (unsigned)f->Support1, (unsigned)f->Support2);
+            } else if (feature == D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS &&
+                       size >= sizeof(D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS)) {
+                const D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS *m = data;
+                d3d12_log("[d3d12-caps] madeira-bcd MSAA format %u x%u -> 0x%08lx levels %u\n",
+                          (unsigned)m->Format, (unsigned)m->SampleCount, (unsigned long)hr, (unsigned)m->NumQualityLevels);
+            }
+        }
+    }
     if (on && feature != D3D12_FEATURE_FORMAT_SUPPORT && feature != D3D12_FEATURE_FORMAT_INFO &&
         feature != D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS && InterlockedIncrement(&lines) <= 160) {
         char hex[2 * 64 + 1];
