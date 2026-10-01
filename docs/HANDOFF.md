@@ -381,6 +381,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     War's game config unchanged for the comparison (mipClampBC=2, WINEDEBUG
     err+all/err-virtual/fixme-all, swap-mb 6144, swap-min-kb 1024; global
     mempool 2048); 271 is the fallback.
+  - **32-bit Crysis -dx9 now ~90 FPS on build 271** (owner, 2026-10-01; was
+    ~28 FPS on 2026-09-30 before build 250). No log yet. Most likely cause:
+    the guest main thread QoS fix (builds 250/251: it ran on E-cores only at
+    2.1-2.6 GHz, [main-qos] class 0x21 now puts it on P-cores) plus
+    fastsync as the default sync engine (round-3 merge). -dx9 renders the
+    trees correctly, so it is a playable mode now; the D3D10 tree streaks
+    stay open (271 carries vb-align/vfetch-align, not yet tested in D3D10).
 
 ---
 
