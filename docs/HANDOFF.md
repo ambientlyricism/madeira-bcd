@@ -1573,6 +1573,12 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
       query a4966eed...` (IDXGIFactory7) still appears twice (4660, 5339)
       and the game writes its crash report at "System Init" again (7432).
       Factory7 stays the blocker; passed on to the dxgi agent.
+  - **Build 300 green** (run 36899052316, head 5eb58ff, 2026-10-01 17:45
+    UTC): DXMT_CONFIG ";" separator (GoT), game-mode dialog input wake,
+    GTA child desktop window. main fast-forwarded to 5eb58ff (no workflow
+    change, so no push run). **Build 301 dispatched** (run 36901860397, head
+    ab800bb): 300 + the GoW darkening experiments (two new CI steps; first
+    real compile of the winemetal trace hooks).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
