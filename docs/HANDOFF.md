@@ -459,6 +459,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     64-bit d3d11.dll is upstream's committed binary (we cannot instrument
     Map there); native winemetal can log blits. Asked the owner: does it
     happen standing still with the camera fixed, and in which area.
+  - **Another person's iPad, build 269, God of War (log 2026-10-01 10:39:48,
+    40 MB, + screen recording 1:16), relayed by the owner: menu UI drawn,
+    3D behind it black, after "select difficulty" all black, FPS 0-7, no
+    crash.** The iPad has 7644 MB of RAM (hw.memsize) while the process
+    limit reads 8192 MB, and the footprint sat at the limit: last
+    `[footprint]` phys=8175 MB, compressed 4432 MB; HUD 7552-7958/8191 MB.
+    Causes, all known: no game config (no mipClampBC -> tex-private 2.1 GB
+    and climbing), build 269 has no lean SM50 fix (DefaultMallocZone 3066
+    MB / 5.8 M blocks), MetalFX spatial 692x480 -> 1384x960 plus the frame
+    interpolator on (HUD). The device is starved -- black frames, not a
+    rendering bug. 3 SEGVs (0094/0098 at addr 0x3404, 0044 at 0) were
+    handled; the game kept running. Advice: build 273+, God of War game
+    config `dxmt = d3d11.mipClampBC=2`, `swap-mb = 6144`, `swap-min-kb =
+    1024`, Memory pool Off, MetalFX and frame generation off; an 8 GB iPad
+    has ~4 GB less headroom than the owner's 12 GB iPhone.
 
 ---
 
