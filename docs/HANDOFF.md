@@ -550,6 +550,33 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
   - Upstream PRs wait (owner, 2026-10-01): he is not yet in the upstream
     Discord contributors channel; PRs will be requested there and the owner
     will say which ones. Do not open upstream PRs before that.
+  - **God of War darkening, measured (owner's iPhone, build 275, log
+    13:07:31 + 89 s recording made during minutes 2-3 of that log).** Frames
+    every 0.5 s, mean brightness of the centre: ~20-40 normally, 28 -> 11
+    between 33 and 38 s, ~10-12 until 74 s, back to ~30 by 88 s -- the whole
+    picture, characters included, a smooth fade both ways. Owner: only
+    outdoors, it started when stepping out of the house, never indoors -> the
+    sky / sun drives it. Reads as auto-exposure fed a luminance that is far
+    too high (or NaN/Inf). The log has no per-frame render values, so timing
+    a new video to the log would not add anything. Two Metal-vs-D3D
+    differences fit and are now switches (tools/patch-airconv-float-
+    experiments.py, step "Patch airconv float experiments", all OFF by
+    default): MADEIRA_PS_CLAMP=1 (finite pixel float outputs beyond +-65504
+    written as +-65504, as D3D converts to float16 instead of overflowing to
+    Inf), =2 (also Inf -> +-65504, NaN -> 0); MADEIRA_PRECISE_MINMAX=1
+    (air.fmin/fmax, NaN-ignoring like D3D, instead of the fast variants --
+    airconv's nt converter always used the fast ones). The native shader
+    cache uses a separate table per combination (version + salt*1e6), so
+    switching recompiles. Facts found on the way: airconv's UseFastMath sets
+    contract/reassoc/reciprocal (PS and CS), approx-func and nsz, never
+    nnan/ninf; CreateFPUnOp/BinOp default to air.fast_* variants.
+  - **iPad M1, build 275 log (12:24:50).** RAM cap works: `[ram-cap] ... cap
+    5596 MB`, video budget 1024 MB (process limit 5596), footprint 5.4 GB.
+    The black scene stays. The log holds nothing about formats or filtering,
+    so the same experiment build adds `[f32-tex]`: the device's
+    supports32BitFloatFiltering + families 7/8/9 once, and the first sampled
+    R32/RG32/RGBA32Float textures. The float switches above are worth trying
+    there too (the black menu may be the same exposure collapse, permanent).
 
 ---
 

@@ -942,6 +942,14 @@ jobs:
       - name: Patch winemetal RAM cap for 8 GB devices
         run: python3 tools/patch-winemetal-ram-cap.py
 
+      # God of War darkens outdoors (iPhone) and draws a black scene on an M1
+      # iPad. Switches, all off by default: MADEIRA_PS_CLAMP=1|2 (pixel output
+      # clamp like D3D's float16 conversion), MADEIRA_PRECISE_MINMAX=1
+      # (NaN-ignoring min/max); [f32-tex] logs 32-bit float textures and the
+      # device's float filtering support. Native only.
+      - name: Patch airconv float experiments
+        run: python3 tools/patch-airconv-float-experiments.py
+
       # WoW64's 32-bit Windows farm (app/Madeira/i386-windows), which upstream
       # builds from the pinned wine and DXMT (build/wine-i386) and does not
       # commit. Cached per wine/DXMT revision; a failure only leaves 32-bit
