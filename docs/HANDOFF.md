@@ -781,6 +781,17 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Waiting on device: God of War at 720p (or FSR on at 1080p), outdoors --
     does the darkening stay away? `[ld-bounds] ... on` must be in the log;
     `[rb-tex]` / `[rb-buf]` show the readbacks.
+  - **M1 iPad, build 277 (log 14:27:46, display 1280x720, PRECISE_MINMAX=1,
+    still black).** `[f32-tex] ... Apple M1 GPU: supports32BitFloatFiltering=1
+    apple7=1 apple8=0 apple9=0` -> the 32-bit float filtering theory is
+    refuted. But the second render-target set there is **640x360** (R32F
+    640x360, 320x180, 20x12; RGBA32F 80x45): GoW renders at a quarter of
+    1280x720 on that device, and its 32x32 luminance tiles over 640x360 are
+    20x11.25 -> 12 rows, so the last row reads 24 of its 32 texel rows past
+    the bottom -- the same out-of-range `ld` as the iPhone's darkening, much
+    larger. Very likely the same bug: dimmed on the iPhone at 720p, black at
+    360p. The 282 fix (texture load bounds) should cover both; asked the
+    owner to have the iPad user try 282. Footprint 5.6 GB, no crash.
 
 ---
 
