@@ -41,3 +41,72 @@ int winios_gamepad_get_state(int index, struct winios_gamepad *out)
     }
     return value.connected != 0;
 }
+
+/* ml2100: the HID controller's snapshot and the game's output state. Their own
+ * lock, so the XInput slots above keep exactly the contention they had. The
+ * wineserver thread reads the snapshot for every report it builds and writes
+ * the output state when a game sends an output report; the app's gamepad
+ * queue does the opposite. Both copies are under 50 bytes. */
+static pthread_mutex_t hidpad_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct winios_hidpad hidpad;
+static struct winios_hidpad_output hidpad_output;
+
+void winios_hidpad_set_state(const struct winios_hidpad *state)
+{
+    struct winios_hidpad next = {0};
+    if (state && state->connected) {
+        next = *state;
+        next.connected = 1;
+        memset(next.reserved, 0, sizeof(next.reserved));
+        next.reserved2 = 0;
+    }
+    pthread_mutex_lock(&hidpad_lock);
+    next.packet = hidpad.packet;
+    if (memcmp(&next, &hidpad, sizeof(next))) {
+        next.packet++;
+        hidpad = next;
+    }
+    pthread_mutex_unlock(&hidpad_lock);
+}
+
+int winios_hidpad_get_state(struct winios_hidpad *out)
+{
+    struct winios_hidpad value;
+    pthread_mutex_lock(&hidpad_lock);
+    value = hidpad;
+    pthread_mutex_unlock(&hidpad_lock);
+    if (out) {
+        if (value.connected) *out = value;
+        else {
+            /* Keep the packet: a disconnect is a change the reader must see. */
+            memset(out, 0, sizeof(*out));
+            out->packet = value.packet;
+        }
+    }
+    return value.connected != 0;
+}
+
+void winios_hidpad_set_output(const struct winios_hidpad_output *output)
+{
+    struct winios_hidpad_output next;
+    if (!output) return;
+    next = *output;
+    memset(next.reserved, 0, sizeof(next.reserved));
+    pthread_mutex_lock(&hidpad_lock);
+    next.serial = hidpad_output.serial;
+    if (memcmp(&next, &hidpad_output, sizeof(next))) {
+        next.serial++;
+        hidpad_output = next;
+    }
+    pthread_mutex_unlock(&hidpad_lock);
+}
+
+int winios_hidpad_get_output(uint32_t seen, struct winios_hidpad_output *out)
+{
+    struct winios_hidpad_output value;
+    pthread_mutex_lock(&hidpad_lock);
+    value = hidpad_output;
+    pthread_mutex_unlock(&hidpad_lock);
+    if (out) *out = value;
+    return value.serial != seen;
+}

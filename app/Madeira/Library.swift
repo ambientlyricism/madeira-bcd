@@ -2722,6 +2722,8 @@ struct LibraryHUD: View {
     private let sessionTools = MadeiraConfig.flag("MADEIRA_SESSION_TOOLS")
     /// madeira-bcd: the live ECO switch (guest threads to the efficiency cores).
     @State private var eco = madeira_get_eco() != 0
+    /// madeira-bcd (ml2100): the running game's controller API for its next start.
+    @State private var padMode = "xinput"
     @State private var launchVisible = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -2910,6 +2912,26 @@ struct LibraryHUD: View {
                 }))
                 Text("Runs the game's threads on the efficiency cores: cooler and slower. Use it while a game loads, turn it off to play.")
                     .font(.caption).foregroundStyle(.secondary)
+                // madeira-bcd (ml2100): the API player 1's controller reaches the game
+                // through. Saved in the game's own file (env.MADEIRA_PAD_MODE) and read
+                // when a session starts, so it applies at the game's next start.
+                if let entry = model.activeEntry, entry.desktop != true {
+                    Divider()
+                    Text("Controller").font(.headline)
+                    LabeledContent("Controller API") {
+                        Picker("Controller API", selection: Binding(get: { padMode }, set: { value in
+                            padMode = value
+                            GameProfile(windowsPath: entry.windowsPath)
+                                .set(GamepadInput.padModeKey, value == "xinput" ? nil : value)
+                            LogStore.shared.log("[hid-pad] ml2100 next start of this game: mode=\(value)")
+                        })) {
+                            ForEach(Array(Self.padModes(padMode).enumerated()), id: \.offset) { item in
+                                Text(item.element.1).tag(item.element.0)
+                            }
+                        }.pickerStyle(.menu).labelsHidden()
+                    }
+                    Text(Self.padModeNote()).font(.caption).foregroundStyle(.secondary)
+                }
                 Divider()
                 Text("Mouse & pointer").font(.headline)
                 LibraryPointerSettings()
@@ -2932,6 +2954,36 @@ struct LibraryHUD: View {
                 .foregroundStyle(.primary)
         }
         .scrollIndicators(.visible)
+        .onAppear { padMode = Self.padMode(of: model.activeEntry) }
+    }
+
+    /// madeira-bcd (ml2100): the game's env.MADEIRA_PAD_MODE, "xinput" when unset.
+    static func padMode(of entry: LibraryEntry?) -> String {
+        guard let entry else { return "xinput" }
+        return GameProfile(windowsPath: entry.windowsPath).get(GamepadInput.padModeKey)?.lowercased() ?? "xinput"
+    }
+
+    /// The controller API choices, plus a value typed into the game's file by hand
+    /// ("dualsense" or "generic" force the HID identity).
+    static func padModes(_ current: String) -> [(String, String)] {
+        var modes = [("xinput", "XInput (default)"), ("hid", "DirectInput / HID")]
+        if !modes.contains(where: { $0.0 == current }) { modes.append((current, current)) }
+        return modes
+    }
+
+    /// What the Controller section says: this session's mode, when a change applies, what each does.
+    @MainActor static func padModeNote() -> String {
+        let session: String
+        switch GamepadInput.sessionHIDKind ?? "" {
+        case "dualsense": session = "DualSense (HID)"
+        case "generic": session = "generic HID gamepad"
+        default: session = "XInput"
+        }
+        return "This session: \(session). A change applies the next time this game starts "
+            + "(quit and reopen Madeira first). XInput shows every controller as an Xbox pad, which almost "
+            + "every game understands. DirectInput / HID shows player 1 as what it is: a DualSense to Sony's "
+            + "PC ports (PlayStation buttons), a HID gamepad to DirectInput games. It is then no longer an "
+            + "XInput pad, so an XInput-only game will not see it."
     }
 }
 

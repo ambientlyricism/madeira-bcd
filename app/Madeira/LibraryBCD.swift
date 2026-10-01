@@ -104,6 +104,7 @@ struct BCDGameSections: View {
     @State private var tess = ""
     @State private var submit = ""
     @State private var gpuSync = ""
+    @State private var padMode = ""
     @State private var loaded = true
     @State private var copiedLink = false
 
@@ -119,6 +120,7 @@ struct BCDGameSections: View {
         _tess = State(initialValue: p.get("dxil-tess-max-factor") ?? "")
         _submit = State(initialValue: p.get("async-submit") ?? "")
         _gpuSync = State(initialValue: p.get("fence-chain") ?? "")
+        _padMode = State(initialValue: p.get(GamepadInput.padModeKey) ?? "")
     }
 
     private var profile: GameProfile { GameProfile(windowsPath: windowsPath) }
@@ -134,6 +136,7 @@ struct BCDGameSections: View {
         tess = p.get("dxil-tess-max-factor") ?? ""
         submit = p.get("async-submit") ?? ""
         gpuSync = p.get("fence-chain") ?? ""
+        padMode = p.get(GamepadInput.padModeKey) ?? ""
         // The onChange handlers of this pass must not write the values back.
         DispatchQueue.main.async { loaded = true }
     }
@@ -201,6 +204,17 @@ struct BCDGameSections: View {
                  + "1.5× brings to 720. Frame generation (experimental) shows a MetalFX-interpolated frame between "
                  + "every two game frames; FPS limits do not apply while it is on. The advanced file takes any "
                  + "madeira.cfg key or env.NAME line for this game only.")
+        }
+        Section {
+            choicePicker("Controller API", $padMode, GameProfile.padModeChoices)
+                .onChange(of: padMode) { _, v in store(GamepadInput.padModeKey, v) }
+        } header: {
+            Text("madeira-bcd: controller")
+        } footer: {
+            Text("XInput shows every controller as an Xbox pad, which almost every game understands. "
+                 + "DirectInput / HID shows player 1 as what it is: a DualSense to Sony's PC ports (God of War "
+                 + "and others show PlayStation buttons), a HID gamepad to DirectInput games; it is then not an "
+                 + "XInput pad. Read when the game starts; the in-game menu changes it too.")
         }
         Section {
             Button {
