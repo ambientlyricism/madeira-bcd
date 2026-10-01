@@ -989,6 +989,29 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     RTX 3060 (2544) with driver 35.0.15.6094 (560.94). If the dialog stays
     after this, next candidates are making those agree and logging the
     game's own text log again (the `[guest-log]` mirror is gone, see above).
+  - **GoT dialog: the actual regression found (owner: "this worked three
+    days ago, what happened?").** A normalised diff of the DXGI / D3D12 /
+    vgpu lines up to the probe device, good 09-28 20:39 vs 17:04 today,
+    shows one real difference: 09-28 logged `[monitor-identity] ml1190 using
+    user32 primary=0x10001 (DXMT_WSI_MONITOR_IDENTITY=0 restores the
+    synthetic handle)` -- default-on in this fork then -- and the user32 mode
+    list ([mode-budget] ml1140, [dxgi-modes] count=19). Since the build 222
+    switch to upstream's DXMT pin, dxmt/src/util/util_madeira_switch.hpp makes
+    DXMT_WSI_MONITOR_IDENTITY and DXMT_WSI_MODE_TABLE "32-bit only" (off for
+    64-bit modules unless the variable is set), so DXGI_OUTPUT_DESC::Monitor
+    is the private sentinel, not user32's HMONITOR, and the game cannot find
+    its monitor on the adapter -- which is what the dialog says ("...and your
+    monitor is connected to it correctly"). GoT was not launched between
+    09-28 and today, so nobody saw it. Fix (app/Madeira/LibraryBCD.swift
+    applyExtras): with "Report an NVIDIA GPU" on, also export
+    DXMT_WSI_MONITOR_IDENTITY=1 and DXMT_WSI_MODE_TABLE=1 (unset otherwise;
+    a game file's env.NAME = 0 still wins, it is applied later). God of War
+    (NVIDIA off) is not touched. Immediate test without a build: in GoT's
+    game file add `env.DXMT_WSI_MONITOR_IDENTITY = 1` and
+    `env.DXMT_WSI_MODE_TABLE = 1`. The earlier two hypotheses of today (two
+    registry adapters; NVAPI strings) were wrong as the cause of THIS
+    regression; their fixes stay (both are correct on their own). Host
+    checks launch-routing / library-sections / config-catalog PASS.
 
 ### DualSense / DirectInput (second agent)
 

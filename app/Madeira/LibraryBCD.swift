@@ -35,8 +35,19 @@ enum BCDLaunch {
             // display adapter (sysparams_ios.c, ios_virtual_gpu_ids); merged
             // into DXMT_CONFIG by ContentView.
             dxmtExtra.append("dxgi.customDeviceId=2544")
+            // DXGI's output carries user32's monitor handle and user32's mode
+            // list, so a game can find its monitor on the adapter. Default-on
+            // in this fork until the build 222 switch to upstream, where both
+            // became 32-bit-only switches; Ghost of Tsushima has said "No
+            // installed graphics card ... monitor connected to it" on every
+            // launch since (logs 2026-10-01 16:15 / 16:16 / 17:04; 2026-09-28
+            // ran with both). A game file's env.NAME = 0 still wins.
+            setenv("DXMT_WSI_MONITOR_IDENTITY", "1", 1)
+            setenv("DXMT_WSI_MODE_TABLE", "1", 1)
         } else {
             unsetenv("DXMT_ENABLE_NVEXT")
+            unsetenv("DXMT_WSI_MONITOR_IDENTITY")
+            unsetenv("DXMT_WSI_MODE_TABLE")
         }
         // The game's own settings (GameProfiles.swift).
         if let p = profile, p.hasSettings, let u = p.url {
