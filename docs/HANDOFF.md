@@ -645,6 +645,26 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     unsigned IPA artifacts as they are (decision (a) confirmed). He will not
     try upstream's v0.1.0: it has nothing ours lacks except the liquid-metal
     UI, and lacks the lean SM50 fix God of War needs.
+  - **Float experiments on the owner's iPhone, build 277 (logs 14:03:35
+    PS_CLAMP=2, 14:06:00 PRECISE_MINMAX=1, 14:08:27 none, 14:12:49
+    PS_CLAMP=1, 14:15:18 PRECISE_MINMAX=1): none of them stops the outdoor
+    darkening.** The switches did apply (`[madeira-env] game ...`,
+    `[ps-clamp] ... mode 1/2`, `[precise-minmax] ... precise`) and the salted
+    cache made them recompile, so both theories are refuted on the A19.
+    `[f32-tex]`: "Apple A19 Pro GPU: supports32BitFloatFiltering=1
+    apple7=1 apple8=1 apple9=1"; GoW creates 12 sampled 32-bit float
+    textures, among them **R32Float 128x64 with 8 mips and 64x32 with 7 mips
+    -- a luminance pyramid down to 1x1** (auto-exposure), plus R32F
+    1920x1080 / 1280x720 / 960x540 / 640x360 / 2048x1024 and RGBA32F 1024x1,
+    240x135, 160x90. DXMT's GenerateMips is a Metal blit generateMipmaps on
+    the SRV's view (d3d11_context_impl.cpp), which needs a filterable
+    format -- fine on the A19, NOT on a device without 32-bit float
+    filtering: strong candidate for the M1 iPad's black scene (its 277 log
+    will say supports32BitFloatFiltering=0/1). Next iPhone test (no build):
+    the only Madeira-specific texture change in the God of War config is
+    `dxmt = d3d11.mipClampBC=2` (Madeira's ml670/ml675 clamp, not upstream
+    DXMT): remove it, set the in-game texture quality to Low to keep memory
+    in bounds, and go outdoors.
 
 ---
 
