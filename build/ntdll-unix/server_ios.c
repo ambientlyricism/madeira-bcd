@@ -1307,6 +1307,52 @@ static int ios_xp_nmods;
 static uint64_t ios_xp_peb, ios_xp_heap, ios_xp_fex_addr, ios_xp_nt_addr;
 static volatile uint64_t ios_xp_game_teb;   /* set by the xprobe loop from a P/E role thread */
 
+/* madeira-bcd ml1131c: the game process for a title with no D3D12 roles.
+ *
+ * ios_xp_game_teb came only from a thread madeira_d3d12 registered as P or E,
+ * so for a D3D11 game (God of War through DXMT) the module map was never built
+ * and [xp-api] printed "x64->EC 0/s" with no [xp-api-top] / -qpc / -cs lines:
+ * FEX's x64->EC counters and ntdll's QPC / critical-section / WaitOnAddress
+ * counters existed but were never found. Without roles, every ~10 s the Wine
+ * process (PEB) whose threads used the most CPU in that window supplies the
+ * TEB; when that process changes (boot helpers first, then the game), the
+ * counter blocks are looked up again in the new one. Measurement only: this
+ * runs on the xprobe thread, which is also the only reader of these globals. */
+static struct { uint64_t peb, teb; double ms; } ios_xp_fb[8];
+static int ios_xp_nfb;
+static uint64_t ios_xp_fb_peb;        /* the process the fallback currently follows */
+static volatile unsigned ios_xp_rebind;   /* bumped on a switch; the reporter restarts its deltas */
+static void ios_xp_fallback_add( uint64_t teb, double ms )
+{
+    uint64_t peb = 0; int i;
+    if (!ios_ts_read( teb + 0x60, &peb, 8 ) || !peb) return;
+    for (i = 0; i < ios_xp_nfb; i++) if (ios_xp_fb[i].peb == peb) break;
+    if (i == ios_xp_nfb)
+    {
+        if (ios_xp_nfb >= 8) return;
+        ios_xp_fb[i].peb = peb; ios_xp_fb[i].ms = 0; ios_xp_fb[i].teb = teb; ios_xp_nfb++;
+    }
+    ios_xp_fb[i].ms += ms;
+    ios_xp_fb[i].teb = teb;   /* any live thread of that process will do */
+}
+static void ios_xp_fallback_pick( void )
+{
+    int i, best = -1;
+    for (i = 0; i < ios_xp_nfb; i++) if (best < 0 || ios_xp_fb[i].ms > ios_xp_fb[best].ms) best = i;
+    if (best >= 0 && !ios_xp_nroles && ios_xp_fb[best].peb != ios_xp_fb_peb)
+    {
+        ios_xp_fb_peb = ios_xp_fb[best].peb;
+        ios_xp_game_teb = ios_xp_fb[best].teb;
+        ios_xp_fex_addr = ios_xp_nt_addr = 0;
+        ios_xp_rebind++;
+        wine_log_write( "[xp-api] ml1131c no D3D12 role threads: counters follow the busiest Wine process "
+                        "(peb 0x%llx via teb 0x%llx, %.0f ms CPU in the last 10 s)",
+                        (unsigned long long)ios_xp_fb_peb, (unsigned long long)ios_xp_game_teb, ios_xp_fb[best].ms );
+    }
+    else if (best >= 0 && !ios_xp_nroles) ios_xp_game_teb = ios_xp_fb[best].teb;   /* same process, a thread that is alive now */
+    ios_xp_nfb = 0;
+}
+
 struct ios_xp_expc { uint64_t base; uint32_t exp_rva, exp_size, nfunc, nname; uint32_t *funcs, *names; uint16_t *ords; };
 static struct ios_xp_expc ios_xp_expcache[32];
 static int ios_xp_nexpc;
@@ -1434,6 +1480,10 @@ static void ios_xp_api_report( const char *wall, double wall_s )
 
     if (!fex) { fex = calloc( IOS_XP_FEX_WORDS, 8 ); fex_prev = calloc( IOS_XP_FEX_WORDS, 8 ); nt = calloc( 1, sizeof(*nt) ); nt_prev = calloc( 1, sizeof(*nt) ); }
     if (!fex || !fex_prev || !nt || !nt_prev) return;
+    {   /* ml1131c: the fallback moved to another process: its counters start a new series */
+        static unsigned seen_rebind;
+        if (seen_rebind != ios_xp_rebind) { seen_rebind = ios_xp_rebind; have_fex = have_nt = 0; map_age = 1000; }
+    }
     if (++map_age > 10 || !ios_xp_fex_addr || !ios_xp_nt_addr)   /* every ~10 s, or until both are found */
     {
         struct ios_xp_mod *m;
@@ -1701,6 +1751,7 @@ static void ios_xprobe_main( void )
                                 r->role = NULL;
                                 for (i = 0; i < ios_xp_nroles; i++) if (ios_xp_roles[i].tid == idi.thread_id) { r->role = ios_xp_roles[i].role; break; }
                                 if (r->role && teb && (strchr( r->role, 'P' ) || strchr( r->role, 'E' ))) ios_xp_game_teb = teb;   /* ml1131 */
+                                if (teb && !ios_xp_nroles) ios_xp_fallback_add( teb, pt + et );   /* ml1131c */
                                 sum_thr_ms += pt + et; nrows++;
                             }
                         }
@@ -1711,6 +1762,7 @@ static void ios_xprobe_main( void )
             }
             vm_deallocate( mach_task_self(), (vm_address_t)th, nth * sizeof(*th) );
         }
+        if (!(gen % 40)) ios_xp_fallback_pick();   /* ml1131c: every ~10 s */
 
         /* process counters + PE counters */
         memset( &ru, 0, sizeof(ru) );
