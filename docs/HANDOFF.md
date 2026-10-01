@@ -1380,7 +1380,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     deliverables docs/gow-darkening.md, a fix with evidence or a set of
     independent opt-in experiment switches (each with its own shader-cache
     salt) for one A/B device session, and possibly an opt-in DXBC/AIR dump
-    of the luminance shaders.
+    of the luminance shaders. Owner's correction: FSR 2 was on by mistake in
+    the 19:16:44 720p log (hence 754x424); native 720p without FSR is just
+    as dark -- passed on to the agent.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
