@@ -837,6 +837,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     git dir moved to .git/modules/dxmt. **The second agent's branch is based
     on the old layout (build/host-tests/check-hidpad.py etc.): rebase its
     paths when merging it.** Older notes in this file keep the old paths.
+  - Upstream's author on the DualSense plan (relayed 2026-10-01): "will the
+    iPhone let you send haptics to the DualSense? macOS gives full USB access;
+    iOS abstracts everything." Fair: iOS offers GCDualSenseGamepad state,
+    GCDualSenseAdaptiveTrigger modes, GCDeviceLight, GCMotion and CoreHaptics
+    via GCDeviceHaptics -- no raw HID, no USB, no audio-channel ("advanced")
+    haptics, no speaker/mic. The goal stated back: PS prompts in Sony ports
+    (libScePad sees a synthesized DualSense HID device) and a gamepad for
+    DirectInput games = phase 1; output reports mapped best-effort (rumble ->
+    CoreHaptics, trigger effects -> nearest adaptive-trigger mode, lightbar)
+    = phase 2. The running agent was told the same scope.
 
 ---
 
