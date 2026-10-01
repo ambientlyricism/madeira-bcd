@@ -521,6 +521,24 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     bucket 4 builds 0.60 GB); main fast-forwarded to cd3b7dd, the duplicate
     push run 276 cancelled; cleanup run 36846074181: "deleted 64 IPA
     artifacts below build 260 (9.16 GB)".
+  - **iPad (M1) on build 273: still black behind the menu, but no longer a
+    memory problem** (screenshot relayed 2026-10-01: HUD "M1", 1280x720,
+    App 5.72 GB, Available 2.87 GB, Metal 1.63 GB, 26.6 FPS; the menu UI and
+    a film-grain noise are drawn, the 3D scene is black). So the 269 black
+    was starvation plus something device-specific. Leading hypothesis (not
+    proven, no 273 log yet): GPU family. M1 on iPadOS is Apple7 only (no
+    Mac2); DXMT's own format table (dxmt/dxmt_format.cpp) gives R32Float /
+    RG32Float / RGBA32Float the Filter capability only from Apple9 (A17
+    Pro / M3 and later; the owner's A19 has it). A linear sampler on a 32-bit
+    float texture on Apple7/8 is not supported by Metal -- typically reads
+    back 0 -- and an exposure / luminance texture in R32F sampled bilinear
+    would turn the lit scene black while UI and grain still draw. The
+    owner's slow darkening may be a different thing (A19 can filter 32F).
+    Would affect M1/M2 iPads and A14-A16 iPhones, not 8 GB A17 Pro/A18
+    iPhones. Needed: the iPad's 275 log. Possible fix if confirmed: when the
+    device cannot filter 32-bit floats (check MTLDevice
+    supports32BitFloatFiltering as well as the family), make the sampler
+    nearest for those formats or filter manually in the converted shader.
 
 ---
 
