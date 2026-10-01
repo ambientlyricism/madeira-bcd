@@ -941,7 +941,25 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     nor the UAV store bounds (284). The iPad user still has to install 284
     (or 286). Cheap check on that device: internal resolution 1080p (the
     owner's iPhone never darkens at native 1080p) -- if the scene appears,
-    it is the same bug.
+    it is the same bug. Owner then relayed "he says he installed 282": the
+    log contradicts it three ways (`[build] v0.1.277`, xtajit64 "compiled
+    Oct 1 2026 10:38:37" = 277's build time, no `[ld-bounds]` line in 24,000
+    shader conversions; 282 was ready at 12:32 UTC = 14:32 in Germany, the log
+    is 14:56). Likely two Madeira apps side by side (different signing) or a
+    failed install; told the owner to have him delete the old one and send a
+    log whose line 13 says 0.1.284/286.
+  - **Build 286 green** (run 36870435733, head 6182ab4, 2026-10-01 13:58
+    UTC): upstream reorganisation merge + layout fixes + "Patch winemetal
+    includes for the new layout" + DualSense/DirectInput HID pad (its Swift
+    and main_ios.c compiled for the first time, clean) + the GoT stale-GPU
+    registry fix. Native ABI 0851edda6a44a916. OTA: "bucket holds 10 builds,
+    1.50 GB of the 8 GB budget", kurulum-0.1.286 written, install link
+    e-mailed. main fast-forwarded to this branch; the duplicate push run is
+    cancelled. Waiting on device: GoT past the GPU dialog (expect `[vgpu]
+    removed the stale 106b:0001 adapter (3 keys) ...` on its first launch
+    after God of War), God of War not regressed (it now removes the NVIDIA
+    entry on launch), PS5 pad via game sheet "madeira-bcd: controller ->
+    DirectInput / HID" or Session menu > Controller (`[hid-pad]` lines).
 
 ### DualSense / DirectInput (second agent)
 
