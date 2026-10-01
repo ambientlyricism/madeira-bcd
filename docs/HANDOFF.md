@@ -299,6 +299,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     0.1.270 signed ... kurulum-0.1.270.html written to the private B2 bucket"
     and "install link for 0.1.270 e-mailed" (01:57 UTC). It also rebuilt the
     i386 farm (the farm cache is per branch, main had none for this key).
+  - **2026-10-01: upstream's author (Will Faust, Discord) asked the owner to
+    contribute to upstream Madeira; the owner wants to.** Candidate upstream
+    PRs (small, one topic each, each with its evidence): self-suspend in
+    NtSuspendThread; guest main thread QoS attr (no fixed schedparam);
+    wineserver priorities keep pthread QoS; x18-derived TEB emulation (incl.
+    the patcher's trampolines); vulkan-1 stand-in global commands; iOS shared
+    textures without mach port; Steam games get per-game options + session
+    log by exe; DXMT short-cb / 16-bit index realign / SM4 vfetch bounds +
+    byte-aligned fetch (the last three not yet proven to fix anything).
+    Fork-only (not for upstream): OTA signing/mail, owner-specific secrets.
 
 ---
 
