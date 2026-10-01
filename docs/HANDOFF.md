@@ -1394,6 +1394,24 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     dialog, second D3D12CreateDevice, launcher visible; `[vmon]`, `[vmode]
     ... id=`, `[nvapi]`, `[guest-log]`), GTA V both ways (`[alias-push]`,
     child `[pool-rip-fix]`, no NoExec), GoW unchanged.
+  - **GTA V on build 296 (logs PlayGTAV 19:53:36, GTA5_Enhanced 19:54:23):
+    the child crash is FIXED and the game gets much further.** The child's
+    emulator maps ntdll to its own copy (`[alias-push] ... own copy
+    0x14fba8000`), `[pool-rip-fix] #1 guest RIP 0x14fc2f050 ... PE
+    0x71ffd57050` in the child, no NoExec. Both start paths now run the game
+    child (via PlayGTAV, and GTA5 -> PlayGTAV -> GTA5 grandchild). New stop:
+    after socialclub / RUNE64 the game writes twice into its own read-only
+    image (`[fault_rip] ... addr=0x140265bd5 kr=2(PROTECTION_FAILURE)`, then
+    0x14122be51; `[exc-disp] raise ... c0000005 p0=1`), loads D3D12 / DXGI /
+    winemetal, Streamline (sl.interposer, common, dlss, dlss_g, pcl,
+    reflex) and nvapi64, creates a D3D12 device at feature level 12_0
+    (0xc000), destroys it, writes its own crash report
+    (`[guest-log] file .../Rockstar Games/GTAV Enhanced/CrashLogs/
+    crashcontext.log`; only "GRAPHICS INFO / Display 1920 x 1080" passed the
+    mirror's filter) and terminates with 0x80000003 (breakpoint). The
+    GTA agent was resumed on these logs; the owner is asked for a run with
+    `env.MADEIRA_GUEST_LOG = all` in GTA's game file so the whole crash
+    report is mirrored.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
