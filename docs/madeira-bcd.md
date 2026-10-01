@@ -471,6 +471,24 @@ the update pack, the game's options and starts the per-game session log.
   `IRInputTopologyPatch` instead of triangle (a distinct `input_topology`
   value, so both shader caches keep it apart). Host test
   `tests/host/check-got-diagnostics.py`.
+- D3D12 sync diagnostics for GoT's one-frame "shapes in the air"
+  (`madeira_d3d12.c`, SYNC DIAGNOSTICS block; docs/got-corruption.md section
+  8), all off unless set in madeira.cfg or the game's file. `fence-strict = 1`:
+  Queue::Wait's early return needs the signalling batch COMMITTED (it looked
+  at "Signal asked for", set before the commit), and every batch command
+  buffer and the present's first GPU-wait for the newest committed serial;
+  `= 2` also makes Signal synchronous with a full GPU drain and Present wait
+  for its own frame (slow). `upload-guard = 1` hashes the UPLOAD-heap bytes
+  draws read (root CBV first 256 bytes and direct indexed draws' indices
+  exactly; root SRV / vertex buffer windows of `upload-guard-bytes`) at replay
+  and again when the GPU has finished the batch, before the fence advances or
+  Present returns (`[upload-guard] CHANGED`); `= 2` also blits each range at
+  the batch end and reports `GPU SAW DIFFERENT BYTES` when the GPU's copy
+  differs from unchanged CPU bytes (stale pages). `desc-guard = 1` logs
+  Create*View / CreateSampler / CopyDescriptors* writes into shader-visible
+  descriptors a running batch references. `cbv-snapshot = N` copies N bytes
+  (1 = 4096) of each UPLOAD root CBV into the argument ring at replay and
+  binds the copy. Summary line `[sync-diag] present #N` every 300 presents.
 - RtlPcToFileHeader knows JIT-pool aliases (`build/ntdll-unix/virtual_ios.c`,
   `ios_patch_rtl_pc_to_file_header`, called from both ntdll hook sites in
   `loader_ios.c`): the pool copy of the prebuilt PE ntdll's RtlPcToFileHeader
