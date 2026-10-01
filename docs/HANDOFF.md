@@ -299,6 +299,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     0.1.270 signed ... kurulum-0.1.270.html written to the private B2 bucket"
     and "install link for 0.1.270 e-mailed" (01:57 UTC). It also rebuilt the
     i386 farm (the farm cache is per branch, main had none for this key).
+    GitHub glitch: run 270 still shows "in progress" (yellow) hours later
+    although every step, incl. "Complete job", finished at 01:57 UTC; the
+    cancel API answers 409 "not in progress". Nothing to fix on our side; the
+    IPA, artifact and mail were all delivered.
   - **2026-10-01: upstream's author (Will Faust, Discord) asked the owner to
     contribute to upstream Madeira; the owner wants to.** Candidate upstream
     PRs (small, one topic each, each with its evidence): self-suspend in
