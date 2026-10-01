@@ -1725,6 +1725,12 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the keyboard worked. The 5eb58ff fix (`[game-input]` 16 ms wake for a
     thread showing a window over the game) is verified; GoT's "No installed
     graphics card" box should now behave the same.
+  - **Build 306 green** (run 36907666595, head 98ef76f, 2026-10-01 ~18:57
+    UTC): notices "nvapi64.dll built ... (1744896 bytes)" (the same size as
+    the local build with patch-nvapi-gpu-info) and "dxgi-src.dll built ...".
+    main fast-forwarded to 98ef76f (no workflow change, no push run). Carries
+    the GoT smoke diagnostics (skip-ps, dxil-dump, capture-ps for DXIL,
+    dxil-tess-patch-topology) and the NVAPI frame-buffer sizes for GTA.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
