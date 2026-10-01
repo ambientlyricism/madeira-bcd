@@ -1268,6 +1268,36 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     not built yet); the push run 293 it started was cancelled (the merge
     changed build-ipa.yml). **Build 294** dispatched from 873fd2c (run
     36887895386): 292 + the game-mode repaint fix.
+  - **GTA V child crash: root cause found (agent), merged as 7212ed5;
+    details docs/gta5-child-crash.md.** Every x64 pseudo-process loads its
+    own FEX (libarm64ecfex.dll) with its own alias table, but
+    unixcall_ios_push_jit_aliases (virtual_ios.c) skipped every
+    owner-tagged JIT mapping, so a child's emulator mapped ntdll to the
+    PARENT's pool copy and never learned its own. An x64 syscall (RUNE64.dll
+    calling ntdll's x64 stub, NtProtectVirtualMemory) ends in ntdll
+    dispatch_syscall setting Pc to the process's own pool copy of
+    invoke_arm64ec_syscall (ntdll+0x87050); FEX's [pool-rip-fix] could not
+    map it back (`[iOS-xquery] MISS tracker=... addr=0x14fc2f050`), "NoExec
+    instruction in entry block" -> FEX's GuestSignal_SIGSEGV trampoline (the
+    `ldr x1,[x1]` with x1 = 0 is its deliberate fault, not a data bug) ->
+    unwind through RUNE64's handler fails -> 0xC0000005. Not GTA-specific:
+    crs-handler.exe died the same way in the GoT logs of 09-26..09-28.
+    Correction: in the GTA5_Enhanced-first log the dying child (tid 002c)
+    is PlayGTAV.exe, not a grandchild. Fix (build/ntdll-unix only): the
+    drain pushes the registering process's OWN copy instead of the parent's
+    (a main process owns none, so it is unchanged); a child's private ntdll
+    copy also gets the RtlPcToFileHeader pool-alias patch (loader_ios.c
+    wine_ios_child_main); the alias-push callback is dropped when the
+    process owning it exits (it pointed into freed pool memory); `[alias-
+    push] madeira-bcd ...` diagnostics. Switch: MADEIRA_CHILD_OWN_NTDLL=0.
+    tests/host/check-child-ntdll-alias.py PASS (replays the build 291
+    layout); catalog check PASS after the merge. Found, not fixed: the
+    alias-push callback is global -- the last process to register an
+    emulator receives every later image (GoW 15:52:42: after crs-handler
+    registers, GoW's xaudio2_9 / mfplat / mmdevapi / dsound aliases went to
+    crs-handler's emulator, so GoW's x64 calls into them take the ~33 us
+    exec-fault redirect -- a possible GoW performance item; the new lines
+    measure it). FEX never retires a dead process's JIT ranges.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
