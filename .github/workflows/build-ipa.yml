@@ -950,6 +950,13 @@ jobs:
       - name: Patch airconv float experiments
         run: python3 tools/patch-airconv-float-experiments.py
 
+      # God of War darkens at every internal resolution below 1080p: its 32x32
+      # luminance tiles read past the bottom of a 1280x720 target. D3D returns
+      # 0 for a texture Load out of range; Metal's read() does not. ld and
+      # ld_uav_typed now check the range (MADEIRA_LD_BOUNDS=0 = off).
+      - name: Patch airconv texture load bounds
+        run: python3 tools/patch-airconv-ld-bounds.py
+
       # God of War's outdoor darkening survived the float switches. Read back
       # what the game reads: [lum-readback] logs the 1x1 32-bit float values it
       # copies to the CPU (~2/s), [f32-mipgen] its 32-bit float GenerateMips.

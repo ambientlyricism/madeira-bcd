@@ -744,6 +744,26 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     potentialEDRHeadroom (dxmt_presenter.cpp), which would also dim the
     whole picture when iOS lowers the headroom -- only relevant if the game
     runs in HDR; no log evidence that it does.
+  - **Confirmed (owner, log 15:06:44, build 279): native 1080p without
+    MetalFX is fine; turning on FSR 2 Quality/Balanced (internal resolution
+    below 1080p) made it darken at once.** `[f32-tex]` in that log: the
+    1080p set, then RG32Float 1x1 x2 (FSR 2's exposure textures) and the
+    720p set when FSR came on. Owner: Winlator+DXVK at 720p has no such
+    darkening -> a DXMT/airconv difference. Cause found in airconv: DXBC `ld`
+    and `ld_uav_typed` became a plain Metal read() with no range check
+    (nt/dxbc_converter_base.cpp InstLoad / InstLoadUAVTyped); D3D returns 0
+    out of range (DXVK via Vulkan robustness). GoW's 32x32 luminance tiles
+    over 1280x720 are 40x22.5 -> 23 rows, so the last row reads rows
+    720..735 past the bottom (at 1080p: 60x33.75 -> 34 rows, also past, but
+    evidently harmless there -- not explained yet). Fix:
+    tools/patch-airconv-ld-bounds.py (step "Patch airconv texture load
+    bounds", after the float experiments): for 2D / 2D-array / 3D (incl.
+    depth) textures, check mip < mip count, coordinate < size at that mip,
+    slice < array length; read at a clamped address; select 0 when out of
+    range. Default ON, MADEIRA_LD_BOUNDS=0 off, `[ld-bounds]` logs the mode;
+    the native cache salt gets +100 when on, so the first launch reconverts
+    every shader. Not compiled locally (no LLVM 15 here); patch chain
+    applies cleanly and is idempotent on a scratch copy.
 
 ---
 
