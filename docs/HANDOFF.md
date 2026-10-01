@@ -813,6 +813,30 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     for "on" 100 -> 200. Texture atomics are not covered yet. DXMT already
     zero-initialises new textures (ResourceInitializer::initWithZero, used
     when pInitialData is NULL), so garbage-initialised targets were ruled out.
+  - **Upstream sync 2026-10-01 13:00 UTC (12h routine): merged 9 commits up to
+    69b2fc0** -- 3ccbf9b liquid-metal bar glass / Desktop button / app icon
+    (= the v0.1.0 tag), e9cb4ed..03f3796 README rewrite (banner, Discord,
+    iOS 26+, badges), ea25322 "Remove the early architecture study and the
+    handoff notes" (ARCHITECTURE_ANALYSIS.md, STEAM_CEF_HANDOFF.md,
+    research/HANDOFF-*.md, patches/*.patch, scripts/deploy-thumper.sh;
+    none used by our CI), **79e28f0 "Reorganize the repository"**:
+    research/dxmt -> dxmt, research/madeira-dock -> madeira-dock,
+    research/madeira-d3d12 -> madeira-d3d12, build/host-tests -> tests/host,
+    build/{x64,x86,dxmt,proc,net}-tests -> tests/*, scripts/* -> tools/*,
+    research/madeira.cfg.example -> docs/; 69b2fc0 liquid-metal toggle in
+    Settings (Liquid Glass default). Submodule pins unchanged (FEX 26859e1,
+    wine 4f5b197, dxmt a5e0cd3, dock 3cadfbe), only paths. Our side: every
+    path in our tools/*.py|sh (all patch-dxmt-*/patch-airconv-*/
+    patch-winemetal-* scripts now use ROOT dxmt/src), build-ipa.yml,
+    build-pack.yml, build/madeira-d3d12/madeira_ir_stub.c and
+    docs/madeira-bcd.md rewritten to the new layout; our
+    research/madeira-d3d12/src/pe/mad_kernels.metal moved with its directory;
+    ConfigCatalog regenerated (tests/host/check-config-catalog.py PASS). The
+    i386 farm cache key changes (build/wine-i386/build.sh changed upstream),
+    so the next build rebuilds the farm. Local checkout: the dxmt submodule
+    git dir moved to .git/modules/dxmt. **The second agent's branch is based
+    on the old layout (build/host-tests/check-hidpad.py etc.): rebase its
+    paths when merging it.** Older notes in this file keep the old paths.
 
 ---
 
