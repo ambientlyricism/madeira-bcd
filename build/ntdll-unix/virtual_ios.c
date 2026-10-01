@@ -2956,6 +2956,28 @@ uint64_t ios_jit_reverse_translate( uint64_t addr, uint64_t *module_base )
  * would have unregistered alias ranges and FEX would emit NoExecOp for
  * code in their copies. */
 static void (*ios_jit_alias_pushback_cb)(unsigned long long, unsigned long long, unsigned long long) = NULL;
+/* madeira-bcd: the process whose emulator owns ios_jit_alias_pushback_cb.
+ * Every x64 pseudo-process loads its OWN emulator (libarm64ecfex.dll mapped
+ * at its own VA, own pool copy, own alias table), and each one replaces the
+ * callback when it registers: the last process to start an emulator receives
+ * every later push, whichever process mapped the image. Used for the
+ * [alias-push] diagnostic in ios_jit_add_mapping and to drop the callback when
+ * that process dies (ios_jit_reclaim_process); see docs/gta5-child-crash.md. */
+static void *ios_jit_alias_pushback_peb = NULL;
+/* PEBs whose emulator has registered (drain done), for the same diagnostic: a
+ * process that has not registered yet gets everything from its drain later. */
+#define IOS_ALIAS_REG_MAX 32
+static void *ios_jit_alias_registered[IOS_ALIAS_REG_MAX];
+static int ios_jit_alias_registered_n;
+
+static int ios_jit_alias_has_emulator( void *peb )
+{
+    int i, n = ios_jit_alias_registered_n;
+
+    for (i = 0; i < n && i < IOS_ALIAS_REG_MAX; i++)
+        if (ios_jit_alias_registered[i] == peb) return 1;
+    return 0;
+}
 
 void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
 {
@@ -3040,9 +3062,32 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
      * mapping to it too. Early mappings (added before xtajit64 loads) are
      * picked up by the iteration in unix_ios_push_jit_aliases. */
     if (ios_jit_alias_pushback_cb)
+    {
+        /* madeira-bcd diagnostic, no behaviour change: name an image that a
+         * process maps after ANOTHER process registered its emulator. The push
+         * below lands in that other emulator's table, so the mapping process's
+         * own emulator never learns the alias: its x64->EC calls into the image
+         * take the Mach exec-fault redirect and a pool-copy guest RIP there
+         * cannot be [pool-rip-fix]ed. Seen with God of War's crs-handler.exe
+         * (xaudio2_9, mfplat, dsound, ... after the child started). */
+        void *cur = ios_jit_current_peb();
+        if (cur && ios_jit_alias_pushback_peb && cur != ios_jit_alias_pushback_peb &&
+            ios_jit_alias_has_emulator( cur ))
+        {
+            static int cross_n;
+            if (cross_n < 16)
+            {
+                cross_n++;
+                dprintf(2, "[alias-push] madeira-bcd image %p+0x%lx (%s) mapped by peb=%p went to the "
+                        "emulator of peb=%p -- its own emulator does not learn this alias (#%d)\n",
+                        pe_base, (unsigned long)size, ios_pe_module_name( pe_base, size ),
+                        cur, ios_jit_alias_pushback_peb, cross_n);
+            }
+        }
         ios_jit_alias_pushback_cb((unsigned long long)(uintptr_t)pe_base,
                                   (unsigned long long)(uintptr_t)jit_base,
                                   (unsigned long long)size);
+    }
 }
 
 /* ml951: hand a sub-floor image window to FEX so QueryGuestExecutableRange can
@@ -3294,15 +3339,98 @@ NTSTATUS unixcall_ios_register_hold_release(void *args)
     return STATUS_SUCCESS;
 }
 
+/* madeira-bcd: a child process's emulator must know the child's OWN ntdll copy.
+ *
+ * Every x64 pseudo-process starts its own emulator (libarm64ecfex.dll mapped at
+ * its own VA, with its own pool copy and its own IosAliasEntries table), and
+ * unixcall_ios_push_jit_aliases below fills that table when the emulator
+ * registers. A child runs a PRIVATE copy of ntdll (ios_jit_copy_module_for_child,
+ * owner_peb = the child), but the drain pushed only NULL-owner entries, so a
+ * child's emulator mapped ntdll to the PARENT's copy and could not
+ * reverse-translate an address inside its own.
+ *
+ * That kills a child at its first x64 syscall. FEX raises
+ * STATUS_EMULATION_SYSCALL; ntdll's dispatch_syscall (EC code, running from the
+ * child's copy) sets the x64 Pc to invoke_arm64ec_syscall -- an ADRP address,
+ * i.e. the CHILD's pool copy of that x64 helper (ntdll+0x87050) -- and resumes
+ * emulation there. CompileBlock maps a pool-copy RIP back to its PE VA
+ * ([pool-rip-fix]) only through this table: in the main process it hits, in a
+ * child it missed, the frontend refused the pool address ("NoExec instruction
+ * in entry block", [iOS-noexec]) and the thread died on an access violation.
+ * GTA V Enhanced, build 291: both PlayGTAV.exe and GTA5_Enhanced.exe die this
+ * way as children ("[iOS-xquery] MISS ... addr=0x14fc2f050 rev=0x14fc2f050",
+ * child copy 0x14fba8000 + 0x87050), and crs-handler.exe did in the
+ * 2026-09-26..28 Ghost of Tsushima logs. See docs/gta5-child-crash.md.
+ *
+ * So when the registering process owns a copy of an image, push THAT copy and
+ * not the parent's: FEX keys the table by PE range and keeps one entry per
+ * range (pushing both would leave whichever came last). The child's x64 ->
+ * ntdll EC calls (ExitFunctionEC) then also enter its own copy, as the
+ * owner-aware ios_jit_translate_addr and the Mach exec-fault redirect already
+ * do. A main process owns no copies, so what it pushes is unchanged.
+ * MADEIRA_CHILD_OWN_NTDLL=0 restores the old drain. */
+static int ios_child_own_ntdll_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        /* Default on. 0 restores the old drain: a child process's emulator maps
+         * ntdll to the parent's copy, and the child's first x64 syscall dies
+         * (docs/gta5-child-crash.md). */
+        const char *env = getenv( "MADEIRA_CHILD_OWN_NTDLL" );
+        enabled = !(env && env[0] == '0' && !env[1]);
+    }
+    return enabled;
+}
+
+/* Index of the live copy of the image at pe_base that `peb` owns, or -1. */
+static int ios_jit_owned_copy( void *pe_base, void *peb )
+{
+    int i;
+
+    if (!pe_base || !peb) return -1;
+    for (i = 0; i < ios_jit_mapping_count; i++)
+        if (ios_jit_mappings[i].pe_base == pe_base && ios_jit_mappings[i].size &&
+            ios_jit_mappings[i].owner_peb == peb)
+            return i;
+    return -1;
+}
+
+/* Does the drain for the emulator of process `own` push mapping i? A copy
+ * owned by `own` yes, another process's copy no, a NULL-owner (shared) entry
+ * unless `own` has its own copy of that image. own == NULL is the old rule:
+ * every NULL-owner entry and nothing else. */
+static int ios_jit_alias_drain_wants( int i, void *own )
+{
+    void *owner = ios_jit_mappings[i].owner_peb;
+
+    if (owner)
+        return own && owner == own && ios_jit_mappings[i].pe_base && ios_jit_mappings[i].size;
+    return ios_jit_owned_copy( ios_jit_mappings[i].pe_base, own ) < 0;
+}
+
 NTSTATUS unixcall_ios_push_jit_aliases(void *args)
 {
     /* ml613: the ml549 stash that used to live here read a->rip_from_hostpc, a
      * field the PE-side struct never declared — an out-of-bounds read. Deleted;
      * both exports are resolved from the mapped module at the end of this call. */
     struct ios_push_jit_aliases_args *params = args;
-    int i;
+    void *self, *own, *prev_peb;
+    int i, pushed = 0, own_pushed = 0, parent_skipped = 0;
     if (!params || !params->callback) return STATUS_INVALID_PARAMETER;
+    /* madeira-bcd: the process registering is the one running this unix call
+     * (PE ntdll's arm64ec_process_init_dispatchers, on its first thread). */
+    self = ios_jit_current_peb();
+    own = ios_child_own_ntdll_enabled() ? self : NULL;
+    prev_peb = ios_jit_alias_pushback_peb;
     ios_jit_alias_pushback_cb = params->callback;
+    ios_jit_alias_pushback_peb = self;
+    if (self && !ios_jit_alias_has_emulator( self ) && ios_jit_alias_registered_n < IOS_ALIAS_REG_MAX)
+    {
+        ios_jit_alias_registered[ios_jit_alias_registered_n] = self;
+        __sync_synchronize();
+        ios_jit_alias_registered_n++;
+    }
 
     /* ml951: any sub-floor window registered before xtajit64 loaded has not been
      * pushed yet — the per-registration push above needs this callback. Catch up. */
@@ -3316,17 +3444,42 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
         for (i = 0; ios_subfloor_enum( i, &lo, &re, &sz ); i++)
             ios_push_subfloor_window( lo, re, sz );
     }
-    /* Drain current table to the callback. Child-owned copies are skipped:
-     * they share pe_base with the parent entry and pushing both would
-     * double-register the alias range in FEX (x86-64 children under FEX
-     * will need per-process alias routing — deferred to S3). */
+    /* Drain current table to the callback. A child-owned copy shares pe_base
+     * with the parent entry and FEX keeps one entry per PE range, so exactly
+     * one of the two is pushed: the registering process's own copy if it has
+     * one (madeira-bcd, see ios_jit_alias_drain_wants above), else the parent
+     * entry. Other processes' copies are never pushed. */
     for (i = 0; i < ios_jit_mapping_count; i++)
     {
-        if (ios_jit_mappings[i].owner_peb) continue;
+        if (!ios_jit_alias_drain_wants( i, own ))
+        {
+            if (!ios_jit_mappings[i].owner_peb)
+            {
+                parent_skipped++;
+                dprintf(2, "[alias-push] madeira-bcd peb=%p: not pushing the parent copy %p of %p+0x%lx "
+                        "(this process runs its own copy)\n", self, ios_jit_mappings[i].jit_base,
+                        ios_jit_mappings[i].pe_base, (unsigned long)ios_jit_mappings[i].size);
+            }
+            continue;
+        }
+        if (ios_jit_mappings[i].owner_peb)
+        {
+            own_pushed++;
+            dprintf(2, "[alias-push] madeira-bcd peb=%p: emulator maps %s %p+0x%lx to this process's "
+                    "own copy %p\n", self,
+                    ios_pe_module_name( ios_jit_mappings[i].pe_base, ios_jit_mappings[i].size ),
+                    ios_jit_mappings[i].pe_base, (unsigned long)ios_jit_mappings[i].size,
+                    ios_jit_mappings[i].jit_base);
+        }
         params->callback((unsigned long long)(uintptr_t)ios_jit_mappings[i].pe_base,
                          (unsigned long long)(uintptr_t)ios_jit_mappings[i].jit_base,
                          (unsigned long long)ios_jit_mappings[i].size);
+        pushed++;
     }
+    dprintf(2, "[alias-push] madeira-bcd peb=%p registered its emulator (cb=%p; later pushes went to "
+            "peb=%p until now): %d mapping(s) pushed, %d own copy(ies), %d parent copy(ies) left out%s\n",
+            self, (void *)params->callback, prev_peb, pushed, own_pushed, parent_skipped,
+            own ? "" : (self ? " [MADEIRA_CHILD_OWN_NTDLL=0: old drain]" : " [no PEB]"));
     /* ml613: the guaranteed init path — resolve both FEX exports here, where the
      * emulator module is certainly mapped, instead of from a diagnostic probe
      * (ml612's mistake) or from a dying thread inside pthread_exit (needlessly
@@ -4426,6 +4579,32 @@ int ios_patch_rtl_pc_to_file_header( void *module, const void *export_addr )
     dprintf( 2, "[pc2fh] RtlPcToFileHeader %p (pool %p) now maps JIT-pool aliases to their image; trampoline %p\n",
              (void *)body_pe, body_rx, tramp_rx );
     return 1;
+}
+
+/* madeira-bcd: the same patch for a pseudo-process child's PRIVATE ntdll copy
+ * (ios_jit_copy_module_for_child). load_ntdll_functions patches the session's
+ * copy only; a child's copy is a fresh memcpy of the unpatched image. The patch
+ * finds its target through the owner-aware ios_jit_translate_addr, so called on
+ * the child's boot thread (TEB->Peb = the child) it patches the child's copy.
+ * `pe_addr` is any address inside the shared ntdll image. A child whose x64
+ * code calls ntdll through its own emulator now enters its own copy (see
+ * ios_jit_alias_drain_wants), so the copy has to answer like the session's. */
+int ios_patch_rtl_pc_to_file_header_current( const void *pe_addr )
+{
+    int i;
+
+    for (i = 0; i < ios_jit_mapping_count; i++)
+    {
+        const unsigned char *b = ios_jit_mappings[i].pe_base;
+        size_t sz = ios_jit_mappings[i].size;
+        void *f;
+
+        if (!b || !sz || ios_jit_mappings[i].owner_peb) continue;
+        if ((const unsigned char *)pe_addr < b || (const unsigned char *)pe_addr >= b + sz) continue;
+        f = ios_pe_find_export( b, "RtlPcToFileHeader" );
+        return f ? ios_patch_rtl_pc_to_file_header( (void *)b, f ) : -1;
+    }
+    return -1;
 }
 
 /***********************************************************************
@@ -9615,6 +9794,22 @@ void ios_jit_reclaim_process( void *peb )
     char *rx_base = (char *)ios_jit_rx_base_global;
 
     if (!peb || !rx_base) return;
+
+    /* madeira-bcd: the alias-push callback lives in the emulator of the LAST
+     * process that registered one (see ios_jit_alias_pushback_peb). If that
+     * process is the one dying, its emulator's pool copy is reclaimed below and
+     * the next image map anywhere would call freed (later reused) code. Drop
+     * the callback instead: the push had no live table to land in anyway, and
+     * the next emulator to register gets the whole table from its drain. */
+    if (peb == ios_jit_alias_pushback_peb && ios_jit_alias_pushback_cb)
+    {
+        dprintf(2, "[alias-push] madeira-bcd peb=%p exits while its emulator receives the alias pushes "
+                "(cb=%p): callback dropped before its pool copy is reclaimed\n",
+                peb, (void *)ios_jit_alias_pushback_cb);
+        ios_jit_alias_pushback_cb = NULL;
+        __sync_synchronize();
+        ios_jit_alias_pushback_peb = NULL;
+    }
 
     pthread_mutex_lock( &ios_pool_lock );
 
