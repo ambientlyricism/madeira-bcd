@@ -1260,6 +1260,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
       unchanged). The owner pressed Enter / Esc on the on-screen keys and
       tapped blindly (`[winios] post_key vk=0xd`, `post_touch_down x=331
       y=492`); the dialog stayed.
+  - **Build 292 green** (run 36885317238, head c683d1c): the GoW 1080p
+    diagnostics ([frame] behind MADEIRA_FRAME_STATS=1, ml1112 callee names,
+    [xp-api] for D3D11, MADEIRA_PROBES). Native ABI 30a3cfb8d9a86173, shader
+    cache identity unchanged (19111887a738ea3a), OTA mailed, bucket 10
+    builds 1.51 GB. main fast-forwarded to c683d1c (not further: 873fd2c was
+    not built yet); the push run 293 it started was cancelled (the merge
+    changed build-ipa.yml). **Build 294** dispatched from 873fd2c (run
+    36887895386): 292 + the game-mode repaint fix.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
