@@ -906,6 +906,28 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     nor the wine / FEX submodules at their current pins, so it most likely
     left with the build 222 switch to upstream's pins. Low priority; it is
     what showed "[NxApp] Failed to get GPU Driver Info" on 09-28.
+  - **Build 285 FAILED** (run 36867598003, head b449714, 2026-10-01 13:37
+    UTC) in "Build dxmt-ios": `dxmt/src/winemetal/unix/winemetal_unix.c:2:
+    fatal error: '../../../../../build/madeira_cfg.h' file not found`. Cause:
+    upstream's reorganisation (79e28f0) moved research/dxmt to dxmt on the SAME
+    dxmt pin a5e0cd3, whose winemetal unix sources count "../" from the old
+    place: madeira_cfg.h (5 levels up was the root, now 4) and
+    "../../../../remote-metal/..." in winemetal_unix.c, wmt_remote_client.h,
+    wmt_remote_pack.h (4 levels up was research/, now the root; remote-metal
+    stayed in research/). Upstream main has the same pin, so its tree has the
+    same break. Fix: tools/patch-winemetal-layout.py rewrites those four
+    includes (idempotent, tested twice on a copy; every new path resolves),
+    run as the step "Patch winemetal includes for the new layout" before the
+    other winemetal patches. Everything else in 285 passed up to there:
+    ntdll 37/37, win32u, wineserver (with the HID pad's main_ios.c /
+    hidpad_ios.c), and the i386 farm was rebuilt and SAVED to the cache
+    (725 files), so the next build skips it. The pad's Swift is still
+    uncompiled (Archive comes later). Scan of the workflow / build scripts
+    for other stale research/ paths: only research/freetype/include in
+    ntdll-unix / win32u-unix build.sh, identical upstream and harmless (those
+    steps pass; the headers come from build/freetype-ios). Next: build 286 =
+    this fix + the GoT GPU registry fix (c2ed0ab); main stays at the last
+    green build until then.
 
 ### DualSense / DirectInput (second agent)
 
