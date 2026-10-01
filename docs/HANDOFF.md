@@ -868,6 +868,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     and main_ios.c not compiled locally -> the next CI build is the first
     compile. Phase 2 (rumble/triggers/lightbar) and 3 (touch coords, gyro)
     not implemented.
+  - **Build 284 green** (run 36865536001, head cd6039a, before the upstream
+    and DualSense merges): "Patch airconv typed UAV store bounds" applied,
+    native ABI 4bfb0dace1b73c83, OTA mailed, bucket 9 builds 1.35 GB. Owner
+    tests the darkening on it (720p outdoors). Next: build 285 from a00148a
+    = upstream reorganisation merge + layout fixes + DualSense HID pad (first
+    CI compile of the pad's Swift / main_ios.c; i386 farm rebuild because
+    build/wine-i386/build.sh changed upstream).
 
 ### DualSense / DirectInput (second agent)
 
