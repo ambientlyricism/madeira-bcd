@@ -93,6 +93,13 @@ OVERLAY = {
                         "so a game that reads both APIs does not see the same pad twice.",
                 "sources": ["app/Madeira/GamepadInput.swift"]},
     "env.MADEIRA_PROMOTE": {"title": "Hold the display at its maximum rate"},
+    # madeira-bcd: the opt-in source build of DXMT's 64-bit dxgi.dll (tools/build-dxgi-dll.sh).
+    "env.MADEIRA_DXGI_SRC": {"category": "Direct3D 9/10/11 (DXMT)", "title": "DXGI built from DXMT source (IDXGIFactory7)",
+                "kind": "bool", "default": "0",
+                "note": "1: the game runs the 64-bit dxgi.dll the CI builds from the dxmt submodule (dxgi-src.dll): "
+                        "upstream's DXMT dxgi plus IDXGIFactory7 and EnumAdapterByLuid (GTA V Enhanced stops with "
+                        "ERR_GFX_D3D_NOD3D12 without Factory7). Off (default): upstream's committed dxgi.dll. Set it in "
+                        "the game's own file, not for every game; read at session start."},
     "dxmt": {"title": "DXMT options (a=b;c=d)"},
 }
 

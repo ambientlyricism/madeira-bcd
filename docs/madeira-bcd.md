@@ -10,7 +10,7 @@ Builds an unsigned IPA on a GitHub macOS runner from a clean checkout: Wine's
 unix side, wineserver, win32u, FEX's iOS archives, LLVM 15 for iOS, DXMT's unix
 half and the app. The PE-side DLLs (ntdll, DXMT) are upstream's tracked
 builds; `madeira_d3d12.dll`, `xtajit64.dll` and `faultrep.dll` are built from
-source (below). The Microsoft VC++ runtime is fetched from
+source (below), and so is the opt-in `dxgi-src.dll` beside upstream's `dxgi.dll`. The Microsoft VC++ runtime is fetched from
 Microsoft at build time and never committed. Archived as Debug, per upstream's
 docs/BUILDING.md.
 
@@ -193,6 +193,32 @@ the update pack, the game's options and starts the per-game session log.
   `[nvapi] NvAPI_X -> <status>` with the values, and lets
   `NvAPI_DISP_GetDisplayIdByDisplayName` find the one display by the primary
   adapter's name when `GetMonitorInfo` does not match.
+- `dxgi-src.dll` (`tools/build-dxgi-dll.sh`, `tools/patch-dxgi-factory7.py`,
+  opt-in): DXMT's 64-bit `dxgi.dll` compiled in CI from the `dxmt` submodule
+  with `IDXGIFactory7` (`RegisterAdaptersChangedEvent` /
+  `UnregisterAdaptersChangedEvent`: S_OK with a nonzero cookie, the event is
+  never signalled) and a working `EnumAdapterByLuid` (it said "not
+  implemented" for every LUID). The committed arm64ec `dxgi.dll` stops at
+  `IDXGIFactory6`; GTA V Enhanced asks for Factory7, keeps a NULL factory
+  (crash report "Factory : None") and stops with `ERR_GFX_D3D_NOD3D12` (build
+  296, logs 2026-10-01 20:16 and 20:41, the second with the NVIDIA identity
+  on). The factory's base class becomes `IDXGIFactory7` so the two methods sit
+  in the interface's vtable slots (30 and 31; upstream's binary has its C++
+  destructor there, which is why answering Factory7 from it is not an
+  option). Shipped beside upstream's untouched `dxgi.dll` and linked in as
+  `system32\dxgi.dll` (and `sysx64`) only with `env.MADEIRA_DXGI_SRC = 1` in a
+  game's own file (WineProcessBridge.m logs `[WineProc] MADEIRA_DXGI_SRC=1:
+  dxgi.dll -> dxgi-src.dll`; the DLL logs `[dxgi-src] madeira-bcd dxgi.dll
+  from DXMT source <rev>` at its first factory). Off by default for every
+  game. The recipe mirrors DXMT's meson release build (flags, defines, thin
+  archives, meson's default Windows libraries, the shipped `winemetal.dll` as
+  import library) and runs before any DXMT patch step: built without the
+  patch it reproduced the committed binary -- every function, string,
+  relocation and live unwind entry identical, only the timestamp, build id and
+  dead `.pdata` entries differ -- so upstream's binary is this pin's source
+  (a5e0cd3) and dxgi-src.dll differs from it only by the patch. CI repeats
+  that comparison every build (symbols at the same addresses; a mismatch
+  warns). A failed build warns and ships nothing.
 - `madeira_d3d12.c`: `GetAdapterLuid` returns the adapter's LUID and
   `GetDeviceRemovedReason` returns S_OK unless the device is lost; both were
   generated stubs (a zero LUID, E_NOTIMPL). Ghost of Tsushima polls the
