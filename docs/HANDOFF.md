@@ -439,6 +439,26 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     32-bit VA use fills the 4 GB. Advice: start Bin64\Crysis3.exe (64-bit,
     D3D11 via the committed d3d11.dll, no 4 GB wall). No crack lines seen
     in the parts read.
+  - **God of War, build 273, Memory pool Off (log 11:56:52, 7 min, 1280x720,
+    20 MB).** Furthest the owner has played. Pool off gave the guest window
+    back its room: `[furniture]` at start free 7629 MB / biggest gap 7293 MB
+    (pool on: 2804/2803 MB); `[va-scan] FAILED` 49 (210 before), no SEGV,
+    no crash. Footprint peak 7.06 GB, 6.85 GB at the end (compressed 2.4 GB;
+    swap tier file-backed 2.2 GB); video budget trimmed to 1246 MB at 6.9 GB.
+    New symptom (owner): now and then the whole picture darkens slowly, "as
+    if the sun sets", characters too, then a few seconds later it slowly
+    comes back -- a smooth transition, not corruption. Reads like the game's
+    auto-exposure (eye adaptation) being fed a wrong scene luminance. Facts:
+    the game copies a texture to a staging resource ~once per frame
+    (`[bc-stream] paths stg<-tex` 0 -> 11456 over the session, ~27/s) -- the
+    usual CPU readback of the luminance/exposure value; no NaN/Inf or
+    DO_NOT_WAIT lines exist to say more. Hypotheses, none proven: (1) a
+    staging Map returning data the GPU copy has not written yet (zeros ->
+    dark target -> smooth adaptation); (2) the luminance reduction itself
+    (compute / mips) wrong on some frames; (3) real game behaviour. Note the
+    64-bit d3d11.dll is upstream's committed binary (we cannot instrument
+    Map there); native winemetal can log blits. Asked the owner: does it
+    happen standing still with the camera fixed, and in which area.
 
 ---
 
