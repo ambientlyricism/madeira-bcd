@@ -474,6 +474,22 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     config `dxmt = d3d11.mipClampBC=2`, `swap-mb = 6144`, `swap-min-kb =
     1024`, Memory pool Off, MetalFX and frame generation off; an 8 GB iPad
     has ~4 GB less headroom than the owner's 12 GB iPhone.
+  - **Note for the owner (2026-10-01): the unsigned IPA is already
+    downloadable** -- every build uploads `madeira-0.1.<run>-unsigned-ipa`
+    as an Actions artifact, and on a public repository any signed-in GitHub
+    user can download artifacts (default retention 90 days). That is how the
+    iPad user got 269. Section 3 says not to publish IPAs (Microsoft
+    redistributables, Apple's converter library inside) without the owner's
+    decision; the artifacts are effectively such a publication. Put to the
+    owner, not changed: (a) keep as is, (b) stop uploading the IPA artifact
+    (the owner installs via OTA) or give it retention-days 1, (c) also put
+    the unsigned IPA in the private R2 bucket and mail the owner a 7-day
+    link he can pass to individual testers. Device-specific fix for the
+    iPad: not needed before it is tested on 273 with the config above;
+    if still starved, candidate: when hw.memsize < the jetsam limit (iPad
+    7644 < 8192), base the reported RAM / video budget / trim thresholds on
+    hw.memsize instead of the limit (virtual_ios.c ml992 only clamps the
+    other way today).
 
 ---
 
