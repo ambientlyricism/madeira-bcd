@@ -405,6 +405,40 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     baseline/fallback** (was 251/271). Upstream candidate: this is a strong
     one for Will (native airconv only, one file + a header field, env
     switch) -- add it to the candidate PR list above.
+  - **Build 273 God of War logs 11:46:22 (1042x480) and 11:49:18 (1280x720),
+    owner: "crashed when I raised the resolution".** `[sm50-lean]` numbers:
+    25,000 shaders created and live, bytecode kept 480 MB (avg ~19 KB),
+    sampled drop 27-33 KB per shader (noisy, 391 samples; early samples
+    40-130 KB), malloc in use 876-894 MB; DefaultMallocZone 904-916 MB
+    (271: 2887 MB). Footprint ~5.7-5.8 GB, peak 6.1 GB -- memory is fine now.
+    Both crashes are the SAME, not memory: SEGV on DxRenderThread (0084) in
+    ucrtbase.dll+0x62cc8 (byte copy, strb) writing to 0xffffffffffff0000,
+    called from GoW 0x140b7e4e0 -- a buffered writer (dest = [buf+0x48] +
+    [buf+0x38]) serialising MessagePack (bytes 0x82/0xd8): the game saving
+    its settings after the change. Its buffer allocation had failed:
+    hundreds of `[va-scan] FAILED ... gaps-exhausted` (210 in the second
+    log), `errno=12 <-- STATUS_NO_MEMORY (callers see a NULL alloc)` -- the
+    guest VA window 0x7000000000..0x73ffff0000 (16 GB) is exhausted, not
+    RAM. Already present on 271 (227 va-scan FAILED), hidden by the jetsam.
+    `[furniture]` at startup: 13.5 GB of the window mapped, the biggest
+    items being the game's 1368 MB block and **the memory pool's 4 x 512 MB
+    regions at 0x7027000000.. (2 GB of guest VA)**, of which only ~450-530 MB
+    was ever used. Advice given: Memory pool Off (or 1 GB) for God of War --
+    gives back up to 2 GB of guest address space; the lean SM50 fix already
+    removed the memory pressure the pool was for. Open: confirm on device;
+    longer term the pool should not live in the guest window (or should be
+    sized to what the tier takes).
+  - **Crysis 3 (32-bit, Bin32\Crysis3.exe, first try, build 271, log
+    11:42:13).** Exits 0xc0000005 at 11:43:20 (~1 min). Cause: the 32-bit
+    guest address space is full -- `[va-scan] FAILED window=0x7100110000..
+    0x7200000000 size=0x410000 ... views=864 maxgap=0x400000`, `[alloc-fail]
+    status=c0000017`, then winemetal refuses `MTLDevice_newBuffer from a
+    32-bit caller with no caller-supplied memory (length 4194304)` and a
+    write to 0x7100000000 (the 32-bit base, prot 0) kills it. DXMT itself
+    held only ~220 MB (Metal 206 MB), footprint 3.5 GB: the game's own
+    32-bit VA use fills the 4 GB. Advice: start Bin64\Crysis3.exe (64-bit,
+    D3D11 via the committed d3d11.dll, no 4 GB wall). No crack lines seen
+    in the parts read.
 
 ---
 
