@@ -727,6 +727,23 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         }
     }
 
+    /* madeira-bcd: game-mode windows need the expose-equivalent repaint the
+     * fork's earlier overlay sent. A real windowing system answers a window
+     * becoming visible, or getting a new backing surface, with an expose /
+     * damage event, and the driver turns it into NtUserRedrawWindow -- the only
+     * thing that queues WM_PAINT. winios has no such event, so Ghost of
+     * Tsushima's message box (build 291, log 2026-10-01 18:38:48) painted once
+     * into its first surface, got a new one ("[surf-create] ... RECREATED --
+     * old content dropped") and never painted or flushed again: a layer with no
+     * bits. Same condition as the old driver: a surface-backed window that is
+     * visible and was just shown or had its surface changed (apply_window_pos
+     * forces SWP_FRAMECHANGED when the surface pointer changes). Game mode only;
+     * desktop mode is unchanged. */
+    if (winios_game_windows() && surface && !IsRectEmpty( &new_rects->visible ) &&
+        !(swp_flags & SWP_HIDEWINDOW) && (swp_flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED)) &&
+        (get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE))
+        NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+
     if (winios_pWindowPosChanged)
         winios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );
 }

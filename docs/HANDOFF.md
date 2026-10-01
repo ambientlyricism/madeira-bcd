@@ -1230,6 +1230,36 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `env.MADEIRA_PS_CLAMP = 1` (finite clamp of pixel-shader outputs, build
     277; did not help the iPhone's spikes, but this one looks like NaN/Inf),
     then `= 2`. Parked behind GoW 1080p performance, GoT and GTA V.
+  - **Build 291 device results (owner, logs 2026-10-01 18:37:52 PlayGTAV,
+    18:38:27 GTA5_Enhanced, 18:38:48 GhostOfTsushima).**
+    * GTA V: the session wait works (`[WineProc] madeira-bcd: the main
+      process exited but 1 child process(es) ... still run (gta5_enhanced.exe)`
+      / `(playgtav.exe)`), but the game child itself crashes ~1-2 s in: tid
+      002c, AV READ of 0 in FEX JIT code (insn f9400021 ldr x1,[x1]), guest
+      RIP = the child's pool copy of ntdll's x64 syscall thunk (ntdll
+      +0x87050, `jne; syscall; ret; int 2e; ret`), handler in RUNE64.dll,
+      unwind fails -> NtTerminateProcess 0xC0000005. The same path runs in
+      the MAIN process (GTA5_Enhanced as main: `[pool-rip-fix] guest RIP ...
+      POOL-COPY alias of PE 0x71ffd57050 -- redirecting` x24, no crash), so a
+      child pseudo-process lacks something. Agent started (own worktree):
+      root cause + Madeira-side fix or diagnostics, docs/gta5-child-crash.md.
+    * GoT: `[monitor-identity] ml1190 using user32 primary=0x10001` is on and
+      the dialog STILL appears -> the monitor-identity theory is refuted as
+      the (only) cause; agent started (own worktree): diff good 09-28 vs now
+      for everything the game can observe (DXGI, NVAPI, registry, D3DKMT,
+      madeira-d3d12 probe answers vs pack 5 69d7311), restore a guest
+      text-log mirror if feasible, docs/got-gpu-check.md.
+    * GoT dialog still invisible on 291: the overlay attached and created a
+      layer for the dialog (hwnd 0x10034) and `[surf-create] ... RECREATED
+      -- old content dropped`, but no `[surf-flush]` ever followed -- the
+      window painted into its first surface and nothing asked it to repaint.
+      The old driver sent an expose-equivalent NtUserRedrawWindow
+      (RDW_INVALIDATE|ERASE|FRAME|ALLCHILDREN) for a visible surface-backed
+      window that was just shown or got a new surface; ported into
+      winios_drv_window_pos_changed for game mode only (desktop mode
+      unchanged). The owner pressed Enter / Esc on the on-screen keys and
+      tapped blindly (`[winios] post_key vk=0xd`, `post_touch_down x=331
+      y=492`); the dialog stayed.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
