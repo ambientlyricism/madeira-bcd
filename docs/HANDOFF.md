@@ -2798,6 +2798,31 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     widl-generated typelib/idl headers, probably the cause). main
     fast-forwarded to af5cfc3 and verified with `git ls-remote` (no push
     run). Waiting on: hardware-registry agent (ad9ffa50); device tests.
+  - **GTA reaches its main menu (owner, 2026-10-02 15:30, build 332; the
+    owner resolved the Social Club part on his own -- not to be discussed
+    further).** New Madeira bug: after the intro videos the picture becomes a
+    huge, blurry zoom of one corner; the Metal HUD "disappears" (it is drawn
+    huge inside the zoom: the giant FPS box in the screenshot); animations keep
+    running. Log PlayGTAV.exe 15:30:20: the game's swapchain is 1920x1080
+    (line 14316); after the videos the Social Club renderer creates a probe
+    device + swapchain on "RGSC D3D12 Temp Window" hwnd 0x1003e: `swapchain:
+    124x73, 2 buffers, format 28` (30124), destroyed after 0 presents (30368).
+    **Cause:** in game mode every swapchain gets the SAME CAMetalLayer
+    (IOSDisplayShim.m my_view_create_metal_view returns the fullscreen
+    singleton for any HWND), mad_swap_make_buffers set that layer to a 124x73
+    drawable, and the game's swapchain never re-applied its own size -- its
+    1920x1080 frames were copied into a 124x73 drawable and stretched.
+    **Fix (this commit, madeira_d3d12.c, default on):** mad_swap_apply_layer
+    (factored out of mad_swap_make_buffers) records which swapchain last
+    configured which layer (pointer compare only); a Present whose layer was
+    reconfigured by another swapchain re-applies its own drawable size /
+    format first (`[madeira-d3d12] swapchain ...: another swapchain
+    reconfigured the shared Metal layer -- ... restored`, 8 lines); the owner
+    is forgotten when that swapchain is destroyed. Distinct layers (desktop
+    mode) never trigger it. arm64ec syntax check clean (4 known errors).
+    Open: IOSDisplayShim also calls winios_note_game_metal_hwnd() for the temp
+    window, so the "game window whose GDI surface is not drawn" became the
+    RGSC temp hwnd -- watch for GDI drawing over the game after that point.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

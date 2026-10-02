@@ -15056,9 +15056,38 @@ static void mad_swap_make_fx(struct mad_swapchain *s) {
     d3d12_log("[madeira-d3d12] metalfx-upscale %s: %ux%u -> %ux%u (MetalFX spatial)\n", v, s->desc.Width, s->desc.Height, ow, oh);
 }
 
+/* madeira-bcd: in game mode every swapchain gets the SAME CAMetalLayer (the
+ * fullscreen singleton, app/Madeira/IOSDisplayShim.m my_view_create_metal_view),
+ * whatever its HWND. GTA V Enhanced's Social Club renderer creates a probe
+ * device + swapchain on "RGSC D3D12 Temp Window" (124x73, format 28) right
+ * after the intro videos and destroys it after 0 presents; its
+ * mad_swap_make_buffers set the shared layer to a 124x73 drawable, and the
+ * game's 1920x1080 swapchain kept presenting into it -- a 124x73 corner of the
+ * frame (and the Metal HUD drawn at 124x73) stretched over the whole screen
+ * (owner's screenshot + log PlayGTAV.exe 2026-10-02 15:30:20). The swapchain
+ * that last configured a layer is remembered (pointer compare only, never
+ * dereferenced); a Present on a swapchain whose layer was reconfigured by
+ * another one applies its own drawable size / format again first. Distinct
+ * layers (desktop mode) never trigger it. */
+static obj_handle_t g_layer_cfg_layer;
+static const void *g_layer_cfg_owner;
+static void mad_swap_apply_layer(struct mad_swapchain *s) {
+    struct WMTLayerProps props;
+    memset(&props, 0, sizeof props);
+    MetalLayer_getProps(s->layer, &props);
+    props.device = s->dev->mtl_device;
+    props.drawable_width = s->fx_w ? s->fx_w : s->desc.Width;
+    props.drawable_height = s->fx_h ? s->fx_h : s->desc.Height;
+    props.pixel_format = s->pf;
+    props.framebuffer_only = false;
+    props.display_sync_enabled = true;
+    MetalLayer_setProps(s->layer, &props);
+    g_layer_cfg_layer = s->layer;
+    g_layer_cfg_owner = s;
+}
+
 static HRESULT mad_swap_make_buffers(struct mad_swapchain *s) {
     D3D12_RESOURCE_DESC rd;
-    struct WMTLayerProps props;
     UINT i, n = s->desc.BufferCount ? s->desc.BufferCount : 2;
     int is_depth;
     if (n > MAD_SWAP_MAX_BUFFERS) n = MAD_SWAP_MAX_BUFFERS;
@@ -15088,15 +15117,7 @@ static HRESULT mad_swap_make_buffers(struct mad_swapchain *s) {
     /* The layer takes the same pixel format so the presenting blit is a plain
      * copy. framebuffer_only must be off: a framebuffer-only drawable cannot
      * be a blit destination. */
-    memset(&props, 0, sizeof props);
-    MetalLayer_getProps(s->layer, &props);
-    props.device = s->dev->mtl_device;
-    props.drawable_width = s->fx_w ? s->fx_w : s->desc.Width;
-    props.drawable_height = s->fx_h ? s->fx_h : s->desc.Height;
-    props.pixel_format = s->pf;
-    props.framebuffer_only = false;
-    props.display_sync_enabled = true;
-    MetalLayer_setProps(s->layer, &props);
+    mad_swap_apply_layer(s);
     d3d12_log("[madeira-d3d12] swapchain: %ux%u, %u buffers, format %u, hwnd %p\n",
               s->desc.Width, s->desc.Height, n, (unsigned)s->desc.Format, (void *)s->hwnd);
     return S_OK;
@@ -15123,6 +15144,7 @@ static ULONG STDMETHODCALLTYPE swap_Release(IDXGISwapChain4 *T) {
     if (n == 0) { mad_pd_purge(T);   /* ml1143 */
         if (s->queue && s->queue->sub_thread) mad_queue_drain(s->queue);   /* ml1121: queued presents name this swapchain */
         mad_swap_release_buffers(s);
+        if (g_layer_cfg_owner == s) g_layer_cfg_owner = NULL;   /* madeira-bcd: the next Present re-applies its own layer settings */
         if (s->view) ReleaseMetalView(s->view);
         if (s->latency_event) CloseHandle(s->latency_event);
         if (s->factory) IDXGIFactory1_Release(s->factory);
@@ -15298,6 +15320,13 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
             last = GetTickCount();
         }
         if ((s->presents % 300) == 299) mad_sd_report(s->presents + 1);
+    }
+    if (g_layer_cfg_layer == s->layer && g_layer_cfg_owner != s) {   /* madeira-bcd: shared layer taken over, see mad_swap_apply_layer */
+        static LONG said;
+        if (InterlockedIncrement(&said) <= 8)
+            d3d12_log("[madeira-d3d12] swapchain %ux%u (hwnd %p): another swapchain reconfigured the shared Metal layer -- its drawable size and format restored before present #%llu\n",
+                      s->desc.Width, s->desc.Height, (void *)s->hwnd, (unsigned long long)s->presents);
+        mad_swap_apply_layer(s);
     }
     { LONG64 td = mad_qpc();   /* ml1128 */
     drawable = MetalLayer_nextDrawable(s->layer);
