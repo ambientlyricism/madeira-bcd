@@ -2747,6 +2747,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     load failures are msasn1/wldp/hnetcfg/msctf (in build 333) and
     drvstore/devobj (not in Wine, not loaded by Proton either). No loader
     bug found.
+  - **GTA: owner challenged "is the emulator really the cause? you have no
+    proof" -- fair: the evidence is circumstantial (no Madeira fault before
+    the screen; the only structural difference vs Proton is the Social Club
+    layer).** Unexamined area: the registry (a real install records its
+    path/version; a failing lookup could also produce "incomplete
+    installation"). No build needed: ntdll's registry.c (WINE_DEFAULT_DEBUG_
+    CHANNEL(reg)) is compiled in and trace channels work on device (the 15:01
+    log has trace:loaddll), so the owner was asked to run with
+    `env.WINEDEBUG = err+all,err-virtual,trace+reg` (NtOpenKeyEx logs the key
+    name and `<- 0` on failure; NtQueryValueKey logs value names). Plan:
+    list failing opens / queried values in the seconds before the screen and
+    compare with the prefix's system.reg / user.reg; a missing environment
+    key (install path, OS/DirectX info) is a Madeira prefix matter and gets
+    fixed.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
