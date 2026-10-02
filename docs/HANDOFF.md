@@ -2301,6 +2301,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Volumetric Fog High/Very High (smoke squares), with the usual
     `dxil-tess = 0`. If SSS off fixes it, our bug may still be real (the
     flicker is worse here) but the pass to look at is SSS.
+  - **GoT in-game settings test (owner, 2026-10-02, build 317, `dxil-tess =
+    0`): Screen Space Shadows OFF and Volumetric Fog High/Very High changed
+    nothing** -- neither the main-menu grass flicker nor the smoke. So it is
+    not the known Windows SSS flicker nor the D3DMetal fog artifact; the bug
+    is ours (Mac D3DMetal users render GoT correctly, so Metal can). Next:
+    the round-3 M1/M2 tests (ind-count, sampler-census / sampler-reduction)
+    on build 321.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
