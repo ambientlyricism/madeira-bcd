@@ -2606,6 +2606,22 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     331 cancelled. Waiting on device: GTA with the file trace; GoT R1/R2.
     Owner on the Steam copy: not buying for now (Rockstar Games Launcher /
     Social Club would be much more work); the file trace comes first.
+  - **GTA file trace (build 330, log PlayGTAV.exe 2026-10-02 13:21:28,
+    `env.MADEIRA_FILE_TRACE = 1`).** The 4000-line budget ran out at line
+    18725 of 47284 (our own shader-cache .msc opens use most of it), before
+    the error screen. Up to there every game data access succeeds: rpf.cache,
+    common.rpf, x64a..x64i.rpf, update\x64\data\errorcodes\american.txt,
+    x64\audio\sfx; the only misses are nvngx_update.exe (Streamline's DLSS
+    updater probes), FEX AppConfig files, dxmt.conf, commandline.txt -- all
+    benign. **The game folder holds `socialclub_emu.ini`, opened at startup
+    (#79, #170-#173): a Social Club emulator**, i.e. this copy is not a
+    store or DRM-free release. The "incomplete installation" screen most
+    likely comes from that layer; per the hard rules we do not debug or
+    configure it. GTA work on this copy stops here unless a Madeira-side I/O
+    or emulation fault shows up; everything fixed for it (Agility layout,
+    driver version, WMI, child ntdll / stale-heal fixes) carries over to a
+    store copy. Improvement left open: [file-trace] should skip Madeira's
+    own ShaderCache paths.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
