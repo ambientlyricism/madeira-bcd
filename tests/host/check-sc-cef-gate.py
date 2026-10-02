@@ -14,8 +14,9 @@ Compiles the production code and checks:
     --js-flags=), PartitionAllocBackupRefPtr first in its LAST --disable-features= list
     (a new switch only when it has none) and MADEIRA_SC_CEF_FLAGS; a too small buffer
     fails; look-alike switches are not taken for the real ones;
-  - virtual_ios.c (ios_sc_name_is, ios_sc_path_is_helper, ios_sc_cef_refuse): libcef.dll
-    is refused only in a Social Club client that is not the helper, with the switch on;
+  - virtual_ios.c (ios_sc_name_is, ios_sc_path_is_helper, ios_sc_refused_name, ios_sc_cef_refuse):
+    libcef.dll and nvngx_dlss(g).dll are refused only in a Social Club client that is not the
+    helper, with the switch on (log 21:26: nvngx_dlss.dll's 28 MB left libcef 1.8 MB short);
   - virtual_ios.c env.MADEIRA_SC_PA_POOLS (ios_sc_pa_hold_arena, ios_sc_glued_pools,
     ios_sc_pa_drop_hold) against a model Mach map and allocator: not opted in, nothing
     moves and nothing is granted; opted in, the FEX arena boots at 0x7d00000000 (12 GB)
@@ -55,9 +56,10 @@ assert create.index('task #34 single-process CEF') < create.index("Social Club's
 print('PASS: NtCreateUserProcess refuses a helper --type= child and rewrites the browser before the startup info')
 
 mprot = function(native, 'static inline int mprotect_exec( void *base, size_t size, int unix_prot )')
-refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll gets no pool copy"):]
+refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes"):]
 refuse = refuse[:refuse.index('/* ml457 REVERTED (ml458)')]
-assert 'ios_sc_cef_refuse( "libcef.dll", 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() )' in refuse
+assert 'ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() )' in refuse
+assert 'ios_sc_cef_enabled() && ios_sc_refused_name( sc_mod ) &&' in refuse
 assert 'ios_jit_copy_refused = 1;' in refuse and 'return -1;' in refuse
 exhausted = mprot[mprot.index('[jit-pool] EXHAUSTED (image %p+0x%lx)'):][:900]
 assert 'ios_jit_copy_refused = 1;' in exhausted
@@ -92,6 +94,7 @@ proc_helpers = enums + ''.join(function(proc, sig) for sig in (
 virt_helpers = ''.join(function(native, sig) for sig in (
     'static int ios_sc_name_is(',
     'static int ios_sc_path_is_helper(',
+    'static int ios_sc_refused_name(',
     'static int ios_sc_cef_refuse(',
 ))
 sc_decl = native[native.index('#define IOS_SC_GLUED_BASE'):]
@@ -275,6 +278,12 @@ static void gate_and_cmdline( void )
     if (ios_sc_cef_refuse( "libcef.dll", 0, 0, 1 )) FAIL("MADEIRA_SC_CEF=0 refused\n");
     if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 0 )) FAIL("non-Social Club process (Steam) refused\n");
     if (ios_sc_cef_refuse( "libcef.dll.bak", 1, 0, 1 ) || ios_sc_cef_refuse( NULL, 1, 0, 1 )) FAIL("other names\n");
+    if (!ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 1 ) || !ios_sc_cef_refuse( "NVNGX_DLSSG.DLL", 1, 0, 1 ))
+        FAIL("client DLSS runtime\n");
+    if (ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 0 ) || ios_sc_cef_refuse( "nvngx_dlss.dll", 0, 0, 1 ) ||
+        ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 1, 1 )) FAIL("DLSS refused outside a Social Club client\n");
+    if (ios_sc_cef_refuse( "sl.dlss.dll", 1, 0, 1 ) || ios_sc_cef_refuse( "nvngx_dlssd.dll.x", 1, 0, 1 ))
+        FAIL("Streamline's own plugin refused\n");
     {
         int len;
         WCHAR *p = w( helper, &len );
@@ -284,7 +293,7 @@ static void gate_and_cmdline( void )
         p = w( "SocialClubHelper.exe", &len );
         if (!ios_sc_path_is_helper( p, len )) FAIL("bare name\n");
     }
-    printf("PASS: libcef.dll is refused only in a Social Club client that is not the helper, switch on\n");
+    printf("PASS: libcef.dll and nvngx_dlss(g).dll are refused only in a Social Club client that is not the helper, switch on\n");
 }
 
 /* the boot half runs once per process, so each case is its own run of this binary */

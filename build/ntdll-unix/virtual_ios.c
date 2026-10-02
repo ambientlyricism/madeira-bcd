@@ -12406,12 +12406,23 @@ static int ios_sc_current_has_socialclub(void)
     return 0;
 }
 
+/* The images a Social Club client gets no pool copy of: libcef.dll (Chromium
+ * runs in SocialClubHelper.exe) and NVIDIA's DLSS / frame generation runtimes,
+ * which need NVIDIA's driver and can never run on Metal. GTA log 2026-10-02
+ * 21:26: nvngx_dlss.dll's 28 MB copy left the first helper's libcef.dll 1.8 MB
+ * short of the 239.75 MB it needs below the pool-split hole. */
+static int ios_sc_refused_name( const char *module )
+{
+    return ios_sc_name_is( module, "libcef.dll" ) || ios_sc_name_is( module, "nvngx_dlss.dll" ) ||
+           ios_sc_name_is( module, "nvngx_dlssg.dll" );
+}
+
 /* The decision, separated from the lookups for the host test: refuse the copy
- * of `module` when it is libcef.dll, the switch is on, the process is not the
- * helper and it is a Social Club client. */
+ * of `module` when it is one of those, the switch is on, the process is not
+ * the helper and it is a Social Club client. */
 static int ios_sc_cef_refuse( const char *module, int enabled, int is_helper, int has_socialclub )
 {
-    return enabled && !is_helper && has_socialclub && ios_sc_name_is( module, "libcef.dll" );
+    return enabled && !is_helper && has_socialclub && ios_sc_refused_name( module );
 }
 
 /* A pool copy refused on this thread (pool exhausted, or a Social Club client's
@@ -14120,19 +14131,22 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 return 0;
             }
 
-            /* madeira-bcd: a Social Club client's libcef.dll gets no pool copy
-             * (see ios_sc_cef_refuse): refused like an exhausted pool, below. */
-            if (ios_sc_cef_enabled() &&
-                ios_sc_name_is( ios_pe_module_name( image_base, image_size ), "libcef.dll" ) &&
-                ios_sc_cef_refuse( "libcef.dll", 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() ))
+            /* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes
+             * get no pool copy (see ios_sc_cef_refuse): refused like an
+             * exhausted pool, below. */
+            const char *sc_mod = ios_pe_module_name( image_base, image_size );
+            if (ios_sc_cef_enabled() && ios_sc_refused_name( sc_mod ) &&
+                ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() ))
             {
                 static int sc_refused_n;
                 if (sc_refused_n++ < 8)
-                    dprintf(2, "[sc-cef] libcef.dll %p+0x%lx refused in a Social Club client (peb=%p, not "
-                            "SocialClubHelper.exe): Social Club's Chromium runs in SocialClubHelper.exe, so the "
-                            "%lu MB of JIT pool and the PartitionAlloc address space stay free for it -- the load "
-                            "fails as it did when the pool was exhausted (env.MADEIRA_SC_CEF=0 loads it)\n",
-                            image_base, (unsigned long)image_size, ios_jit_current_peb(),
+                    dprintf(2, "[sc-cef] %s %p+0x%lx refused in a Social Club client (peb=%p, not "
+                            "SocialClubHelper.exe): %s, so the %lu MB of JIT pool stay free for Social Club's "
+                            "Chromium in SocialClubHelper.exe -- the load fails as it did when the pool was "
+                            "exhausted (env.MADEIRA_SC_CEF=0 loads it)\n",
+                            sc_mod, image_base, (unsigned long)image_size, ios_jit_current_peb(),
+                            ios_sc_name_is( sc_mod, "libcef.dll" ) ? "Chromium runs in the helper"
+                                                                   : "DLSS needs NVIDIA's driver, not Metal",
                             (unsigned long)(image_size >> 20));
                 ios_jit_copy_refused = 1;
                 mprotect( base, size, PROT_READ );
