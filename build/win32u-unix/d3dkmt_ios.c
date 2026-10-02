@@ -139,6 +139,25 @@ struct madeira_kmt_nodemetadata   /* D3DKMT_NODEMETADATA with DXGK_NODEMETADATA 
     unsigned char GpuMmuSupported, IoMmuSupported;
 };
 struct madeira_kmt_wddm_1_2_caps { UINT GraphicsPreemptionGranularity, ComputePreemptionGranularity, Value; };
+/* D3DKMT_ADAPTER_PERFDATA (64 bytes) and D3DKMT_ADAPTER_PERFDATACAPS. GTA V
+ * Enhanced asks both on its real device (build 317, log PlayGTAV.exe
+ * 2026-10-02 09:59:47: type 63 size 40, type 62 size 64), upstream answers
+ * NOT_IMPLEMENTED. The caps are filled as far as the caller's buffer goes
+ * (the SDK's temperature fields sit past 40 bytes). */
+struct madeira_kmt_adapter_perfdata
+{
+    UINT PhysicalAdapterIndex;
+    ULONGLONG MemoryFrequency, MaxMemoryFrequency, MaxMemoryFrequencyOC, MemoryBandwidth, PCIEBandwidth;
+    UINT FanRPM, Power, Temperature;
+    unsigned char PowerStateOverride;
+};
+struct madeira_kmt_adapter_perfdatacaps
+{
+    UINT PhysicalAdapterIndex;
+    ULONGLONG MaxMemoryBandwidth, MaxPCIEBandwidth, MaxReadBandwidth, MaxWriteBandwidth;
+    UINT TemperatureMax, TemperatureWarning;
+};
+_Static_assert( sizeof(struct madeira_kmt_adapter_perfdata) == 64, "D3DKMT_ADAPTER_PERFDATA" );
 
 _Static_assert( sizeof(struct madeira_kmt_query_device_ids) == 28, "D3DKMT_QUERY_DEVICE_IDS" );
 _Static_assert( sizeof(struct madeira_kmt_adapteraddress) == 12, "D3DKMT_ADAPTERADDRESS" );
@@ -357,6 +376,38 @@ static int madeira_kmt_answer( UINT type, void *data, UINT size, const struct ma
         struct madeira_kmt_segmentsizeinfo seg = { id->dedicated, 0, 0 };
         KMT_NEED( sizeof(seg) );
         memcpy( data, &seg, sizeof(seg) );
+        return 1;
+    }
+    case KMTQAITYPE_ADAPTERPERFDATA_CAPS:   /* RTX 3060: 360 GB/s GDDR6, PCIe 4.0 x16 */
+    {
+        struct madeira_kmt_adapter_perfdatacaps caps = { 0, 360000000000ull, 31500000000ull,
+                                                         360000000000ull, 360000000000ull, 930, 830 };
+        KMT_NEED( 40 );
+        caps.PhysicalAdapterIndex = ((const struct madeira_kmt_adapter_perfdatacaps *)data)->PhysicalAdapterIndex;
+        if (caps.PhysicalAdapterIndex)
+        {
+            *status = STATUS_INVALID_PARAMETER;
+            return 1;
+        }
+        memcpy( data, &caps, size < sizeof(caps) ? size : sizeof(caps) );
+        return 1;
+    }
+    case KMTQAITYPE_ADAPTERPERFDATA:        /* idle desktop GPU: 1875 MHz memory, 45.0 C, 30 % power */
+    {
+        struct madeira_kmt_adapter_perfdata perf;
+        KMT_NEED( sizeof(perf) );
+        memset( &perf, 0, sizeof(perf) );
+        perf.PhysicalAdapterIndex = ((const struct madeira_kmt_adapter_perfdata *)data)->PhysicalAdapterIndex;
+        if (perf.PhysicalAdapterIndex)
+        {
+            *status = STATUS_INVALID_PARAMETER;
+            return 1;
+        }
+        perf.MemoryFrequency = perf.MaxMemoryFrequency = 1875000000ull;
+        perf.FanRPM = 1000;
+        perf.Power = 300;
+        perf.Temperature = 450;
+        memcpy( data, &perf, sizeof(perf) );
         return 1;
     }
     case KMTQAITYPE_GETSEGMENTGROUPSIZE:
@@ -624,12 +675,48 @@ NTSTATUS WINAPI NtGdiDdDDIQueryStatistics( D3DKMT_QUERYSTATISTICS *stats )
 {
     static int calls;
     NTSTATUS status = upstream_NtGdiDdDDIQueryStatistics( stats );
+    const char *how = "upstream stub, nothing filled";
 
+    /* madeira-bcd: the madeira adapter describes itself -- two segments (local
+     * video memory, then the system-memory aperture), two nodes (3D, copy), one
+     * source -- where upstream fills nothing (GTA V Enhanced asks type 0 on its
+     * real device, build 317 log 2026-10-02 09:59:47). */
+    if (!status && stats && madeira_kmt_adapter_enabled() && kmt_is_ours( &stats->AdapterLuid ))
+    {
+        unsigned long long dedicated = madeira_kmt_dedicated_bytes();
+        switch (stats->Type)
+        {
+        case D3DKMT_QUERYSTATISTICS_ADAPTER:
+            memset( &stats->QueryResult.AdapterInformation, 0, sizeof(stats->QueryResult.AdapterInformation) );
+            stats->QueryResult.AdapterInformation.NbSegments = 2;
+            stats->QueryResult.AdapterInformation.NodeCount = 2;
+            stats->QueryResult.AdapterInformation.VidPnSourceCount = 1;
+            how = "madeira adapter: 2 segments, 2 nodes, 1 source";
+            break;
+        case D3DKMT_QUERYSTATISTICS_SEGMENT:
+        {
+            D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION *seg = &stats->QueryResult.SegmentInformation;
+            ULONG id = stats->QuerySegment.SegmentId;
+            if (id > 1) { status = STATUS_INVALID_PARAMETER; how = "madeira adapter: no such segment"; break; }
+            memset( seg, 0, sizeof(*seg) );
+            seg->CommitLimit = id ? dedicated / 2 : dedicated;
+            seg->Aperture = id;
+            how = id ? "madeira adapter: segment 1 (aperture)" : "madeira adapter: segment 0 (local)";
+            break;
+        }
+        case D3DKMT_QUERYSTATISTICS_NODE:
+            memset( &stats->QueryResult.NodeInformation, 0, sizeof(stats->QueryResult.NodeInformation) );
+            how = "madeira adapter: node, idle";
+            break;
+        default:
+            break;
+        }
+    }
     if (kmt_trace( &calls, status ))
-        dprintf( 2, "[vkmt] tid=%04x QueryStatistics type=%d luid=%08x:%08x -> %#x (upstream stub, nothing filled)\n",
+        dprintf( 2, "[vkmt] tid=%04x QueryStatistics type=%d luid=%08x:%08x -> %#x (%s)\n",
                  (unsigned)GetCurrentThreadId(), stats ? (int)stats->Type : -1,
                  stats ? (unsigned)stats->AdapterLuid.HighPart : 0, stats ? (unsigned)stats->AdapterLuid.LowPart : 0,
-                 (unsigned)status );
+                 (unsigned)status, how );
     return status;
 }
 

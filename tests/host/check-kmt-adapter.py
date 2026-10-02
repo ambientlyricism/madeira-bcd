@@ -205,6 +205,8 @@ int main(void)
     q( "checkupdate", KMTQAITYPE_CHECKDRIVERUPDATESTATUS, 4, 0 );
     q( "guid", KMTQAITYPE_ADAPTERGUID, 16, 0 );
     q( "perfdata", KMTQAITYPE_ADAPTERPERFDATA, 64, 0 );
+    q( "perfcaps", KMTQAITYPE_ADAPTERPERFDATA_CAPS, 40, 0 );
+    q( "perfcaps_short", KMTQAITYPE_ADAPTERPERFDATA_CAPS, 32, 0 );
     printf( "qword %llx %llx %llx %llx\n", madeira_kmt_driver_version_qword( "35.0.15.6094" ),
             madeira_kmt_driver_version_qword( "32.0.15.6094" ), madeira_kmt_driver_version_qword( "1.2" ),
             madeira_kmt_driver_version_qword( "99999.1.2.3" ) );
@@ -264,8 +266,11 @@ int main(void)
             check("GETSEGMENTSIZE = dedicated 4096 MB only", out["seg_fields"] == "%d 0 0" % mb)
             check("GETSEGMENTGROUPSIZE = legacy + local 4096 MB, nothing non-local",
                   out["group_fields"] == "%d 0 0 %d 0 0" % (mb, mb) and out["group_index1"].startswith("1 " + inv))
-            check("UMDRIVERNAME, CHECKDRIVERUPDATESTATUS, ADAPTERGUID, ADAPTERPERFDATA stay upstream's",
-                  all(out[k].startswith("0 ") for k in ("umdname", "checkupdate", "guid", "perfdata")))
+            check("UMDRIVERNAME, CHECKDRIVERUPDATESTATUS, ADAPTERGUID stay upstream's",
+                  all(out[k].startswith("0 ") for k in ("umdname", "checkupdate", "guid")))
+            check("ADAPTERPERFDATA and ADAPTERPERFDATA_CAPS (40-byte caller) answered; a short caps buffer refused",
+                  out["perfdata"].startswith("1 0") and out["perfcaps"].startswith("1 0")
+                  and out["perfcaps_short"].startswith("1 " + inv))
             check("version QWORD: 32.0.15.6094, short and oversized strings",
                   out["qword"] == "%x %x %x %x" % (ver, (32 << 48) | (15 << 16) | 6094, (1 << 48) | (2 << 32),
                                                    (0xffff << 48) | (1 << 32) | (2 << 16) | 3))

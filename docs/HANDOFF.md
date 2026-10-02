@@ -2195,6 +2195,27 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     D3DKMT trace + dxgi-src UMD version (notice: "dxgi-src.dll built ... +
     the D3DKMT UMD version"). main fast-forwarded to 463f10f; push run 318
     (workflow comment changed) cancelled.
+  - **GTA V on build 317 with `env.MADEIRA_KMT_ADAPTER = 1` (log PlayGTAV.exe
+    2026-10-02 09:59:47): same box, but the whole D3DKMT conversation is in
+    the log.** The adapter works (LUID db030000:01000000 matches DXGI;
+    EnumAdapters2 -> 1 adapter; WDDM_2_7_CAPS 0x7; UMD 35.0.15.6094 reaches
+    DXGI CheckInterfaceSupport). Streamline (before the real device) also
+    asks QUERYREGISTRY (48, size 1072) -> NOT_FOUND from upstream. **GTA's
+    own real-device window (7716-7832):** OpenAdapterFromDeviceName (the
+    registry GPU interface path) -> WDDM_2_7_CAPS ok -> **ADAPTERPERFDATA_CAPS
+    (63, 40 bytes) and ADAPTERPERFDATA (62, 64 bytes) -> 0xc0000002
+    NOT_IMPLEMENTED** -> **QueryStatistics type 0 (ADAPTER) -> 0 but
+    nothing filled** -> UMD_DRIVER_VERSION ok -> CheckInterfaceSupport S_OK
+    -> `destroyed Device` -> box. **Fix (this commit, same key):**
+    d3dkmt_ios.c answers ADAPTERPERFDATA_CAPS (RTX 3060: 360 GB/s memory,
+    PCIe 4.0 x16 31.5 GB/s, read/write 360 GB/s; temperatures 93.0/83.0 C
+    when the caller's buffer has room -- GTA passes 40 bytes), ADAPTERPERFDATA
+    (memory 1875 MHz, 1000 rpm, 30 % power, 45.0 C), and QueryStatistics for
+    the madeira adapter: ADAPTER (2 segments, 2 nodes, 1 source), SEGMENT 0
+    (local, commit limit = dedicated) / 1 (aperture, half), NODE (idle).
+    check-kmt-adapter extended (answered, short buffer refused) PASS;
+    d3dkmt_ios.c syntax-clean with the iOS defines. Open: QUERYREGISTRY for
+    Streamline/NGX.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
