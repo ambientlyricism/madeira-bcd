@@ -2037,6 +2037,29 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     artifact is uploaded any more. A skilled person can still remove the
     guard and supply their own MSC/certificate; this only stops casual
     reuse. Source stays public (LGPL obligations of Wine are met by that).
+  - **GTA V on build 313 with `d3d12-msaa8 = 1` (log PlayGTAV.exe
+    2026-10-02 08:33:51): same box.** msaa8 worked (`msaa8=1`, x8 -> levels 1,
+    7517-7521). Real device sequence now: NVAPI (FullName "RTX 4090",
+    CoreCount 0, **AllClockFrequencies -104**, FrameBufferSize 4 GB x2),
+    ARCHITECTURE (TileBased 0), **OPTIONS5 (RaytracingTier 0)**, MSAA 28
+    x1/2/4/8 all 1 -> `destroyed Device` (7484-7522). The only negative
+    answers left on that path are DXR and the NVAPI clock query. Web: on
+    CrossOver/D3DMetal the Enhanced edition ran "with high settings and ray
+    tracing" (D3DMetal exposes DXR) until a GTA patch brought the same
+    ERR_GFX_D3D_NOD3D12 there too -- the newer build checks something
+    D3DMetal lacked. **Added (this commit):** (1) `d3d12-raytracing-tier =
+    10 | 11` (EXPERIMENT, default 0): OPTIONS5.RaytracingTier = DXR 1.0 / 1.1
+    with nothing behind it (CreateStateObject, acceleration structures,
+    DispatchRays stay the E_NOTIMPL stubs, logged once each as
+    "unimplemented") -- it only answers whether the gate is DXR.
+    (2) tools/patch-nvapi-gpu-info.py: NvAPI_GPU_GetAllClockFrequencies
+    answers (V1-V3; graphics 2235 / boost 2520 MHz, memory 10501 MHz; GoT
+    never calls it -- 0 hits in its logs). nvapi64 builds locally; nvapi-trace
+    test, catalog, tiled, got-diagnostics PASS; runtime syntax check clean
+    apart from the 4 known winemetal.h errors. **Next GTA test:** previous
+    lines + `d3d12-raytracing-tier = 11`; if the box goes, look for
+    "unimplemented: ID3D12Device...::CreateStateObject" etc. -- then real DXR
+    on Metal (MSC can convert DXIL ray tracing) becomes the work item.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

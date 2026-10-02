@@ -95,6 +95,39 @@ if src.count(core_old) != 1:
     sys.exit("patch-nvapi-gpu-info: NvAPI_GPU_GetGpuCoreCount body not found")
 src = src.replace(core_old, core_new)
 
+clk_old = '''NvAPI_GPU_GetAllClockFrequencies(__in NvPhysicalGpuHandle hPhysicalGPU,
+                                 __inout NV_GPU_CLOCK_FREQUENCIES *pClkFreqs) {
+  if (!pClkFreqs)
+    return NVAPI_INVALID_ARGUMENT;
+
+  return NVAPI_NOT_SUPPORTED;
+}'''
+clk_new = '''NvAPI_GPU_GetAllClockFrequencies(__in NvPhysicalGpuHandle hPhysicalGPU,
+                                 __inout NV_GPU_CLOCK_FREQUENCIES *pClkFreqs) {
+  if (!pClkFreqs)
+    return NVAPI_INVALID_ARGUMENT;
+
+  /* madeira-bcd: GTA V Enhanced asks this right before its device verdict
+   * (build 313, log 2026-10-02 08:33:51; -104 until now). Graphics and memory
+   * clocks of the RTX 4090 this NVAPI names (kHz): current = base 2235 /
+   * boost 2520 MHz, memory 10501 MHz. V1 has no clock type. */
+  if (pClkFreqs->version != NV_GPU_CLOCK_FREQUENCIES_VER_1 && pClkFreqs->version != NV_GPU_CLOCK_FREQUENCIES_VER_2 &&
+      pClkFreqs->version != NV_GPU_CLOCK_FREQUENCIES_VER_3)
+    return NVAPI_INCOMPATIBLE_STRUCT_VERSION;
+  NvU32 type = pClkFreqs->version == NV_GPU_CLOCK_FREQUENCIES_VER_1 ? 0 : pClkFreqs->ClockType;
+  NvU32 version = pClkFreqs->version;
+  memset(&pClkFreqs->domain, 0, sizeof pClkFreqs->domain);
+  pClkFreqs->version = version;
+  pClkFreqs->domain[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS].bIsPresent = 1;
+  pClkFreqs->domain[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS].frequency = type == NV_GPU_CLOCK_FREQUENCIES_BOOST_CLOCK ? 2520000 : 2235000;
+  pClkFreqs->domain[NVAPI_GPU_PUBLIC_CLOCK_MEMORY].bIsPresent = 1;
+  pClkFreqs->domain[NVAPI_GPU_PUBLIC_CLOCK_MEMORY].frequency = 10501000;
+  return NVAPI_OK;
+}'''
+if src.count(clk_old) != 1:
+    sys.exit("patch-nvapi-gpu-info: NvAPI_GPU_GetAllClockFrequencies body not found")
+src = src.replace(clk_old, clk_new)
+
 case_anchor = "  case 0xceee8e9f:\n    return (void *)&NvAPI_GPU_GetFullName;\n"
 if src.count(case_anchor) != 1:
     sys.exit("patch-nvapi-gpu-info: QueryInterface table anchor not found")

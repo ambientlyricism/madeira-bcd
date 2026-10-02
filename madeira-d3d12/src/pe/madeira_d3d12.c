@@ -7340,9 +7340,31 @@ static HRESULT STDMETHODCALLTYPE device_CheckFeatureSupport(ID3D12Device *This,
         o->Int64ShaderOps = TRUE;
         return S_OK;
     }
+    case D3D12_FEATURE_D3D12_OPTIONS5: {
+        /* madeira-bcd: d3d12-raytracing-tier = 10 / 11 (EXPERIMENT, default 0)
+         * reports DXR tier 1.0 / 1.1 although this runtime has no ray tracing:
+         * CreateStateObject, acceleration structures and DispatchRays stay the
+         * generated E_NOTIMPL stubs, each logged once as "unimplemented". It
+         * only answers whether GTA V Enhanced's device check wants DXR: with
+         * every other answer consistent (FL 12_0, tiled resources, 8x MSAA) its
+         * real device still reads OPTIONS5 last and gives up with
+         * ERR_GFX_D3D_NOD3D12 (build 313, log PlayGTAV.exe 2026-10-02 08:33:51). */
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 *o = data;
+        static int tier = -1;
+        if (size < sizeof *o) return E_INVALIDARG;
+        memset(o, 0, sizeof *o);
+        if (tier < 0) {
+            tier = (int)mad_cfg_int_pe("d3d12-raytracing-tier", 0);   /* experiment: 10 or 11 reports DXR 1.0 / 1.1 with no ray tracing behind it */
+            if (tier != 10 && tier != 11) tier = 0;
+            if (tier) d3d12_log("[d3d12-caps] madeira-bcd raytracing-tier=%d (d3d12-raytracing-tier, EXPERIMENT): "
+                                "OPTIONS5 reports DXR %s, nothing implements it\n", tier, tier == 11 ? "1.1" : "1.0");
+        }
+        if (tier) o->RaytracingTier = tier == 11 ? D3D12_RAYTRACING_TIER_1_1 : D3D12_RAYTRACING_TIER_1_0;
+        return S_OK;
+    }
     case D3D12_FEATURE_D3D12_OPTIONS2:
     case D3D12_FEATURE_D3D12_OPTIONS3: case D3D12_FEATURE_D3D12_OPTIONS4:
-    case D3D12_FEATURE_D3D12_OPTIONS5: case D3D12_FEATURE_D3D12_OPTIONS6:
+    case D3D12_FEATURE_D3D12_OPTIONS6:
     case D3D12_FEATURE_D3D12_OPTIONS7: case D3D12_FEATURE_D3D12_OPTIONS8:
     case D3D12_FEATURE_D3D12_OPTIONS10: case D3D12_FEATURE_D3D12_OPTIONS12:
     case D3D12_FEATURE_D3D12_OPTIONS13: case D3D12_FEATURE_D3D12_OPTIONS14:
