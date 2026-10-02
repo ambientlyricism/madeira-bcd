@@ -2018,7 +2018,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `id: ota`). A new step "Check the IPA reached the private bucket" fails
     the build with `::error::` when the OTA step did not succeed, so a build
     never keeps its IPA somewhere public. Build logs stay an artifact.
-    (2) Every existing IPA artifact is deleted with `cleanup-artifacts.yml`
+    (2) DONE 2026-10-02: `cleanup-artifacts.yml` (below = 100000) deleted
+    31 IPA artifacts (4.62 GB); the artifact list now holds 0 IPAs (249
+    other artifacts, build logs / packs, remain). Every existing IPA artifact
+    is deleted with `cleanup-artifacts.yml`
     dispatched with `below = 100000` (all numbered ones + the old unnumbered
     `madeira-unsigned-ipa`). Consequences: builds older than the 10 the R2
     bucket keeps are gone for good; `inspect-ipa.yml` (compares the draft
