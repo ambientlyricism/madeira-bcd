@@ -65,14 +65,19 @@ refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll an
 refuse = refuse[:refuse.index('/* ml457 REVERTED (ml458)')]
 assert 'ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub(),\n                                   ios_sc_game_cef() )' in refuse
 assert 'ios_sc_cef_enabled() && ios_sc_refused_name( sc_mod ) &&' in refuse
-assert 'ios_jit_copy_refused = 1;' in refuse and 'return -1;' in refuse
+assert 'ios_jit_copy_refused = 2;' in refuse and 'return -1;' in refuse
 exhausted = mprot[mprot.index('[jit-pool] EXHAUSTED (image %p+0x%lx)'):][:900]
 assert 'ios_jit_copy_refused = 1;' in exhausted
 mapimg = function(native, 'static NTSTATUS map_image_into_view(')
 loop = mapimg[mapimg.index('ios_jit_copy_refused = 0;'):mapimg.index('VALGRIND_LOAD_PDB_DEBUGINFO')]
 assert 'if (ios_jit_copy_refused)' in loop and 'status = STATUS_NO_MEMORY;' in loop and 'goto done;' in loop
+res = loop.index('if (ios_resource_only_map( ios_jit_copy_refused, NtCurrentTeb()->Tib.ArbitraryUserPointer ))')
+assert res < loop.index('if (ios_jit_copy_refused)\n')
+assert 'ios_noexec_resource = 1;' in loop[res:res + 900] and 'continue;' in loop[res:res + 900]
+assert 'si < nt->FileHeader.NumberOfSections && !ios_noexec_resource; si++' in mapimg
 assert loop.index('for (i = 0; i < nt->FileHeader.NumberOfSections; i++)') > 0
-print('PASS: a refused pool copy (exhausted, or a client\'s libcef.dll) fails the image load with STATUS_NO_MEMORY')
+print('PASS: a refused pool copy (exhausted, or a client\'s libcef.dll) fails the image load with STATUS_NO_MEMORY; '
+      'a resource-only map of a policy-refused image maps without exec and skips the eager JIT copy')
 
 hinted = native[native.index('/* task#29 CEF plan C: a HINTED jumbo reserve that fails placement'):][:6000]
 glue = hinted[hinted.index('ios_sc_glued_pools( &pick, &sz, type, protect )') - 200:]
@@ -103,6 +108,7 @@ virt_helpers = ''.join(function(native, sig) for sig in (
     'static int ios_sc_path_is_helper(',
     'static int ios_sc_refused_name(',
     'static int ios_sc_cef_refuse(',
+    'static int ios_resource_only_map(',
 ))
 sc_decl = native[native.index('#define IOS_SC_GLUED_BASE'):]
 sc_decl = sc_decl[:sc_decl.index('static int ios_sc_brp_layout;')] + 'static int ios_sc_brp_layout;\n'
@@ -306,6 +312,12 @@ static void gate_and_cmdline( void )
         ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 1, 1, 0 )) FAIL("DLSS refused outside a Social Club client\n");
     if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 1, 1 ) || !ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 1, 1 ))
         FAIL("MADEIRA_SC_GAME_CEF=1\n");
+    {
+        static int name;
+        if (!ios_resource_only_map( 2, NULL )) FAIL("resource-only map of a refused image\n");
+        if (ios_resource_only_map( 2, &name )) FAIL("loader map (ArbitraryUserPointer set) taken for resource-only\n");
+        if (ios_resource_only_map( 1, NULL ) || ios_resource_only_map( 0, NULL )) FAIL("exhausted / not refused\n");
+    }
     if (ios_sc_cef_refuse( "sl.dlss.dll", 1, 0, 1, 0 ) || ios_sc_cef_refuse( "nvngx_dlssd.dll.x", 1, 0, 1, 0 ))
         FAIL("Streamline's own plugin refused\n");
     {

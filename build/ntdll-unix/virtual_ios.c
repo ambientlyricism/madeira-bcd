@@ -12444,10 +12444,29 @@ static int ios_sc_cef_refuse( const char *module, int enabled, int is_helper, in
     return enabled && !is_helper && has_socialclub && ios_sc_refused_name( module );
 }
 
-/* A pool copy refused on this thread (pool exhausted, or a Social Club client's
- * libcef.dll): map_image_into_view then fails the load instead of mapping code
- * that can never run. Thread-local: set and read by the one thread mapping. */
+/* A pool copy refused on this thread: 1 = pool exhausted, 2 = refused by
+ * ios_sc_cef_refuse (a Social Club client's libcef.dll / DLSS runtime).
+ * map_image_into_view then fails the load instead of mapping code that can
+ * never run -- except a resource-only map of a refused image (see
+ * ios_resource_only_map), which succeeds without executable code.
+ * Thread-local: set and read by the one thread mapping. */
 static _Thread_local int ios_jit_copy_refused;
+
+/* madeira-bcd: an image view the loader is not mapping. Wine's loader
+ * (ntdll load_dll) sets TEB ArbitraryUserPointer to the DLL name around the
+ * map; kernelbase's LoadLibraryExW(LOAD_LIBRARY_AS_IMAGE_RESOURCE) -- what
+ * GetFileVersionInfo uses -- maps the image section without it ("[map-notify]
+ * SKIP (no ArbitraryUserPointer)"). GTA log 2026-10-02 23:39: the game's
+ * socialclub.dll checks every Social Club component's version that way
+ * ("Could not get libcef version" in socialclub.dll), and the refused libcef
+ * copy failed that version query; allowed (env.MADEIRA_SC_GAME_CEF = 1) it
+ * cost a 240 MB pool copy that nothing ever executed and left the helper's own
+ * libcef.dll EXHAUSTED. A resource-only map of a policy-refused image now maps
+ * without a pool copy and without exec; the code never runs there. */
+static int ios_resource_only_map( int refused, const void *arbitrary_user_pointer )
+{
+    return refused == 2 && !arbitrary_user_pointer;
+}
 
 /* Social Club's PartitionAlloc pools (env.MADEIRA_SC_PA_POOLS = 1, opt-in).
  *
@@ -14168,7 +14187,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                             ios_sc_name_is( sc_mod, "libcef.dll" ) ? "Chromium runs in the helper"
                                                                    : "DLSS needs NVIDIA's driver, not Metal",
                             (unsigned long)(image_size >> 20));
-                ios_jit_copy_refused = 1;
+                ios_jit_copy_refused = 2;
                 mprotect( base, size, PROT_READ );
                 errno = ENOMEM;
                 return -1;
@@ -18516,6 +18535,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
     set_vprot( view, ptr, ROUND_SIZE( 0, header_size, align_mask ), VPROT_COMMITTED | VPROT_READ );
 
 #ifdef WINE_IOS
+    int ios_noexec_resource = 0;
     ios_jit_copy_refused = 0;
 #endif
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
@@ -18543,6 +18563,17 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
              * exec AV (secur32.dll, imm32.dll in the GTA logs of 2026-10-02).
              * Fail the load instead, so the loader reports it. Only this case:
              * every other protection failure keeps the old path. */
+            if (ios_resource_only_map( ios_jit_copy_refused, NtCurrentTeb()->Tib.ArbitraryUserPointer ))
+            {
+                static int resource_maps;
+                if (resource_maps++ < 16)
+                    dprintf( 2, "[jit-pool] %s: resource-only map (no loader name; GetFileVersionInfo / "
+                             "LOAD_LIBRARY_AS_IMAGE_RESOURCE) of a refused image -- mapped without a pool copy "
+                             "and without exec, the code never runs from it\n", debugstr_us(nt_name) );
+                ios_jit_copy_refused = 0;
+                ios_noexec_resource = 1;
+                continue;
+            }
             if (ios_jit_copy_refused)
             {
                 static int refused_loads;
@@ -18568,7 +18599,7 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
      * through map_image_into_view, regardless of whether it's via
      * virtual_map_image (builtin flag) or any alternate path. */
     ERR("iOS map_image_into_view: view=%p EXEC fixup\n", ptr);
-    for (int si = 0; si < nt->FileHeader.NumberOfSections; si++)
+    for (int si = 0; si < nt->FileHeader.NumberOfSections && !ios_noexec_resource; si++)
     {
         if (!(sec[si].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
         SIZE_T sec_size = sec[si].Misc.VirtualSize
