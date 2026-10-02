@@ -3005,6 +3005,30 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     apply; test triggers in a game that uses them (GoT). The DualSense's
     audio-based (voice-coil) haptics are not reachable from an iOS app;
     rumble is mapped to the pad's haptic motors.
+  - **ChatGPT's review of a GTA run (report gta-initializing-build334.md,
+    log 16:15:01, build 334), checked here.** Same pool numbers as above
+    (624 MB, head 271.9 + tail 160.0 + libcef 239.75 MB > 624). **New and
+    confirmed in the 16:19 log: a second wall.** Each SocialClubHelper
+    (Chromium) asks for a 64 GB MEM_RESERVE block (PartitionAlloc's pool,
+    from chrome_elf.dll): `[jumbo] kernel-pick reserve failed (0xc0000017)
+    for size=0xfffff0000 — top window is full` (16:19 log 49160, 49228
+    `granted=98304 MB ok=3 fail=1`, 49230 `[alloc-fail] ml814 ...
+    STAGE=anon-mmap err=12`, again 49379 / 49443); the report then sees an
+    int3 at chrome_elf.dll+0x13add4 and the helper killed (our
+    `[brp-contain] BackupRefPtr` label is misleading there). The jumbo top
+    window (apparently 0x7400000000..0x8000000000, 48 GB) cannot hold
+    64 GB, while the guest window's biggest gap at start is ~446 GB
+    (`[va-scan]` line 439). So Social Club needs both a pool copy of libcef
+    and a 64 GB reservation per CEF process. **Also confirmed in the source:**
+    map_image_into_view (virtual_ios.c ~17700-17727) only logs a failed
+    set_vprot on an EXEC section, returns STATUS_SUCCESS and ignores
+    mprotect_exec's result in the eager copy loop, so a DLL without a pool
+    copy "loads" and dies later with an EXEC AV at its entry point
+    (secur32 / imm32 here) instead of failing cleanly. Pool ranges freed by
+    dead helpers are not reused (103 `POISONED range` lines at 16:19).
+    secur32's "unimplemented function" text is a load failure, not a
+    missing API (same conclusion as above). hnetcfg still missing (known).
+    All forwarded to agent a951d1d5.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
