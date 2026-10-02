@@ -2122,6 +2122,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (worktree) on an opt-in KMT adapter with the DXGI LUID and
     QueryAdapterInfo answers (WDDM 3.1, UMD version, adapter type, caps),
     plus a D3DKMT trace and a matching DXGI UMD version.
+  - **GoT main menu is broken too (owner, ScreenRecording_10-02-2026_09-15-50,
+    3.5 s, 1920x1080, ~24 FPS).** Frame-by-frame (126 frames): the scene
+    (katana in pampas grass, storm sky) is static, yet consecutive frames
+    differ: e.g. frame 99 vs 100 -- in one the grass in front of the lower
+    blade is missing and the blade reaches the bottom edge, in the next the
+    grass covers it; the grass is horizontally smeared in some frames and a
+    pale wind-streak band appears over the right side. Same class as the
+    gameplay shapes (GPU-driven foliage instances / motion vectors wrong for
+    single frames). Useful: the menu is a static, reproducible test scene --
+    the K1/K2 runs can be done there (no need to reach the bridge).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
