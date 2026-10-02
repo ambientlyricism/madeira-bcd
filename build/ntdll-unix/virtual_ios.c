@@ -12564,15 +12564,30 @@ static int ios_sc2_hold( int k )
                                     MEMORY_OBJECT_NULL, 0, 0, PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY );
     if (kr != KERN_SUCCESS && k == IOS_SC2_L)
     {
-        mach_vm_address_t r = a;
-        mach_vm_size_t rs = 0;
-        vm_region_basic_info_data_64_t inf;
-        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t obj = MACH_PORT_NULL;
-        if (mach_vm_region( mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&inf,
-                            &cnt, &obj ) == KERN_SUCCESS
-            && r == a && rs >= ios_sc2_slots[k].size && inf.protection == VM_PROT_NONE)
-            kr = KERN_SUCCESS;
+        /* The app's hold may be one region or several (iOS can split an entry);
+         * take it over if [base, base + size) is covered without gaps by
+         * PROT_NONE regions only. */
+        mach_vm_address_t cur = a, end = a + ios_sc2_slots[k].size;
+        int ok = 1;
+        while (cur < end)
+        {
+            mach_vm_address_t r = cur;
+            mach_vm_size_t rs = 0;
+            vm_region_basic_info_data_64_t inf = { 0 };
+            mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t obj = MACH_PORT_NULL;
+            if (mach_vm_region( mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&inf,
+                                &cnt, &obj ) != KERN_SUCCESS || r != cur || inf.protection != VM_PROT_NONE)
+            {
+                dprintf( 2, "[sc-cef] layout 2: hold takeover stops at 0x%llx: region 0x%llx+0x%llx prot=%d "
+                            "(map kr=%d)\n", (unsigned long long)cur, (unsigned long long)r,
+                         (unsigned long long)rs, (int)inf.protection, (int)kr );
+                ok = 0;
+                break;
+            }
+            cur = r + rs;
+        }
+        if (ok) kr = KERN_SUCCESS;
     }
     if (kr != KERN_SUCCESS) return 0;
     ios_sc2_held |= 1u << k;
