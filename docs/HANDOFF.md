@@ -2503,6 +2503,31 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
       timing / GPU-overlap hazard (or a pass that is not running yet while its
       pipeline compiles). The GoT agent (a4ed2adc) was resumed with this.
     - DualSense not tested yet.
+  - **GoT grass flicker, round 4 (agent, 2026-10-02; docs/got-corruption.md
+    section 11).** `sampler-reduction = 3` (real Metal MIN reduction, active in
+    build 327) changed nothing. In got1047/got1151 the two swinging dispatches
+    (`cs_main/3edb3d28...`, `cef43c95...`) follow a fixed **116-frame cycle**
+    (frames 899, 1015, 1131, ... `26 -> 3 -> 29`), even at 6.7 fps where the
+    owner sees no corruption. That is the game's time-sliced update, not the bug.
+    No draw-pipeline dips after the menu's first frame (887). The owner's
+    slow-and-clean phase is the game creating ~5000 menu PSOs (graphics 6000 ->
+    10000, then compute 241 -> 5067; ECL 138 ms/frame). Three explanations
+    remain: (a) within-frame CPU/GPU overlap (fence-strict 2 only drained at
+    Signal/Present), (c) the game resets/skips its temporal path at long frame
+    times and the bug is in our TAA/stipple path, (b) a pass that starts only
+    after the PSO burst. **Added, OFF by default:** `gpu-sync = 1` (every ECL
+    commits and waits for the GPU), `present-min-ms = N` (Present sleeps to N ms
+    per frame), `pso-first-use = 1` (`[pso-first]` per pipeline at first bind,
+    with its creation present). Host tests PASS (ASan clean), arm64ec links,
+    catalog regenerated (IPA). **Device plan** (main menu, recording from before
+    the menu for 60 s+, `dxil-tess = 0` in each): R1 `present-min-ms = 200` +
+    `pso-first-use = 1`; R2 `gpu-sync = 1` + `pso-first-use = 1`. R2 clean =
+    overlap (a) (unlikely: K1's queue-trace shows a Signal after almost every
+    ECL, so K2 already drained nearly everything); R1 clean but R2 not =
+    game-time path (c); both flickering = (b), read the `[pso-first]` lines at
+    the recovery present.
+    (Merged as the cherry-pick of 4ec5954; arm64ec syntax check clean apart from
+    the 4 known errors; catalog current.)
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
