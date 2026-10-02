@@ -2271,6 +2271,23 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     pass too) -- if GoT's GPU check fails on the next build, this is why.
     Open: GTA device test with the same lines (+ `d3d12-core-dll = 1` as a
     second step).
+  - **GTA V Enhanced public-report research (2026-10-02, no code change).**
+    Lesson (owner's complaint, justified): for a game that refuses to start,
+    FIRST diff its published requirements and the known Proton / CrossOver /
+    Winlator reports against what we report -- the 572.60 driver minimum was
+    findable in one search, and the 560.94 vs 999.99 mismatch had been on the
+    candidate list since build 313. Findings: (1) CrossOver/D3DMetal on Apple
+    Silicon ran GTA V Enhanced until the 2025-03-14 patch, then
+    ERR_GFX_D3D_NOD3D12 "ensure your Windows installation supports DirectX 12
+    Agility SDK" on M1/M3/M4 -- the same box as ours, after the game started
+    requiring the Agility SDK. (2) vkd3d-proton 2.14 raised D3D12Core's
+    D3D12SDKVersion to 614 (issue #2240); a Bottles user on vkd3d-proton
+    2.11.1 got the same "missing DirectX 12 adapter" (Bottles #3900), working
+    runs use 2.14+. Together these point at `d3d12-core-dll` (618 >= 614) as
+    the main candidate, with the driver version second. (3) GE-Proton9-26's
+    GTA fix was user32 GetDpiAwarenessContextForProcess -- our wine already
+    has it. (4) Minimum OS Windows 10 1909; our PEB says build 19045, fine.
+    Owner told to test both changes together on build 321.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
