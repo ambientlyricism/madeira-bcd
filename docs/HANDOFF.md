@@ -2656,6 +2656,32 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     and ContextAmd64 is empty (0024->0xC0, 51208-51253); reads of threads
     blocked in Mach-O syscalls return Mach-O rip/rsp (0050, 51343 on), which
     the untested opt-in `env.MADEIRA_CTX_FRAME = 1` addresses.
+  - **GTA dxgi-src fault at dxgi.dll+0x2c058 explained and fixed (agent
+    aa87d2aa, merged as the cherry-pick of bc3e04c; docs/dxgi-config-fault.md).**
+    In every MADEIRA_DXGI_SRC=1 session the GTA5_Enhanced child loads
+    dxgi.dll, unloads it (DLL_PROCESS_DETACH deletes `__mingwthr_cs` at
+    pool+0xfdd10, gta1321 line 5176; `[iOS-xrem]` 5180) and loads it again at
+    the SAME base 0x71f7ff0000 (6132, no `[jit-pool] image` line).
+    mprotect_exec's already-copied check (ml352: MZ + SizeOfImage only)
+    reused the unloaded module's pool copy and with it its .data/.bss:
+    `dxmt::Config::getInstance()`'s guard still said "constructed" while the
+    destructor had NULLed the map's bucket array, so
+    `unordered_map::find("dxgi.customDeviceId")` read NULL (from
+    EnumAdapterByGpuPreference; GTA's SEH swallows it). Not DXMT, not
+    [data-align], not ICF. **Fix (default on, ntdll layer, every DLL):**
+    delete_view marks the pool copies of an unmapped SEC_IMAGE view; the same
+    image (identical PE headers) reloaded at the same base by the same process
+    gets its copy rebuilt in place (old pool offset inside its own ledger
+    record, fresh bytes, relocations and x18 redone, same jit base, no pool
+    growth); any other reuse gets a new copy. `env.MADEIRA_IMAGE_RELOAD` = 1
+    default / 2 always a new copy / 0 old behaviour. Modules never reloaded at
+    the same base are unchanged (GoW/GoT). check-image-reload (new) and the
+    retire / stale-heal / child-ntdll / execreq / iat-sync checks PASS; the
+    catalog conflict with the IAT row was resolved by regenerating (current).
+    Device test: GTA as before; expect `[image-reload] ... rebuilding that
+    copy in place`, a second `[dxgi-src] first factory request`, no fault at
+    dxgi.dll+0x2c058. Open: whether ERR_SYS_SYSREQ_GPU goes away with it.
+    Build 332 carries this and the IAT sync fix.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
