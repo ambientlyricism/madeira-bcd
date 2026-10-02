@@ -3050,6 +3050,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     E-cores (P=0) with thermal "fair" at launch -- likely the app being
     backgrounded at the end or heat, not a Madeira fault. Nothing to fix
     for the pad output.
+  - **What the owner feels is rumble, not the DualSense's "haptic
+    feedback" (answered 2026-10-02).** The game's two motor strengths
+    (compatible vibration in output report 0x2) drive one continuous Core
+    Haptics event per handle on the pad's actuators. Sony's PC ports send
+    real haptics as an audio waveform to the controller's USB audio device
+    (wired only; the controller must appear as a sound device -- PlayStation
+    GoT PC page, Steam guide 3262345100). Our virtual DualSense has no audio
+    function, so the game falls back to rumble. Possible project (owner's
+    call): expose a 4-channel "Wireless Controller" audio endpoint tied to
+    the virtual HID device in Wine and turn channels 3/4 into Core Haptics
+    events on the pad in real time; untried on iOS, latency and fidelity
+    unknown.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
