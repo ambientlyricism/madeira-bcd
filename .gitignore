@@ -155,6 +155,8 @@ madeira-d3d12/tests/offline/sm51/
 build/madeira-d3d12/msc-include/
 build/faultrep/out/
 app/Madeira/arm64ec-windows/faultrep.dll
+build/d3d12core/out/
+app/Madeira/arm64ec-windows/d3d12core.dll
 build/stub-dlls/
 app/Madeira/arm64ec-windows/d3d10.dll
 app/Madeira/arm64ec-windows/avifil32.dll

@@ -2216,6 +2216,46 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     check-kmt-adapter extended (answered, short buffer refused) PASS;
     d3dkmt_ios.c syntax-clean with the iOS defines. Open: QUERYREGISTRY for
     Streamline/NGX.
+  - **GoT grass flicker, round 3 (agent a4ed2adc, merged as 0f85f91; full
+    text docs/got-corruption.md section 10).** Build 316 K1/K2: no change;
+    ordering and atomics ruled out. Main-menu grass flickers frame to frame =
+    GPU culling deciding differently (GoT draws its scene with ExecuteIndirect
+    and GPU-written instance counts). Real mapping bug found: `mad_sampler_info`
+    treated MAXIMUM reduction filters (0x180) as COMPARISON samplers and
+    MINIMUM as plain filtering (Metal has no min/max reduction). **Added (all
+    opt-in):** `ind-count = N` / `ind-count-from` (per-frame per-pipeline
+    ExecuteIndirect totals, `DIP`/`SPIKE` lines), `capture-cs = name/hash`,
+    `sampler-reduction = 1|2`, `sampler-census = 1`. Default rendering
+    unchanged; MIN/MAX samplers now logged once without a key. **Device plan**
+    (main menu, 60 s, static camera, recording, `dxil-tess = 0` in each): M1
+    `ind-count = 6000` + `sampler-census = 1`; M2 (only if M1 logs a MIN/MAX
+    sampler) `sampler-reduction = 1` + `ind-count = 6000`. Open: flat counts
+    while the grass flickers -> TAA / stipple resolve next.
+  - **Owner's Proton logs of a WORKING GTA V Enhanced run (2026-10-02;
+    GE-Proton10-4, vkd3d-proton 2.14.1, DXVK 2.6.1, RTX 3060, driver 575.57;
+    PROTONLOG with +loaddll, 10.5 M lines).** GTA's process (pid 0744) loads
+    `C:\windows\system32\D3D12.DLL` and **immediately `d3d12core.dll`**
+    (both native), then winevulkan, sl.interposer, d3d11, nvapi64, sl.common,
+    sl.dlss, _nvngx, nvngx_dlss. vkd3d-proton split itself into d3d12.dll +
+    d3d12core.dll in 2.9 because "some games started assuming that the DLLs
+    were laid out similar to AgilitySDK", and games check D3D12Core's
+    `D3D12SDKVersion` (vkd3d-proton issue #2240; Agility 614, vkd3d now
+    618). Our system32 has no d3d12core.dll at all. GTA never calls
+    D3D12GetInterface in our logs (no "refused" line). vkd3d log: SM 6.8,
+    DXR 1.1, "Assuming device does not support tile based rendering". The
+    issue the owner linked (#2498) is a cutscene depth-of-field bug on the
+    same setup, not about the startup box. **Added (this commit, opt-in):**
+    `build/d3d12core/` + `tools/build-d3d12core-dll.sh` (workflow step "Build
+    d3d12core.dll"): an arm64ec d3d12core.dll exporting a writable
+    `D3D12SDKVersion = 618` and forwarding every D3D12 entry point to
+    d3d12.dll (forwarders checked with lld locally). It sits in system32 for
+    every game but nothing loads it unless madeira.cfg `d3d12-core-dll` is set:
+    madeira-d3d12's DllMain then LoadLibrary's it (as vkd3d's import does);
+    a value above 1 overrides the version (`= 614`). Log line
+    `[madeira-d3d12] d3d12-core-dll: d3d12core.dll loaded, D3D12SDKVersion N`.
+    Open: device test; other GTA leads left: QUERYREGISTRY (48) for
+    Streamline/NGX, driver version mismatch (registry 560.94 vs NVAPI vs the
+    working run's 575.57), NVAPI "RTX 4090" vs DXGI "RTX 3060".
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
