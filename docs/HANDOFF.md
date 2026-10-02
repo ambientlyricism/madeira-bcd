@@ -2079,6 +2079,35 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     build without an IPA artifact: the run's only artifact is `build-logs`;
     OTA mailed. main fast-forwarded to 34cbb77; its push run 315 (workflow
     changed) cancelled.
+  - **GoT shapes, round 2 (agent, 2026-10-02; docs/got-corruption.md
+    section 9).** Build 313: G1 `upload-swap = 0`, G2 `ind-probe = 0`, H
+    `upload-guard = 2` (4096 bytes) did not remove the shapes; H: 18424 ranges,
+    0 CHANGED, 0 GPU-different (the 100 approximate hits are an immediate-mode
+    VB ring, `vs_VertexStream` r#15, windows 384 bytes apart). Rules out stale
+    swap-tier pages, root-CBV/SRV/IB rewrites and the probe splits. But H saw
+    only ~10 ranges a frame: GoT's 3D passes bind per-draw data through
+    descriptor tables and their instance streams are DEFAULT buffers (GPU
+    culling or copies), none of which H watched. Re-ranked: (1) GPU-produced
+    instance data wrong for a frame -- append-counter / RWBuffer<uint> atomics
+    on Metal texture buffers without ShaderAtomic usage, cross-queue (async
+    compute / copy) Wait taking the early return before the signal's commit,
+    barriers inside an open render pass (`barrier-render = 0`); (2) descriptor
+    tables rewritten in flight (desc-guard was never on); (3) upload copy
+    sources rewritten before the copy; (4) a converter bug in a culling kernel.
+    **Added, OFF by default:** `upload-guard` now also hashes every bound
+    descriptor table (`DESCRIPTORS CHANGED`), its CBV / buffer-SRV ranges in
+    UPLOAD memory (`table CBV|SRV`) and CopyBufferRegion / CopyTextureRegion
+    sources (`copy source`); `queue-trace = N` (thread, queue type, fence
+    state per ECL/Signal/Wait); `typed-uav-atomic = 1` (ShaderAtomic usage on
+    R32 UAV texture-buffer views, fallback if refused). Host tests PASS (ASan
+    clean), arm64ec links, catalog regenerated (IPA). **Device plan** (each
+    with `dxil-tess = 0` and a screen recording): K1 `upload-guard = 1`,
+    `upload-guard-bytes = 1024`, `desc-guard = 1`, `queue-trace = 1`,
+    `fence-strict = 1`; K2 `typed-uav-atomic = 1`, `barrier-render = 1`,
+    `fence-strict = 2`; K3 (only if K2 clears them) `typed-uav-atomic = 1`
+    alone.
+    Merged as 0face04 (agent commit fa97e33); got-diagnostics, tiled,
+    catalog PASS.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
