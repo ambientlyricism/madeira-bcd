@@ -3029,6 +3029,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     secur32's "unimplemented function" text is a load failure, not a
     missing API (same conclusion as above). hnetcfg still missing (known).
     All forwarded to agent a951d1d5.
+  - **Build 336 green** (run 37015581741, head 7f305df): DualSense rumble
+    with plain players + back-off. OTA 0.1.336 mailed. main fast-forwarded
+    to 7f305df and verified with `git ls-remote` (workflow unchanged).
+    Device test: GoW with the DualSense -- the log should show `haptics
+    ready on <locality>` and the pad should rumble; if not, the new
+    `haptics ... failed (N in a row): ... [domain code, underlying ...]`
+    lines name the error.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
