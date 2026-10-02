@@ -2957,6 +2957,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     should start as on 334 (look for one `[hw-registry]` line and the new
     `[device]` lines); GTA still stops at the loading screen until the
     JIT-pool fix lands. Fallback: 334.
+  - **Owner asked whether AVX off (avx=0) causes the GTA loading-screen
+    stop: no.** libcef fails while it is being copied into the JIT pool,
+    before any of its code runs; FEX logs `AVX off => Skia takes SSE paths`
+    for every helper. The four c000001d events in the 16:19 log (49463,
+    54106) are FEX's BRK for a guest int3: Chromium's own BackupRefPtr
+    refcount assertion (`[brp-contain] ml616`) in the SocialClubHelper
+    processes, a consequence of the failed libcef / delay loads, not an AVX
+    instruction. The game itself passes its CPU checks and runs the loading
+    screen at ~60 FPS with AVX off. AVX stays a candidate only if a later
+    crash points at AVX code.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
