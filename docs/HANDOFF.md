@@ -2726,6 +2726,16 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     chrome_elf, libcef, SocialClubD3D12Renderer) and BattlEye; this copy
     loads socialclub.dll from the game folder. Conclusion: no Madeira-side
     cause found for the "incomplete installation" screen.
+  - **GTA log PlayGTAV.exe 2026-10-02 15:01:11 (build 332; the owner added
+    `WINEDEBUG=err+all,err-virtual,trace+loadorder,trace+loaddll,trace+module`).**
+    Same outcome, no new Madeira-side fault: only the handled SMC write
+    faults in .text, one 0x6ba (no plugplay pipe) and the usual
+    OutputDebugString events; the missing DLL list is the one build 333 fills
+    (msasn1, wldp, hnetcfg, msctf; drvstore/devobj not in Wine). File trace:
+    all 135 dlcpacks\*\dlc.rpf open; the 86 `dlc_update.rpf` misses are
+    optional per-pack overrides (also in 14:31:38). The loader traces concern
+    which game-folder DLLs load (the Social Club emulator's side) -- not
+    analysed, per scope. Note: trace+module is heavy; drop it for normal runs.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
