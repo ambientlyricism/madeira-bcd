@@ -2792,6 +2792,12 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     does not satisfy that check; making it do so is the emulator's side and
     out of scope. Madeira resolves that path correctly (Program Files exists,
     #1668).
+  - **Build 333 green** (run 37004335912, head af5cfc3): "built 97 extra
+    Wine DLLs for arm64ec (failed: wbemdisp hnetcfg)" -- msasn1, wldp, msctf,
+    xmllite now ship; hnetcfg and wbemdisp fail to build (open: both use
+    widl-generated typelib/idl headers, probably the cause). main
+    fast-forwarded to af5cfc3 and verified with `git ls-remote` (no push
+    run). Waiting on: hardware-registry agent (ad9ffa50); device tests.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
