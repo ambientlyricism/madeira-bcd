@@ -2561,6 +2561,22 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (gpu-sync, present-min-ms, pso-first-use) + GTA owner-aware stale heal.
     main fast-forwarded to 1837709 (no push run). Build 328 was cancelled.
     Waiting on device: GTA (same file as 327, EXECREQ_LEAVE on); GoT R1/R2.
+  - **GTA V on build 329 (owner, log PlayGTAV.exe 2026-10-02 12:38:50 +
+    screenshot): NO crash any more -- the game reaches its own in-game ERROR
+    screen "Failed to load due to an incomplete installation. Please exit
+    the game and re-install the latest version..." (overlay 60 fps, frame
+    1459).** The owner-aware heal works (`[stale-heal] ... rewrote 0 slot(s)
+    (each copy translated for the process that maps it)`; no NoExec). No
+    failed file opens beyond the usual exists/HID ones. Research: on
+    Linux/Proton this exact message is the BattlEye path (Rockstar added
+    BattlEye; it does not run under Linux); the community fix is the game's
+    own Steam Deck mode, launch option `SteamDeck=1` (story mode only,
+    BattlEye skipped), and a Proton Hotfix for offline mode. Our game file
+    exports any `env.NAME`, so the owner was told to add
+    `env.SteamDeck = 1` -- no build needed. The SYSREQ box text in full:
+    "Your video card does not meet the system requirements... supports
+    DirectX 12 (feature level 12_0), ensure your Windows installation
+    supports DirectX 12 Agi[lity SDK]..." (warning only).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
