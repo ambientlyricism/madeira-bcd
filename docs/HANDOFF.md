@@ -2594,6 +2594,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     guest-log on a copy, idempotent. Note: the owner's copy is not a store
     copy -- only Madeira-side file I/O bugs are in scope here; if the trace
     shows a missing game data file, that is an installation matter, not ours.
+  - **Owner forwarded a forum tip for the "incomplete installation" screen
+    (2026-10-02): `WINEDLLOVERRIDES="socialclub=n,b;version=n,b"`.** Declined:
+    a native version.dll / socialclub.dll in the game folder of this
+    (non-store) copy is the crack's loader, and helping configure it is
+    outside the hard rules (Madeira-side bugs only). No change; the
+    `[file-trace]` diagnostic (build 330) stays the route for real file I/O
+    bugs on our side.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
