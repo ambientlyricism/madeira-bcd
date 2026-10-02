@@ -878,7 +878,7 @@
 				CODE_SIGN_ENTITLEMENTS = Madeira/Madeira.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = V8NU3FX3TL;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
@@ -910,7 +910,7 @@
 					"$(SRCROOT)/../FEX/build-ios/External/SoftFloat-3e",
 					"$(SRCROOT)/Madeira",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				EXPORTED_SYMBOLS_FILE = "Madeira/madeira-exports.txt";
 				STRIP_INSTALLED_PRODUCT = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willfaust.mythicemu;
@@ -931,7 +931,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Madeira/Madeira.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = V8NU3FX3TL;
 				GENERATE_INFOPLIST_FILE = NO;
 				HEADER_SEARCH_PATHS = (
@@ -963,7 +963,7 @@
 					"$(SRCROOT)/../FEX/build-ios/External/SoftFloat-3e",
 					"$(SRCROOT)/Madeira",
 				);
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.1.1;
 				EXPORTED_SYMBOLS_FILE = "Madeira/madeira-exports.txt";
 				STRIP_INSTALLED_PRODUCT = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.willfaust.mythicemu;

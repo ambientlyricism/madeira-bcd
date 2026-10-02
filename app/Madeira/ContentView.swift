@@ -1318,6 +1318,12 @@ struct ContentView: View {
                 }
                 Button("Later", role: .cancel) { library.restartNotice = nil }
             } message: { Text(library.restartNotice ?? "") }
+            // CS_DEBUGGED without a debugger (JIT enabled outside Madeira): offer Madeira's own request.
+            .alert("Enable JIT", isPresented: Binding(get: { library.jitNotice != nil },
+                                                      set: { if !$0 { library.jitNotice = nil } })) {
+                Button("Enable JIT") { library.jitNotice = nil; enableJITViaStikDebug() }
+                Button("Later", role: .cancel) { library.jitNotice = nil }
+            } message: { Text(library.jitNotice ?? "") }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 library.refreshFlag()
                 if library.enabled && library.current == nil { MetalHostView.shared.isHidden = true }
@@ -1334,6 +1340,7 @@ struct ContentView: View {
                 entitlements = EntitlementStatus.check()
                 logEntitlementStatus()
                 logStore.log("[build] \(BuildStamp.text)")
+                DeviceDiagnostics.logStartup()
                 FrontendChoice.logStartup()
                 DeviceLoadDiagnostics.start()
                 // Madeira Dock: an unconsumed sign-in transfer from an earlier run goes.
@@ -1697,8 +1704,10 @@ struct ContentView: View {
         logStore.log("  increased-memory-limit: \(ents.increasedMemory)", level: ents.increasedMemory ? .success : .debug)
         logStore.log("  extended-virtual-addressing: \(ents.extendedVA)", level: ents.extendedVA ? .success : .debug)
         logStore.log("  increased-debugging-memory-limit: \(ents.increasedDebugMemory)", level: ents.increasedDebugMemory ? .success : .debug)
-        if !ents.extendedVA {
-            logStore.log("  Tip: Use GetMoreRam to inject extended-virtual-addressing", level: .info)
+        // The memory limit is the entitlement a session needs; the address map may
+        // be the standard 63 GB one.
+        if !ents.increasedMemory {
+            logStore.log("  Tip: Use GetMoreRam to add increased-memory-limit", level: .info)
         }
     }
 
@@ -2504,6 +2513,19 @@ struct ContentView: View {
     }
 
     private func enableJITViaStikDebug() {
+        // Explains why JIT cannot be enabled on a copy signed without get-task-allow; 0 opens StikDebug regardless.
+        // A debugger can attach only to a process whose signature carries
+        // get-task-allow (a development signature). A copy signed with a
+        // distribution or enterprise certificate lacks it, StikDebug can never
+        // attach, and CS_DEBUGGED never appears however often this is tapped.
+        if !SigningStatus.current.debuggable, MadeiraConfig.flag("MADEIRA_JIT_SIGNING_CHECK") {
+            jitStatus = .unavailable
+            logStore.log(String(format: "[jit-signing] get-task-allow is missing (cs-flags=0x%x): no debugger can attach to this copy, "
+                                + "so JIT cannot be enabled. Reinstall Madeira with a development certificate.",
+                                SigningStatus.current.flags), level: .error)
+            if library.enabled { library.error = SigningStatus.notDebuggableMessage }
+            return
+        }
         jitStatus = .testing
         logStore.log("Requesting JIT via StikDebug URL scheme...")
 
@@ -2516,6 +2538,23 @@ struct ContentView: View {
                 logStore.log("Failed to enable JIT via StikDebug", level: .error)
             }
         }
+    }
+
+    /// Whether a launch may ask for the JIT pool. With CS_DEBUGGED set but no debugger
+    /// attached (JIT enabled from StikDebug's own list, which attaches and leaves) the
+    /// library offers Madeira's Enable JIT instead of starting a launch that cannot
+    /// get its pool.
+    private func jitReadyForLaunch(inLibrary: Bool) -> Bool {
+        if StikJITHelper.ready { return true }
+        if StikJITHelper.flaggedWithoutDebugger {
+            logStore.log("[jit-debugger] launch held: CS_DEBUGGED is set but no debugger is attached; "
+                         + "JIT has to be enabled again from Madeira", level: .error)
+            if inLibrary { library.jitNotice = StikJITHelper.noDebuggerMessage }
+        } else {
+            logStore.log("JIT not enabled. Press 'Enable JIT' first.", level: .error)
+            if inLibrary { library.error = "Enable JIT before playing." }
+        }
+        return false
     }
 
     /// Play in the library (Library.swift): checks that a session can start,
@@ -2572,9 +2611,7 @@ struct ContentView: View {
         }
         // The same precondition runWineFullSequence checks: the JIT pool is
         // taken at launch, through the debugger.
-        guard jit_check_debugged() else {
-            library.error = "Enable JIT before playing."; return
-        }
+        guard jitReadyForLaunch(inLibrary: true) else { return }
         do { if entry.desktop != true { _ = try LibraryModel.executable(entry.launchRelativePath) }; try entry.validate() }
         catch {
             library.error = error.localizedDescription
@@ -2641,6 +2678,7 @@ struct ContentView: View {
         }
 
         logStore.log("Running full Wine sequence...")
+        DeviceDiagnostics.logLaunch()
 
         // Start a main thread heartbeat to diagnose hang
         var heartbeatCount = 0
@@ -3178,14 +3216,15 @@ struct ContentView: View {
                 // executing with no JIT pool, and it cost a diagnostic cycle plus a
                 // wrong conclusion I wrote into the source. A run without the pool can
                 // only manufacture misleading secondary crashes, so refuse to start one.
-                // ml962: the reason is printed by allocatePool itself, on the
-                // [jit-pool] lines directly above — it knows whether the debugger
-                // was gone, whether every placement was rejected, or whether a
-                // cached pool had been torn down.
-                logStore.log("JIT pool unavailable — not starting Wine (see the [jit-pool] lines above).", level: .error)
+                logStore.log("JIT pool allocation FAILED — not starting Wine.", level: .error)
+                // The reason allocatePool recorded (no debugger, placement, alias);
+                // the lines above this one in the log carry the detail.
+                let reason = StikJITHelper.poolFailure
+                logStore.log("  " + (reason ?? "No reason was recorded; see the pool lines above."), level: .info)
                 logStore.uiPaused = false
                 // A library session that never started returns to the library.
-                DispatchQueue.main.async { LibraryModel.shared.launchFailed() }
+                let offerJIT = reason == StikJITHelper.noDebuggerMessage
+                DispatchQueue.main.async { LibraryModel.shared.launchFailed(reason, offerJIT: offerJIT) }
                 return
             }
 
@@ -3334,11 +3373,7 @@ struct ContentView: View {
     /// session then takes that entry's display, performance and on-screen settings.
     private func startDock(_ game: DockGame, compactPool: Bool, profile: LibraryEntry? = nil) {
         let inLibrary = library.enabled
-        guard jit_check_debugged() else {
-            logStore.log("JIT not enabled. Press 'Enable JIT' first.", level: .error)
-            if inLibrary { library.error = "Enable JIT before playing." }
-            return
-        }
+        guard jitReadyForLaunch(inLibrary: inLibrary) else { return }
         guard wine_process_is_running() == 0, wineserver_is_running() == 0, !inLibrary || library.current == nil else {
             logStore.log("[madeira-dock] a session already ran in this app run; restart Madeira first", level: .error)
             if inLibrary { library.error = "A session is already running." }
@@ -3369,7 +3404,7 @@ struct ContentView: View {
             await SteamOwnedLibrary.shared.prepareDock()
             do {
                 // The launch state may have changed while the connection closed.
-                guard jit_check_debugged(), wine_process_is_running() == 0, wineserver_is_running() == 0,
+                guard StikJITHelper.ready, wine_process_is_running() == 0, wineserver_is_running() == 0,
                       !inLibrary || library.current == nil else {
                     throw DockError.message("The launch state changed. Enable JIT and try again.")
                 }
