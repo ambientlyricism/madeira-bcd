@@ -59,6 +59,8 @@ conhost = create[create.index('if (ec_conhost_refuse('):][:900]
 assert 'return STATUS_ACCESS_DENIED;' in conhost
 assert create.index('if (ec_conhost_refuse(') < create.index('create_startup_info( attr.ObjectName')
 print('PASS: NtCreateUserProcess refuses conhost.exe in an ARM64EC session before the startup info')
+assert 'child_extra_args( getenv( "MADEIRA_CHILD_ARGS" ), params->ImagePathName.Buffer,' in create
+assert create.index('child_extra_args( getenv') < create.index('if (ec_conhost_refuse(') < create.index('create_startup_info( attr.ObjectName')
 
 mprot = function(native, 'static inline int mprotect_exec( void *base, size_t size, int unix_prot )')
 refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes"):]
@@ -100,6 +102,7 @@ proc_helpers = enums + ''.join(function(proc, sig) for sig in (
     'static int sc_switch_end(',
     'static int sc_image_is(',
     'static int ec_conhost_refuse(',
+    'static const char *child_extra_args(',
     'static int sc_helper_kind(',
     'static int sc_browser_cmdline(',
 ))
@@ -270,6 +273,18 @@ static void gate_and_cmdline( void )
             ec_conhost_refuse( 1, NULL, NULL, 0 )) FAIL("look-alike conhost refused\n");
     }
     printf("PASS: conhost.exe is refused only in an ARM64EC session, unless MADEIRA_EC_CONHOST=1\n");
+    {
+        int l1, l2;
+        WCHAR *g = w( "C:\\Grand Theft Auto V Enhanced\\GTA5_Enhanced.exe", &l1 ), *pg = w( "C:\\x\\PlayGTAV.exe", &l2 );
+        const char *e = child_extra_args( "GTA5_Enhanced.exe -scDebugLogging -x", g, l1 );
+        if (!e || strcmp( e, "-scDebugLogging -x" )) FAIL("child args\n");
+        e = child_extra_args( "  gta5_enhanced.EXE   -a", g, l1 );
+        if (!e || strcmp( e, "-a" )) FAIL("child args case/spaces\n");
+        if (child_extra_args( "GTA5_Enhanced.exe -a", pg, l2 ) || child_extra_args( "GTA5_Enhanced.exe", g, l1 ) ||
+            child_extra_args( NULL, g, l1 ) || child_extra_args( "", g, l1 ) ||
+            child_extra_args( "GTA5_Enhanced.ex -a", g, l1 )) FAIL("child args mismatch\n");
+    }
+    printf("PASS: env.MADEIRA_CHILD_ARGS appends only to the named image, only when it has arguments\n");
 
     expect( rewrite( cl, 1, NULL, &how ),
             "\"C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe\"  --allow-file-access-from-files "
