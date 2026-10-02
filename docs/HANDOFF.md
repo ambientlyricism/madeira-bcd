@@ -2391,6 +2391,44 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     hence the key gate on both sides). check-got-diagnostics extended
     (mode 3) PASS; patch applies after lum-probe + readback-census. Open:
     device test.
+  - **GTA V ENHANCED GETS PAST ERR_GFX_D3D_NOD3D12 (owner, build 321, log
+    PlayGTAV.exe 2026-10-02 10:51:28; per-game file: vram-mb 4096,
+    d3d12-typed-uav-load 1, d3d12-tiled-resources 1, d3d12-tile-based 0,
+    d3d12-caps-log 2, d3d12-msaa8 1, d3d12-raytracing-tier 11,
+    **d3d12-core-dll 1**, plus the env lines (DXGI_SRC, KMT_ADAPTER, NVIDIA)).**
+    `d3d12core.dll loaded, D3D12SDKVersion 618`, NVAPI `version=58157
+    branch="r580_00"`, and after the two device probes GTA creates a THIRD
+    D3D12 device and keeps it: loading bar to the end, the intro video plays.
+    (Which of the two changes did it -- Agility layout or driver 581.57 -- is
+    not isolated; both stay.) Two new problems:
+    1. **A box `ERR_SYS_SYSREQ_GPU` (OK continues).** Right before it the
+       launcher thread asks WMI: `[dll-missing] C:\windows\system32\wbem\
+       wbemprox.dll status=c0000135`, `couldn't load in-process dll` (CLSID
+       {4590f811-...} WbemLocator) -- the GPU requirement check (most likely
+       Win32_VideoController: AdapterRAM / DriverVersion / name) cannot run.
+       The working Proton log loads wbemprox.dll (builtin) in GTA too. Also a
+       caught c0000005 in dxgi-src at DXGI.DLL+0x2c058 (read of 0, handled by
+       GTA's handler) before it. **Fix (this commit):**
+       tools/build-wine-extra-dlls.sh builds wbemprox / wbemdisp / wmiutils
+       for arm64ec, and WineProcessBridge links them into system32\wbem for
+       the session's set (the syswow64\wbem linker generalised to
+       madeira_link_wbem). Wine's Win32_VideoController reads Class\{display}
+       \0000 (DriverVersion 32.0.15.8157, MemorySize = the dedicated size),
+       which sysparams_ios already writes.
+    2. **After the intro video the game dies:** tid 0034 (GTA5_Enhanced.exe,
+       a pseudo-process child of PlayGTAV, FEX tracker 0x1500a4b78) jumps to
+       0x14509a144 = GTA5_Enhanced.exe+0x509a144, which lies OUTSIDE both
+       executable PE sections the tracker knows (0x140001000-0x14247a400,
+       0x145123000-0x145b81000): `[iOS-xquery] MISS`, `NoExec instruction in
+       entry block: 14509A144`, AV EXEC -> NtTerminateProcess(0xc0000005); the
+       overlay keeps presenting a black screen (screenshot). Not the old
+       pool-alias NoExec (docs/gta5-child-crash.md): this is a PE address in a
+       non-executable section -- runtime-unpacked / protected code (the game
+       also does self-modifying writes into .text: `[smc-atomic]`,
+       `store-noalias 0x140265bd5`). Open: an agent investigates (how that
+       range becomes executable on Windows -- VirtualProtect to PAGE_EXECUTE_*
+       or section flags -- and whether our NtProtectVirtualMemory path tells
+       the child's FEX tracker).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
