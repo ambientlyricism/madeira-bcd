@@ -3036,6 +3036,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     ready on <locality>` and the pad should rumble; if not, the new
     `haptics ... failed (N in a row): ... [domain code, underlying ...]`
     lines name the error.
+  - **DualSense works on build 336 (owner, GoT log GhostOfTsushima.exe
+    2026-10-02 17:21:41: "vibration ve adaptive trigger bu sefer
+    çalıştı").** `slot 0 haptics ready on Left Handle` on the first try (no
+    failure lines at all); rumble low 0.11-0.29 (high stayed 0 in the logged
+    lines, so the right-handle engine was never needed); triggers applied:
+    R2 `sony feedback (0x21)` strength 0.09 and 11x `sony vibration (0x26)`
+    amplitude 0.28-0.47 frequency 0.31-0.46, L2/R2 off; lightbar 000000 then
+    0d0d0d (the game's choice); mic LED has no GameController API (known).
+    Rest of the 77 s session: 0 command buffers in error, no exception
+    exits, no pool exhaustion; footprint levels at ~6.8 GB of the 8.1 GB
+    available (watch on longer runs); from 17:22:40 all threads ran on
+    E-cores (P=0) with thermal "fair" at launch -- likely the app being
+    backgrounded at the end or heat, not a Madeira fault. Nothing to fix
+    for the pad output.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
