@@ -2191,6 +2191,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     D3D12 filter reduction mode), motion vectors, culling-kernel
     conversion; with a per-frame ExecuteIndirect count readback to find the
     frame where the grass count dips.
+  - **Build 317 green** (run 36974220674, head 463f10f): KMT adapter +
+    D3DKMT trace + dxgi-src UMD version (notice: "dxgi-src.dll built ... +
+    the D3DKMT UMD version"). main fast-forwarded to 463f10f; push run 318
+    (workflow comment changed) cancelled.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
