@@ -3062,6 +3062,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the virtual HID device in Wine and turn channels 3/4 into Core Haptics
     events on the pad in real time; untried on iOS, latency and fidelity
     unknown.
+  - **DualSense PAUSED (owner, 2026-10-02: "dualsense şimdilik yeterli
+    buna sonra devam ederiz").** Where it stands, also in
+    docs/dualsense-output.md "Durum 2026-10-02": input, rumble, adaptive
+    triggers, lightbar and player LEDs work on build 336 (GoT 17:21:41);
+    the USB presentation is fine (the game falls back to motor rumble, no
+    Bluetooth identity needed); GoW sends no trigger effects and its rumble
+    on 336 is not yet device-tested; real audio-based haptics = the next
+    DualSense project after GTA (virtual 4-channel controller audio
+    endpoint + Core Haptics converter). Small open items: right-handle
+    engine not yet exercised, 25 s plain-player restart blip, i386 xinput
+    patch, no mic-LED API. Owner is back on GTA (JIT pool + 64 GB
+    reservation, agent a951d1d5).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

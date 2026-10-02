@@ -270,6 +270,34 @@ the start.
 - **Not checked:** compiling the Swift and ObjC against the real iOS SDK, the
   arm64ec xinput build in CI, anything on a device.
 
+## Durum 2026-10-02 -- duraklatıldı (sahibi: "dualsense şimdilik yeterli")
+
+- **Çalışıyor (build 336, sahibi doğruladı, GoT logu 17:21:41):** titreşim
+  (rumble), adaptif tetikler (R2 feedback 0x21, vibration 0x26), ışık çubuğu,
+  oyuncu LED'i; kol girişi zaten çalışıyordu. Sanal kol USB'li göründüğü
+  halde oyun motor titreşimine düşüyor (1000 raporun 992'sinde rumble biti),
+  yani Bluetooth görünümüne gerek kalmadı.
+- **Build 336 düzeltmesi (PadOutput.m):** iOS bir oyun kolunda "advanced"
+  oynatıcıyı "Couldn't communicate with a helper application" ile
+  reddediyor ve bu motorun bağlantısını bozuyordu; build 335'te sonraki basit
+  oynatıcı da aynı motorda düşüyor, üç hatadan sonra titreşim oturum boyunca
+  kapanıyordu (GoW logu 16:38:12). Artık yalnızca basit oynatıcı, her
+  denemede yeni motor, hata olursa 2/4/8/15 sn arayla yeniden deneme, iki
+  erken hatada tek motora geçiş, 8 hatada vazgeçme.
+- **Hissedilen şey basit titreşim**, PS5'teki ses tabanlı "haptic feedback"
+  değil: o, PC'de kolun USB ses kanalından gidiyor (kablo şart); sanal
+  kolumuzun ses kısmı yok.
+- **God of War:** tetiklere efekt göndermiyor (yalnız "off"); 336'daki
+  titreşim GoW'da cihazda henüz denenmedi (çalışması bekleniyor).
+- **Sonra (sahibinin kararı, GTA'dan sonra):** gerçek haptic projesi --
+  sanal DualSense'e 4 kanallı "Wireless Controller" ses aygıtı eklemek ve
+  kanal 3/4'ü anlık olarak Core Haptics'e çevirmek; iOS'ta denenmemiş,
+  gecikme/kalite bilinmiyor.
+- **Küçük açıklar:** sağ tutamak motoru henüz hiç istenmedi (test
+  edilmedi); basit oynatıcı 25 sn'de bir yeniden başlatılıyor (kısa bir
+  kesinti hissedilebilir); 32-bit XInput oyunları için i386 farm'ın
+  xinput yaması; mikrofon LED'i için API yok.
+
 ## Open
 
 - Device test (above). Tune: motor sharpness, linear vs curved intensity,
