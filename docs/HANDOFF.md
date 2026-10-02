@@ -2761,6 +2761,25 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     compare with the prefix's system.reg / user.reg; a missing environment
     key (install path, OS/DirectX info) is a Madeira prefix matter and gets
     fixed.
+  - **GTA registry trace (owner, build 332, log PlayGTAV.exe 2026-10-02
+    15:13:38, `WINEDEBUG=err+all,err-virtual,trace+reg`, 6105 key opens; parser
+    scratchpad/regparse.py). EVIDENCE for the "incomplete installation"
+    screen:** right before it the GTA child (tid 0034) reads ProgramFilesDir
+    (log ~28771), then `[file-trace]` #1668 `C:\Program Files` OK, **#1669
+    `C:\Program Files\Rockstar Games\Social Club\socialclub.dll` ->
+    0xc000003a (not found)**, #1670 opens `\pipe\GTAVLauncher_Pipe`, then the
+    screen. In the working Proton run that exact file exists and loads
+    (PROTONLOG 3990: `C:\Program Files\Rockstar Games\Social Club\socialclub.dll`,
+    then chrome_elf.dll, libcef.dll). So the game requires the Rockstar Social
+    Club runtime installed in Program Files (installed by the Rockstar Games
+    Launcher in a normal install) and it is not in our prefix. Install-path
+    keys were never queried. Other failed opens are stock-Wine misses (IFEO,
+    AppDefaults, AppCompatFlags, Time Zones Dynamic DST, NGXCore, Streamline,
+    DirectSound, Temporary System Parameters...), except one Madeira
+    environment gap: **HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 and
+    \BIOS do not exist** (wineboot's create_hardware_registry_keys never runs
+    here; the prefix has no CentralProcessor key; WMI Win32_Processor/BIOS read
+    them) -- agent ad9ffa50 started to create them per session.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
