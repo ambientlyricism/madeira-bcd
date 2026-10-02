@@ -3077,6 +3077,55 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
   - **GoW rumble works on build 336 (owner, 2026-10-02, no log):** "336 da
     gow denedim ... normal titreşim onda da çalışıyor"; GoW has no adaptive
     trigger effects. DualSense rumble is now confirmed in both GoW and GoT.
+  - **GTA: room for Social Club's Chromium (agent a951d1d5, cherry-picked as
+    d0d1349; not yet on device).** Root cause in numbers: host-executable
+    memory can only live below the dyld shared region (0x180000000); above
+    the 128 MB exe window that band is [0x148000000,0x180000000) = 896 MB,
+    but iOS puts the main thread's stack in it, so the pool shrinks to the
+    run below the stack (GTA 624/608/592 MB, GoW 560 MB); the run above it
+    (258-325 MB) is free in every log. 0x180000000..0x7000000000 is the
+    shared region, kernel ranges and the GPU carveout; a pool at
+    >= 0x7400000000 is impossible (FEX treats such RIPs as host addresses;
+    ml78 hung there). Chromium (128+) reserves glued PartitionAlloc pools
+    of 32 GB on a 32 GB boundary per process (no switch, no Windows-version
+    trick -- the 4 GB legacy pools ended with Chromium 110); the slot walk
+    could only offer 0x7400000000, PA freed it, asked for 64 GB - 64 KB and
+    hit int3 in chrome_elf; all 15 such asks came from helpers. Changes:
+    (1) `pool-split = 1` (opt-in): the run above the stack becomes a second
+    debugger region, one RW alias at the same distance, WINE_IOS_JIT_HOLE
+    tells ntdll the stack part between them (~880 MB total; costs ~+288 MB
+    footprint from the start). (2) `env.MADEIRA_SC_CEF` (default on, only
+    Social Club): SocialClubHelper.exe runs `--single-process` with
+    BackupRefPtr off and V8 `--jitless` (MADEIRA_JITLESS=0 keeps the JIT),
+    plus `env.MADEIRA_SC_CEF_FLAGS`; its `--type=` children are refused; a
+    Social Club client that is not the helper (the game) gets no libcef pool
+    copy (it never got one anyway). (3) A refused pool copy now fails the
+    image load with STATUS_NO_MEMORY (`[jit-pool] ...: no JIT-pool copy ...`)
+    instead of a later exec AV. (4) POISONED freed ranges keep their
+    executable runs (103 ranges / 128 MB were lost at 16:19). (5)
+    `env.MADEIRA_SC_PA_POOLS = 1` (opt-in): FEX's arena boots at
+    [0x7d00000000,0x8000000000) (12 GB instead of 16) and the helper's
+    32 GB-aligned ask gets 0x7800000000 with 20 GB really reserved. GoW /
+    GoT: both opt-ins off; the Social Club parts need socialclub.dll /
+    SocialClubHelper.exe; (3)/(4) only run on EXHAUSTED / POISONED, which
+    their logs never hit; the unsplit paths are byte-for-byte the old ones
+    (checked: hole helpers return the cursor when no hole, st2 stays
+    STATUS_NO_MEMORY for non-helper jumbo asks). Host tests PASS:
+    check-pool-split, check-sc-cef-gate (new), section-abort, image-reload,
+    image-retire, small-va-band, stale-heal-owner, hw-registry, pad-output,
+    execreq-leave, iat-sync-owner, kmt-adapter; catalog current. Swift and
+    iOS C are compiled first by CI. **Owner's GTA game file lines:**
+    `pool-split = 1` and `env.MADEIRA_SC_PA_POOLS = 1` (optional CEF log:
+    `env.MADEIRA_SC_CEF_FLAGS = --enable-logging=file --v=1`; all Social
+    Club parts off: `env.MADEIRA_SC_CEF = 0`). Proof lines: `[pool-split]
+    ... as one 880MB span`, `[sc-cef] SocialClubHelper.exe browser:
+    --single-process added`, `[sc-cef] glued PartitionAlloc pools for
+    SocialClubHelper.exe: 32 GB at 0x7800000000`; success = no `kernel-pick
+    reserve failed ... 0xfffff0000`. Open: wall #2 unverified on device
+    (V8 reservations in the helper, BRP memory past 4 GB would hit FEX's
+    arena, --single-process is unsupported upstream though Steam's CEF runs
+    so here, off-screen texture sharing untested); the game's own libcef
+    (kept loaded on PC) is refused here; thread 003c's 60 s wait.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
