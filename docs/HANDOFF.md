@@ -2637,6 +2637,25 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     by GTA, right before ERR_SYS_SYSREQ_GPU -- likely the reason its GPU
     check fails; agent aa87d2aa started on the root cause; (4) this commit:
     [file-trace] skips Madeira's own `\Madeira\ShaderCache` opens.
+  - **IAT sync owner fix + GetThreadContext findings (agent ab89a8c9,
+    merged as the cherry-pick of 833d341; docs/gta5-child-crash.md section
+    10; not yet built).** The NtProtectVirtualMemory IAT sync copied a changed
+    region into the FIRST pool copy of the image; ntdll has a session copy
+    plus one copy per pseudo-process child, so the GTA5_Enhanced child's
+    ntdll change (`[exec-req]` #11/#12 on 002c at 0x71ffd60520, 11:50:19
+    lines 3178/3184) landed in the PARENT's copy. Fix (default on):
+    `ios_iat_sync_pick_mapping` picks the writing process's own copy, else the
+    NULL-owner copy, else the first match; main processes unchanged;
+    `[iat-sync-owner]` lines; `env.MADEIRA_IAT_SYNC_OWNER = 0` = old rule.
+    check-iat-sync-owner (new), check-stale-heal-owner, check-execreq-leave,
+    check-child-ntdll-alias PASS; catalog regenerated on the full checkout (no
+    diff). GetThreadContext: GTA's `[ec-getctx]` self calls (`flags=00100000`)
+    request none of CONTROL/INTEGER/FP, so zeros are correct and the wrapper
+    matches upstream Wine -- no change. Open (GoT got1037): a cross-thread
+    read of a running thread returns no CONTROL when the server has no capture
+    and ContextAmd64 is empty (0024->0xC0, 51208-51253); reads of threads
+    blocked in Mach-O syscalls return Mach-O rip/rsp (0050, 51343 on), which
+    the untested opt-in `env.MADEIRA_CTX_FRAME = 1` addresses.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
