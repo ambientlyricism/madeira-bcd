@@ -706,6 +706,19 @@ the update pack, the game's options and starts the per-game session log.
   `tools/patch-winemetal-gpu-span.py`, nextDrawable wait) when
   `MADEIRA_FRAME_STATS=1`; `MADEIRA_PROBES=light|0` trims the always-on
   profilers.
+- Hardware description keys (`build/ntdll-unix/server_ios.c`
+  `ios_hw_registry_publish`, `hw_registry_ios.h`; `docs/hw-registry.md`):
+  wineboot never runs on iOS, so the volatile
+  `HKLM\HARDWARE\DESCRIPTION\System` tree it writes at every boot
+  (`CentralProcessor\N`, `FloatingPointProcessor\N`, `BIOS`) did not exist;
+  GTA V Enhanced's hardware thread failed to open `CentralProcessor\0` and
+  `BIOS`. The session's first process now writes them after `init_cpu_info`:
+  one processor key per CPU GetSystemInfo reports, with the CPU FEX's CPUID
+  shows the guest (`Intel64 Family 6 Model 166 Stepping 1`, `GenuineIntel`,
+  `Unknown ARM CPU`, ~MHz = FEX's TSC rate), BIOS strings from the guest's
+  SMBIOS table (Wine's generic values where it has none). `[hw-registry]`
+  logs it; `MADEIRA_HW_REGISTRY=0` turns it off, `=2` also refreshes
+  wineboot's processor values in `Session Manager\Environment`.
 
 ## App
 

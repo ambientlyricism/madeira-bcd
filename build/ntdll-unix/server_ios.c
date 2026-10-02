@@ -4281,6 +4281,259 @@ static void ios_hidpad_publish(void)
     wine_log_write( "[hid-pad] ml2102 %s %04X:%04X registered (%u/4 keys) as %s rev=ml2105",
                     id->env, id->vid, id->pid, written, symlink );
 }
+
+#include "hw_registry_ios.h"
+
+/* madeira-bcd: CNTFRQ_EL0, the counter FEX scales the guest's TSC from. */
+static uint64_t ios_hw_cntfrq(void)
+{
+    uint64_t freq = 0;
+#ifdef __aarch64__
+    __asm__ volatile( "mrs %0, CNTFRQ_EL0" : "=r" (freq) );
+#endif
+    return freq;
+}
+
+/* hw-registry-test:begin (tests/host/check-hw-registry.py compiles from here to the end mark) */
+#define IOS_HW_RSMB 0x52534d42   /* 'RSMB', the SMBIOS firmware table provider */
+
+/* The SMBIOS table exactly as GetSystemFirmwareTable('RSMB') hands it to the
+ * guest (WMI's Win32_BIOS / Win32_BaseBoard read the same bytes); NULL when
+ * ntdll has none. */
+static unsigned char *ios_hw_smbios( ULONG *len )
+{
+    const ULONG head = offsetof( SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer );
+    SYSTEM_FIRMWARE_TABLE_INFORMATION *sfti;
+    ULONG size = head, needed = 0;
+    unsigned char *table = NULL;
+    NTSTATUS status;
+    int tries;
+
+    *len = 0;
+    for (tries = 0; tries < 2; tries++)
+    {
+        if (!(sfti = calloc( 1, size ))) return NULL;
+        sfti->ProviderSignature = IOS_HW_RSMB;
+        sfti->Action = SystemFirmwareTable_Get;
+        sfti->TableID = 0;
+        status = NtQuerySystemInformation( SystemFirmwareTableInformation, sfti, size, &needed );
+        if (status == STATUS_BUFFER_TOO_SMALL && needed > size)
+        {
+            free( sfti );
+            size = needed;
+            continue;
+        }
+        if (!status && sfti->TableBufferLength && sfti->TableBufferLength <= size - head &&
+            (table = malloc( sfti->TableBufferLength )))
+        {
+            memcpy( table, sfti->TableBuffer, sfti->TableBufferLength );
+            *len = sfti->TableBufferLength;
+        }
+        free( sfti );
+        break;
+    }
+    return table;
+}
+
+/* wineboot's fallback when the TSC rate is unknown: the processor's MaxMhz. */
+static DWORD ios_hw_power_mhz(void)
+{
+    ULONG count = peb->NumberOfProcessors ? peb->NumberOfProcessors : 1;
+    PROCESSOR_POWER_INFORMATION *info;
+    DWORD mhz = 0;
+
+    if ((info = calloc( count, sizeof(*info) )))
+    {
+        if (!NtPowerInformation( ProcessorInformation, NULL, 0, info, count * sizeof(*info) ))
+            mhz = info[0].MaxMhz;
+        free( info );
+    }
+    return mhz;
+}
+
+static void ios_hw_sz( HANDLE key, const char *name, const char *value )
+{
+    WCHAR nameW[64], data[HWREG_STR];
+    UNICODE_STRING str;
+    size_t n = strnlen( value, HWREG_STR - 1 );
+
+    ascii_to_unicode( nameW, name, strlen( name ) + 1 );
+    ascii_to_unicode( data, value, n );
+    data[n] = 0;
+    init_unicode_string( &str, nameW );
+    NtSetValueKey( key, &str, 0, REG_SZ, data, (n + 1) * sizeof(WCHAR) );
+}
+
+static void ios_hw_dword( HANDLE key, const char *name, DWORD value )
+{
+    WCHAR nameW[64];
+    UNICODE_STRING str;
+
+    ascii_to_unicode( nameW, name, strlen( name ) + 1 );
+    init_unicode_string( &str, nameW );
+    NtSetValueKey( key, &str, 0, REG_DWORD, &value, sizeof(value) );
+}
+
+/* Session Manager\Environment is saved with the prefix: write a value only
+ * when it differs from what the key holds. 1 = written. */
+static int ios_hw_env_value( HANDLE key, const char *name, const char *value )
+{
+    union
+    {
+        KEY_VALUE_PARTIAL_INFORMATION info;
+        char raw[offsetof( KEY_VALUE_PARTIAL_INFORMATION, Data ) + 128 * sizeof(WCHAR)];
+    } buf;
+    WCHAR nameW[64];
+    UNICODE_STRING str;
+    ULONG size = 0, n = strlen( value ), i;
+    const WCHAR *old;
+
+    ascii_to_unicode( nameW, name, strlen( name ) + 1 );
+    init_unicode_string( &str, nameW );
+    if (!NtQueryValueKey( key, &str, KeyValuePartialInformation, &buf, sizeof(buf), &size ) &&
+        buf.info.Type == REG_SZ && buf.info.DataLength >= n * sizeof(WCHAR))
+    {
+        old = (const WCHAR *)buf.info.Data;
+        for (i = 0; i < n; i++) if (old[i] != (unsigned char)value[i]) break;
+        if (i == n && (buf.info.DataLength == n * sizeof(WCHAR) || !old[n])) return 0;
+    }
+    ios_hw_sz( key, name, value );
+    return 1;
+}
+
+/***********************************************************************
+ *           ios_hw_registry_publish
+ *
+ * madeira-bcd: wineboot's create_hardware_registry_keys for this port
+ * (docs/hw-registry.md). Desktop Wine runs wineboot at every boot and it
+ * writes the volatile HKLM\HARDWARE\DESCRIPTION\System tree: Identifier and
+ * SystemBiosDate, BIOS (from the SMBIOS table), CentralProcessor\N and
+ * FloatingPointProcessor\N for every processor. wineboot never runs here, so
+ * none of it existed: GTA V Enhanced's hardware-info thread failed to open
+ * CentralProcessor\0 and BIOS (build 332, log PlayGTAV.exe 2026-10-02
+ * 15:13:38 with trace+reg), WMI's Win32_Processor had no Caption. Written
+ * once per session, by the first process, after init_cpu_info (the processor
+ * count) and before the first process builds its environment. The processor
+ * values describe what the x86-64 guest sees from FEX's CPUID
+ * (hw_registry_ios.h), the count is GetSystemInfo's. Children of the session
+ * read the same registry.
+ */
+void ios_hw_registry_publish(void)
+{
+    static const char machine[] = "\\Registry\\Machine";
+    static const char sysdesc[] = "HARDWARE\\DESCRIPTION\\System";
+    static const char envkey[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Session Manager\\Environment";
+    /* FEX reads this switch itself (tools/patch-fex-ios-avx.py); it is only mirrored here. */
+    static const char fex_avx[] = "MADEIRA_FEX_AVX";
+    const char *avx = getenv( fex_avx );
+    struct hwreg_cpu cpu;
+    struct hwreg_bios bios;
+    struct hwreg_env env[HWREG_ENV_VALUES];
+    unsigned int i, count, cpus = 0, fpus = 0, rewritten = 0;
+    unsigned char *smbios;
+    ULONG smbios_len = 0;
+    char path[96], extra[128] = "";
+    WCHAR envW[ARRAY_SIZE(envkey)];
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES attr;
+    HANDLE key;
+    int mode;
+
+    /* Default 1: wineboot's volatile HKLM\HARDWARE\DESCRIPTION\System keys (CPU as FEX's
+     * CPUID shows it, BIOS from SMBIOS). 0: none. 2: also wineboot's five processor values
+     * in Session Manager\Environment (saved with the prefix). */
+    mode = hwreg_mode( getenv( "MADEIRA_HW_REGISTRY" ) );
+    if (!mode)
+    {
+        wine_log_write( "[hw-registry] madeira-bcd: MADEIRA_HW_REGISTRY=0, no HARDWARE\\DESCRIPTION keys written" );
+        return;
+    }
+
+    count = hwreg_cpu_count( peb->NumberOfProcessors );
+    /* AVX exists only in the ARM64EC module (WineProcessBridge.m links xtajit64-avx.dll for a
+     * 64-bit target); a 32-bit main image runs FEX's WOW64 module, which has no AVX. */
+    hwreg_fex_cpu( &cpu, avx && avx[0] == '1' && !ios_main_image_i386, ios_hw_cntfrq() );
+    if (!cpu.mhz) cpu.mhz = ios_hw_power_mhz();
+    smbios = ios_hw_smbios( &smbios_len );
+    hwreg_bios_values( &bios, smbios, smbios_len, PACKAGE_VERSION );
+    free( smbios );
+
+    if (!(key = ios_hidpad_key( machine, sysdesc )))
+    {
+        wine_log_write( "[hw-registry] madeira-bcd: could not create HKLM\\%s, nothing written", sysdesc );
+        return;
+    }
+    ios_hw_sz( key, "Identifier", "AT compatible" );
+    ios_hw_sz( key, "SystemBiosDate", "01/01/70" );
+    NtClose( key );
+
+    snprintf( path, sizeof(path), "%s\\BIOS", sysdesc );
+    if ((key = ios_hidpad_key( machine, path )))
+    {
+        ios_hw_sz( key, "BaseBoardManufacturer", bios.board_vendor );
+        ios_hw_sz( key, "BaseBoardProduct", bios.board_product );
+        ios_hw_sz( key, "BaseBoardVersion", bios.board_version );
+        ios_hw_sz( key, "BIOSVendor", bios.bios_vendor );
+        ios_hw_sz( key, "BIOSVersion", bios.bios_version );
+        ios_hw_sz( key, "BIOSReleaseDate", bios.bios_date );
+        ios_hw_dword( key, "BiosMajorRelease", bios.bios_major );
+        ios_hw_dword( key, "BiosMinorRelease", bios.bios_minor );
+        ios_hw_dword( key, "ECFirmwareMajorVersion", bios.ec_major );
+        ios_hw_dword( key, "ECFirmwareMinorVersion", bios.ec_minor );
+        ios_hw_sz( key, "SystemManufacturer", bios.sys_vendor );
+        ios_hw_sz( key, "SystemProductName", bios.sys_product );
+        ios_hw_sz( key, "SystemVersion", bios.sys_version );
+        ios_hw_sz( key, "SystemSKU", bios.sys_sku );
+        ios_hw_sz( key, "SystemFamily", bios.sys_family );
+        NtClose( key );
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        snprintf( path, sizeof(path), "%s\\CentralProcessor\\%u", sysdesc, i );
+        if ((key = ios_hidpad_key( machine, path )))
+        {
+            ios_hw_dword( key, "FeatureSet", cpu.feature_set );
+            ios_hw_sz( key, "Identifier", cpu.identifier );
+            ios_hw_sz( key, "VendorIdentifier", cpu.vendor );
+            ios_hw_sz( key, "ProcessorNameString", cpu.brand );
+            ios_hw_dword( key, "~MHz", cpu.mhz );
+            NtClose( key );
+            cpus++;
+        }
+        snprintf( path, sizeof(path), "%s\\FloatingPointProcessor\\%u", sysdesc, i );
+        if ((key = ios_hidpad_key( machine, path )))
+        {
+            ios_hw_sz( key, "Identifier", cpu.identifier );
+            NtClose( key );
+            fpus++;
+        }
+    }
+
+    if (mode == 2)
+    {
+        ascii_to_unicode( envW, envkey, ARRAY_SIZE(envkey) );
+        init_unicode_string( &name, envW );
+        InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, 0, NULL );
+        if (!NtOpenKey( &key, KEY_QUERY_VALUE | KEY_SET_VALUE, &attr ))
+        {
+            hwreg_environment( env, &cpu, peb->NumberOfProcessors );
+            for (i = 0; i < HWREG_ENV_VALUES; i++) rewritten += ios_hw_env_value( key, env[i].name, env[i].value );
+            NtClose( key );
+            snprintf( extra, sizeof(extra), "; Session Manager\\Environment: %u of %u processor values rewritten",
+                      rewritten, (unsigned int)HWREG_ENV_VALUES );
+        }
+        else snprintf( extra, sizeof(extra), "; Session Manager\\Environment missing, not touched" );
+    }
+
+    wine_log_write( "[hw-registry] madeira-bcd: HKLM\\%s (volatile): %u/%u CentralProcessor + %u FloatingPointProcessor "
+                    "\"%s\" %s \"%s\" ~MHz %u FeatureSet 0x%08x; BIOS \"%s\" \"%s\" (%s, %u Wine default(s))%s; "
+                    "MADEIRA_HW_REGISTRY=0 turns it off",
+                    sysdesc, cpus, count, fpus, cpu.identifier, cpu.vendor, cpu.brand, (unsigned int)cpu.mhz,
+                    (unsigned int)cpu.feature_set, bios.sys_vendor, bios.sys_product,
+                    smbios_len ? "SMBIOS" : "no SMBIOS table", bios.defaults, extra );
+}
+/* hw-registry-test:end */
 #endif
 
 

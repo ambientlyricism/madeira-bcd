@@ -3028,6 +3028,17 @@ static void start_main_thread(void)
     virtual_map_user_shared_data();
     WINE_IOS_LOG("init_cpu_info...");
     init_cpu_info();
+#ifdef WINE_IOS
+    /* madeira-bcd: wineboot's volatile HARDWARE\DESCRIPTION keys (server_ios.c,
+     * docs/hw-registry.md). After init_cpu_info, which sets the processor count
+     * the keys and the SMBIOS table are built from, and before init_startup_info
+     * reads Session Manager\Environment. First process of a session only. */
+    {
+        extern void ios_hw_registry_publish(void);
+        WINE_IOS_LOG("ios_hw_registry_publish...");
+        ios_hw_registry_publish();
+    }
+#endif
     WINE_IOS_LOG("init_files...");
     init_files();
     WINE_IOS_LOG("init_startup_info...");
