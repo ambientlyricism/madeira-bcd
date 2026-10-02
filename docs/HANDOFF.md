@@ -2686,6 +2686,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (fresh .data/.bss on a same-base reload), IAT sync owner fix, file-trace
     skips the shader cache. main fast-forwarded to f51cf47 (no push run).
     Waiting on device: GTA (no dxgi fault? SYSREQ box?), GoT R1/R2, DualSense.
+  - **GTA on build 332 (owner, log PlayGTAV.exe 2026-10-02 14:31:38): the
+    ERR_SYS_SYSREQ_GPU box is GONE** -- the image-reload fix works
+    (`[image-reload] ... rebuilding that copy in place` / `rebuilt in place`
+    10 lines, three `[dxgi-src] first factory request`, no fault at
+    dxgi.dll+0x2c058), so the swallowed dxgi Config fault WAS the reason the
+    GPU check failed. `[iat-sync-owner] ... the writing process's own copy`
+    lines on the child as expected. The game then reaches the same
+    "incomplete installation" screen. Remaining Madeira-side signals in the
+    log: none -- no c0000005, no NoExec, the GTA child exits 0 (owner closed
+    it); the file trace (3054 lines) shows only expected misses (loose-file
+    overrides of archive content such as common\shaders\db\*.sps and
+    common\data\*.xml -> 0xc000003a as on Windows, RAGE `memory:$...`
+    pseudo-paths, the support URL tried as a file by ShellExecute, dxmt.conf,
+    nvngx_update.exe). The screen is the Social Club emulator's decision;
+    per scope nothing further on it.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
