@@ -2577,6 +2577,23 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     "Your video card does not meet the system requirements... supports
     DirectX 12 (feature level 12_0), ensure your Windows installation
     supports DirectX 12 Agi[lity SDK]..." (warning only).
+  - **GTA with `env.SteamDeck = 1` (owner, build 329, log PlayGTAV.exe
+    2026-10-02 12:56:30): same "incomplete installation" screen.** The env
+    reached the game (`[iOS env] INCLUDED: SteamDeck=1`), and the launcher
+    already starts GTA5_Enhanced.exe with `-nobattleye -scOfflineOnly`, so
+    BattlEye is not the reason here. The log cannot say which file the game
+    misses: GTA writes no text log ([guest-log] saw none), `[file-fail]`
+    (ml665) stops after 64 failures, all spent on the loader's DLL search
+    before the game starts, and attribute queries are never logged. **Added
+    (this commit, diagnostic only):** tools/patch-wine-file-trace.py (workflow
+    step "Patch wine with the guest file trace", after the guest-log patch on
+    wine/dlls/ntdll/unix/file.c): with `env.MADEIRA_FILE_TRACE = 1` every
+    NtCreateFile/NtOpenFile and NtQuery(Full)AttributesFile logs `[file-trace]
+    #N open|attr status=... name=...` (4000 lines, MADEIRA_FILE_TRACE_LIMIT;
+    DLL-search misses skipped); results unchanged. Patch applies after
+    guest-log on a copy, idempotent. Note: the owner's copy is not a store
+    copy -- only Madeira-side file I/O bugs are in scope here; if the trace
+    shows a missing game data file, that is an installation matter, not ours.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

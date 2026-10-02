@@ -341,6 +341,12 @@ jobs:
       - name: Patch wine with the game text-log mirror
         run: python3 tools/patch-wine-guest-log.py wine/dlls/ntdll/unix/file.c
 
+      # [file-trace]: every guest open / attribute query with its status when
+      # MADEIRA_FILE_TRACE=1 (GTA V Enhanced's "incomplete installation"
+      # screen names no file; [file-fail] stops after 64 DLL-search misses).
+      - name: Patch wine with the guest file trace
+        run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before
