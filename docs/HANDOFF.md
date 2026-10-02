@@ -2445,6 +2445,31 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     fast-forwarded to b78b15e; push run 326 cancelled. Waiting on device:
     GoT (sampler-reduction = 3 + DualSense), GTA (SYSREQ box gone?). The
     GTA post-intro NoExec agent is still running.
+  - **GTA post-intro NoExec, agent analysis (merged as the cherry-pick of
+    a541bd6; docs/gta5-child-crash.md section 8).** The NoExec target
+    GTA5_Enhanced.exe+0x509a144 lies in RVA 0x4fac000-0x5123000, which the
+    PE headers do not mark executable; the TLS callback's RWX requests
+    (`[exec-req] #17-#20`, log lines 3301-3315) end at 0x144FAB428 and did
+    reach the child's tracker (protect notifications DO reach it; FEX logs
+    only removals -- correction to the entry above). **Proven bug:** the
+    shipped PE ntdll's ml283 `[exec-req]` probe in NtProtectVirtualMemory
+    returns without leave_syscall_callback() (exits 0x1800573bc/c8/f8 skip
+    the clear at 0x1800574d8), so InSyscallCallback stays set and every
+    protect / alloc / free / map on that thread until FEX's next compile is
+    not reported to the emulator (log 396 -> 450-509 `insc_before=1`; the
+    child maps the same images with `insc_before=0`). Whether this is GTA's
+    cause or the jump target is wrong (the gap may be .pdata) is open.
+    **Added (opt-in `env.MADEIRA_EXECREQ_LEAVE = 1`):** virtual_ios.c /
+    loader_ios.c patch this process's ntdll pool copy (three branches to the
+    clear; session, EC-child and pseudo-process child copies; instruction
+    words checked, idempotent). Always on (capped): `[prot-img]` (protects of
+    64 KB+ on the main image with section and insc) and `[guest-rip-sec]`
+    (section and vprot of a faulting guest RIP). Host checks
+    check-execreq-leave (real ntdll.dll, control-flow walk) and
+    check-child-ntdll-alias PASS; catalog regenerated on the full checkout
+    (no diff). Permanent fix: leave_syscall_callback() in the wine fork when
+    ntdll.dll is next rebuilt. Device test: GTA with the key, then read
+    `[execreq-leave]`, `[guest-rip-sec]`, `[prot-img]` (section 8.6).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
