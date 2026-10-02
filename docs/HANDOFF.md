@@ -2470,6 +2470,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     (no diff). Permanent fix: leave_syscall_callback() in the wine fork when
     ntdll.dll is next rebuilt. Device test: GTA with the key, then read
     `[execreq-leave]`, `[guest-rip-sec]`, `[prot-img]` (section 8.6).
+  - **Build 327 green** (run 36984306182, head a2e959d): build 325 plus the
+    opt-in exec-req leave fix and `[prot-img]` / `[guest-rip-sec]`. main
+    fast-forwarded to a2e959d (no push run: workflow unchanged). Waiting on
+    device: GTA with `env.MADEIRA_EXECREQ_LEAVE = 1`; GoT sampler-reduction
+    = 3 + DualSense.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
