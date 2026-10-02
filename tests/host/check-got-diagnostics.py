@@ -207,7 +207,7 @@ check("upload-guard-bytes defaults to 256", 'ub = mad_cfg_int_pe("upload-guard-b
 check("desc-guard defaults to 0", 'dg = mad_cfg_int_pe("desc-guard", 0);' in SRC)
 check("cbv-snapshot defaults to 0", 'cs = mad_cfg_int_pe("cbv-snapshot", 0);' in SRC)
 check("all off -> g_sd_state 0 and no log line",
-      "if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap)\n        d3d12_log(\"[sync-diag]" in SRC)
+      "if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace)\n        d3d12_log(\"[sync-diag]" in SRC)
 check("every hook outside the helpers is behind g_sd_state",
       all(h in SRC for h in (
           "if (g_sd_state > 0 && rs && root) root = mad_sd_root(e, rs, root, sd_root, pso);",
@@ -231,6 +231,19 @@ check("upload-guard 2: the GPU copy is encoded into the batch before it is commi
       fl.index("MTLCommandBuffer_commit(q->open_cb);"))
 check("tickets and the strict GPU wait only on a NEW batch command buffer",
       "NSObject_retain(q->open_cb);\n            if (g_sd_state > 0) {" in SRC)
+check("queue-trace defaults to 0", 'qt = mad_cfg_int_pe("queue-trace", 0);' in SRC)
+check("queue-trace hooks are behind g_sd_state",
+      SRC.count("if (g_sd_state > 0 && g_qtrace) mad_qtrace(") == 3)
+check("typed-uav-atomic defaults to 0 and only adds ShaderAtomic to R32 UAV texture buffers",
+      'on = mad_cfg_int_pe("typed-uav-atomic", 0) ? 1 : 0;' in SRC and
+      "if (uav && (pf == WMTPixelFormatR32Uint || pf == WMTPixelFormatR32Sint) && mad_typed_uav_atomic())" in SRC)
+check("typed-uav-atomic: a refusal falls back to the view as before",
+      "ti.usage = (enum WMTTextureUsage)(ti.usage & ~WMTTextureUsageShaderAtomic); ti.gpu_resource_id = 0;" in SRC)
+check("upload-guard covers CopyBufferRegion / CopyTextureRegion sources",
+      SRC.count("if (g_sd_state > 0 && g_upload_guard)   /* madeira-bcd: ") == 2 and "MAD_UG_COPY, 0, 1, \"CopyBufferRegion\");" in SRC)
+check("upload-guard walks descriptor tables (CBV / SRV ranges, never UAV)",
+      "if (g_upload_guard && type == MADEIRA_IR_PARAM_TABLE)\n            mad_ug_note_table(" in SRC and
+      "if (rs->ranges[ri].range_type != MADEIRA_IR_RANGE_CBV && rs->ranges[ri].range_type != MADEIRA_IR_RANGE_SRV) continue;" in SRC)
 fw = cut("static DWORD WINAPI mad_fence_worker(void *arg) {")
 check("fence worker: upload-guard verifies BEFORE the fence advances",
       fw.index("mad_ug_verify(d, job.serial);") < fw.index("ID3D12Fence_Signal(job.fence, job.value);"))
@@ -282,10 +295,10 @@ enum { D3D12_HEAP_TYPE_DEFAULT = 1, D3D12_HEAP_TYPE_UPLOAD = 2, D3D12_HEAP_TYPE_
 static unsigned g_list_seq = 77;
 static int g_logs; static char g_last_log[512];
 static void d3d12_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); g_logs++; vsnprintf(g_last_log, sizeof g_last_log, fmt, ap); va_end(ap); fputs(g_last_log, stdout); }
-static long long g_cfg[5]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot */
+static long long g_cfg[6]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot, queue-trace */
 static long long mad_cfg_int_pe(const char *key, long long dflt) {
-    static const char *const k[5] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot" };
-    int i; for (i = 0; i < 5; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
+    static const char *const k[6] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot", "queue-trace" };
+    int i; for (i = 0; i < 6; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
     return dflt;
 }
 struct mad_device { obj_handle_t gpu_event, mtl_device; volatile LONG64 gpu_serial_committed, gpu_serial_failed; };
@@ -303,7 +316,9 @@ static struct mad_resource *mad_resolve_address(struct mad_device *d, UINT64 add
     return NULL;
 }
 struct mad_pso { char vs_name[64], ps_name[64]; };
-struct mad_queue { struct mad_device *device; UINT64 open_ticket; obj_handle_t open_cb; };
+struct mad_queue { struct mad_device *device; UINT64 open_ticket; obj_handle_t open_cb; unsigned type; };
+struct mad_fence { UINT64 value; volatile LONG64 submitted, committed; };
+static unsigned long GetCurrentThreadId(void) { return 0x2a; }
 /* Metal stand-ins for upload-guard 2: a buffer handle is its index + 1 in g_mbuf; a blit runs at once */
 struct WMTMemoryPointer { void *ptr; };
 enum WMTResourceOptions { WMTResourceStorageModeShared = 0 };
@@ -331,11 +346,13 @@ struct mad_list { unsigned ring_used, nrings; obj_handle_t *rings; void **ring_c
 enum WMTIndexType { WMTIndexTypeUInt16 = 0, WMTIndexTypeUInt32 = 1 };
 enum mad_ck { MC_DRAW = 1, MC_DRAW_INDEXED };
 struct mad_cmd { enum mad_ck kind; union { struct { UINT vcount, icount, vstart, istart; } draw; struct { UINT icount, inst, start; int base; UINT istart; } drawi; } u; };
+struct mad_heap;
 struct mad_exec {
     struct mad_queue *q; struct mad_list *l; struct mad_pso *pso;
     struct { struct mad_resource *res; UINT64 off; UINT stride; } vb[16]; struct mad_resource *ib; UINT64 ib_off; enum WMTIndexType ib_type;
     UINT64 dg_va[MAD_ROOT_PARAM_MAX]; UINT dg_n[MAD_ROOT_PARAM_MAX];
     UINT64 sn_src[8], sn_dst[8]; unsigned sn_chunk[8], sn_n;
+    struct mad_heap *srv; UINT64 ug_va[MAD_ROOT_PARAM_MAX];
 };
 struct mad_rootsig { struct madeira_ir_root_param params[MAD_ROOT_PARAM_MAX]; struct madeira_ir_root_range *ranges; UINT nparams, nranges; };
 struct mad_descriptor { UINT64 gpu_va, texture_view_id, metadata; };
@@ -356,7 +373,7 @@ static int MTLSharedEvent_waitUntilSignaledValue(obj_handle_t ev, UINT64 v, UINT
 SD_HARNESS = r'''
 #define T(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 static void load(long long fs, long long ug, long long ub, long long dg, long long cs) {
-    g_cfg[0] = fs; g_cfg[1] = ug; g_cfg[2] = ub; g_cfg[3] = dg; g_cfg[4] = cs; g_sd_state = -1; mad_sync_diag_load();
+    g_cfg[0] = fs; g_cfg[1] = ug; g_cfg[2] = ub; g_cfg[3] = dg; g_cfg[4] = cs; g_cfg[5] = 0; g_sd_state = -1; mad_sync_diag_load();
 }
 int main(void) {
     struct mad_device dev; struct mad_queue q; struct mad_list l; struct mad_exec e; struct mad_pso pso;
@@ -490,6 +507,61 @@ int main(void) {
         root[0] = ru.gpu_address + sizeof up - 256; e.sn_n = 0;
         out = mad_sd_root(&e, &rs, root, tmp, &pso);
         T(g_sd_snap_bytes == 4096 + 4096 + 256 && !memcmp((unsigned char *)l.ring_cpu[1] + (tmp[0] - l.ring_gpu[1]), up + sizeof up - 256, 256));
+    }
+
+    /* 5b. upload-guard over descriptor tables: the descriptors themselves, and table CBVs into UPLOAD memory */
+    {
+        static struct mad_descriptor dh[64]; struct mad_heap h; struct mad_rootsig rs; struct madeira_ir_root_range rg[2]; struct mad_cmd c;
+        memset(&h, 0, sizeof h); h.cpu = dh; h.gpu_address = 0xa00000; h.count = 64; h.owner = &dev;
+        memset(&rs, 0, sizeof rs); memset(rg, 0, sizeof rg); rs.ranges = rg; rs.nranges = 2; rs.nparams = 1;
+        rs.params[0].type = MADEIRA_IR_PARAM_TABLE; rs.params[0].first_range = 0; rs.params[0].num_ranges = 2;
+        rg[0].range_type = MADEIRA_IR_RANGE_CBV; rg[0].num_descriptors = 2; rg[0].table_offset = 0xffffffffu;
+        rg[1].range_type = MADEIRA_IR_RANGE_SRV; rg[1].num_descriptors = 2; rg[1].table_offset = 0xffffffffu;
+        dh[10].gpu_va = ru.gpu_address + 4096; dh[10].metadata = 512;    /* table CBV 0 -> UPLOAD +4096, 512 bytes */
+        dh[11].gpu_va = rd.gpu_address; dh[11].metadata = 256;           /* table CBV 1 -> GPU-only: not watched */
+        dh[12].texture_view_id = 0x77;                                    /* a texture SRV: nothing to hash */
+        dh[13].gpu_va = ru.gpu_address + 6144; dh[13].metadata = 64;      /* a buffer SRV of 64 bytes */
+        load(0, 1, 0, 0, 0); memset(&c, 0, sizeof c); (void)c;
+        e.srv = &h; memset(e.ug_va, 0, sizeof e.ug_va); g_logs = 0;
+        q.open_ticket = mad_ticket_new();
+        {
+            UINT64 root[MAD_ROOT_PARAM_MAX], tmp[MAD_ROOT_PARAM_MAX]; LONG tables0 = g_sd_ug_tables;
+            memset(root, 0, sizeof root); root[0] = h.gpu_address + 10 * sizeof(struct mad_descriptor);
+            T(mad_sd_root(&e, &rs, root, tmp, &pso) == root);
+            T(g_sd_ug_tables == tables0 + 1 && g_ug_n == 3);
+            T(g_ug[0].r == NULL && g_ug[0].kind == MAD_UG_TABLE && g_ug[0].slot == 10 && g_ug[0].len == 4 * 24);
+            T(g_ug[1].r == &ru && g_ug[1].kind == MAD_UG_TCBV && g_ug[1].off == 4096 && g_ug[1].len == 256 && g_ug[1].exact);
+            T(g_ug[2].r == &ru && g_ug[2].kind == MAD_UG_TSRV && g_ug[2].off == 6144 && g_ug[2].len == 64 && g_ug[2].exact);
+            mad_sd_root(&e, &rs, root, tmp, &pso); T(g_ug_n == 3);   /* same table in the same replay: once */
+        }
+        up[4096 + 17] ^= 1; dh[13].metadata = 65;   /* a constant AND a descriptor rewritten while the batch runs */
+        mad_ticket_commit(q.open_ticket, 40); q.open_ticket = 0;
+        {
+            LONG ch0 = g_sd_ug_changed, dc0 = g_sd_ug_desc_changed;
+            mad_ug_verify(&dev, 40);
+            T(g_sd_ug_changed == ch0 + 1 && g_sd_ug_desc_changed == dc0 + 1 && g_ug_n == 0 && ru.refs == 0 && g_logs == 2);
+        }
+        e.srv = NULL; up[4096 + 17] ^= 1;
+        /* a CopyBufferRegion source in UPLOAD memory, rewritten before the copy ran */
+        q.open_ticket = mad_ticket_new(); g_logs = 0;
+        mad_ug_note(&e, &ru, 7168, 128, MAD_UG_COPY, 0, 1, "CopyBufferRegion"); up[7168 + 3] ^= 1;
+        mad_ticket_commit(q.open_ticket, 41); q.open_ticket = 0; mad_ug_verify(&dev, 41);
+        T(g_logs == 1 && strstr(g_last_log, "copy source 0 of 'CopyBufferRegion'") && ru.refs == 0);
+        up[7168 + 3] ^= 1;
+    }
+
+    /* 5c. queue-trace: the first N calls, then one limit line */
+    {
+        struct mad_fence f; memset(&f, 0, sizeof f); f.value = 5; f.submitted = 7; f.committed = 6;
+        g_cfg[0] = g_cfg[1] = g_cfg[2] = g_cfg[3] = g_cfg[4] = 0; g_cfg[5] = 3; g_sd_state = -1; mad_sync_diag_load();
+        T(g_sd_state == 1 && g_qtrace == 3);
+        q.type = 2; g_logs = 0;
+        mad_qtrace("Signal", &q, &f, 7, 0); T(strstr(g_last_log, "tid 002a") && strstr(g_last_log, "(type 2) Signal") && strstr(g_last_log, "asked 7, committed 6"));
+        mad_qtrace("ExecuteCommandLists", &q, NULL, 0, 3); T(strstr(g_last_log, "ExecuteCommandLists 3 list(s)"));
+        mad_qtrace("Wait", &q, &f, 7, 0); T(strstr(g_last_log, "limit of 3 lines"));
+        mad_qtrace("Wait", &q, &f, 7, 0); T(g_logs == 4);   /* 3 lines + the limit line, then silence */
+        g_cfg[5] = 1; g_sd_state = -1; mad_sync_diag_load(); T(g_qtrace == 400);
+        g_cfg[5] = 0; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 0 && g_qtrace == 0);
     }
 
     /* 6. fence-strict helpers */

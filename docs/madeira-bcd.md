@@ -489,6 +489,12 @@ the update pack, the game's options and starts the per-game session log.
   descriptors a running batch references. `cbv-snapshot = N` copies N bytes
   (1 = 4096) of each UPLOAD root CBV into the argument ring at replay and
   binds the copy. Summary line `[sync-diag] present #N` every 300 presents.
+  Round 2 (section 9): `upload-guard` also hashes every bound descriptor
+  table (`DESCRIPTORS CHANGED`), its CBV / buffer-SRV ranges in UPLOAD memory
+  and CopyBufferRegion / CopyTextureRegion sources; `queue-trace = N` logs
+  the first N ExecuteCommandLists / Signal / Wait calls with thread, queue
+  type and fence state; `typed-uav-atomic = 1` creates R32 UAV texture-buffer
+  views (RWBuffer<uint>, UAV counters) with ShaderAtomic usage.
 - D3D12 tiled resources, opt-in (`madeira_d3d12.c`, TILED RESOURCES block;
   docs/gta5-d3d12-caps.md): `d3d12-tiled-resources = 1` (madeira.cfg or the
   game's file, default 0) answers OPTIONS.TiledResourcesTier 2 and

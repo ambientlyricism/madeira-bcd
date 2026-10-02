@@ -36,6 +36,8 @@
   Kalan "havada şekiller" (tek karelik, yanlış yerde kaya / sürtme izleri)
   bölüm 8'de: kare kare inceleme, nedenler, yeni tanı anahtarları ve yeni test
   planı (G1 ve G2 yeni build beklemeden).
+* **Güncelleme 2 (10-02, build 313):** G1, G2 ve H şekilleri kaldırmadı;
+  bölüm 9: yeni ölçüm kapsamı, yeni deneme düzeltmesi ve 3 açılışlık plan.
 
 ## 1. Evidence used
 
@@ -733,3 +735,208 @@ only as H points.
   the next IPA: `upload-guard = 2` + `upload-guard-bytes = 4096`, then as it
   points `fence-strict = 1`, `fence-strict = 2`, `desc-guard = 1`,
   `cbv-snapshot = 1`. Open: the fix depends on G1 / H.
+
+## 9. Round 2: G1 / G2 / H on build 313 (2026-10-02 08:42-08:49)
+
+### 9.0 Özet (sahibi için, Türkçe)
+
+* G1 (`upload-swap = 0`), G2 (`ind-probe = 0`) ve H (`upload-guard = 2`)
+  şekilleri kaldırmadı. Bu üç şeyi eledi: **takas belleğinde bayat sayfa**
+  (GPU'nun kopyası CPU'nunkiyle hep aynı: 18.424 aralıkta 0 fark),
+  **oyunun kök (root) sabitlerini erken yazması** (0 değişiklik) ve
+  **dolaylı-argüman sondası** (G2).
+* Ama H'nin baktığı yer dardı: karede yalnız ~10 aralık. Ghost of Tsushima
+  nesne verisini kök sabitlerle değil, **tanımlayıcı (descriptor)
+  tabloları** ve **GPU bellekteki tamponlar** ile veriyor; büyük örnek
+  (instance) akışları da upload belleğinde değil (yoksa sayı yüzlerce
+  olurdu): ya GPU'nun hesapladığı (eleme/culling) ya da kopya kuyruğuyla
+  yüklenen veri. Bu yüzden yeni build şunları da izliyor:
+  - `upload-guard` artık **tanımlayıcı tablolarının kendisini** (GPU
+    kullanırken değişti mi), tablolardaki CBV / tampon SRV'lerin işaret
+    ettiği upload verisini ve **CopyBufferRegion / CopyTextureRegion
+    kaynaklarını** da izliyor;
+  - `queue-trace = 1`: hangi iş parçacığı hangi kuyruğa ne zaman iş veriyor,
+    Signal/Wait anında çit (fence) ne durumda (oyun her karede ikinci ve
+    üçüncü bir kuyruk kullanıyor: async compute / kopya);
+  - `typed-uav-atomic = 1` (deneme düzeltmesi): GPU'da sayaçlı ekleme
+    (append) yapan gölgelendiricilerin sayaçları Metal'de "atomik" işaretsiz
+    oluşturuluyordu; açıkken işaretli. Eleme sonucu yanlış yuvaya yazılırsa
+    tam olarak "başka objenin konumuyla çizilen kaya" görülür.
+* **Plan: en fazla 3 açılış, her birinde ekran kaydı (30-60 sn, köprü).**
+  Hepsinde `dxil-tess = 0` kalsın. Bölüm 9.4.
+
+### 9.1 What the logs say
+
+| log | block | result |
+|---|---|---|
+| `f9d252ec-...08-42-13` | G1 `upload-swap = 0` | `ml1154 upload-swap = 0 (Metal-owned storage)`; shapes stay |
+| `270ede4f-...08-45-48` | G2 `ind-probe = 0` | no `[probe]`; shapes stay |
+| `90453afc-...08-47-52`, `7c4a9de0-...08-48-49` | H `upload-guard = 2`, 4096 bytes | `[sync-diag] present #1800: 18424 ranges noted, 18414 checked, 0 CHANGED (+100 approximate), 18424 copied by the GPU, 0 DIFFERENT` |
+
+All runs: `fence-chain = 1`, `async-submit = 0`, `barrier-render = 0`,
+~110-190 encoders a frame, every one waiting on and updating the device fence
+(`ml1116 encoders per frame: fence waits N, fence updates N`).
+
+* The 100 "approximate" hits are all `vertex buffer 0 of 'vs_VertexStream'
+  -> r#15 (UPLOAD heap, 1024 KB) +168832 / +169216 / +177920 / +178304`:
+  windows 384 bytes apart in an immediate-mode vertex ring (UI / debug
+  geometry), so the 4096-byte window simply reaches the next draw's vertices.
+  Not a race.
+* **Coverage:** exactly ~10 noted ranges per frame. H noted root CBV/SRV,
+  vertex and index buffers in UPLOAD memory. So the 3D passes bind no
+  CPU-written data that way: per-draw constants come through descriptor
+  tables, and the GPU-driven passes' streams (the 16 MB instance stream "vb 1",
+  stride 8, section 3) are DEFAULT-heap buffers -- written by the GPU (culling
+  compute) or by copies (CopyBufferRegion, possibly on the COPY queue). None
+  of that was watched.
+* Queues: three are busy every frame (batch counters in the log: the DIRECT
+  queue, one with 1 list per batch, one with 2 lists per batch; per frame
+  `ExecuteCommandLists 9, Signal 8`); `Queue::Wait sleeps 0.0` -- either
+  there is no cross-queue Wait, or every one took the early return
+  (`queue-trace` answers which).
+
+### 9.2 Ranked causes (round 2)
+
+Ruled out: stale swap-tier pages (G1 and the GPU copy compare), the game
+rewriting root CBVs / root SRVs / index data in flight, the probe splits (G2),
+render-target aliasing, count buffers (section 8).
+
+1. **GPU-produced per-instance data that is wrong for a frame.** The rock /
+   streak shapes are another instance's transform (and previous transform).
+   GoT builds its instance lists on the GPU. Candidates inside our runtime:
+   a. **append counters / RWBuffer<uint> atomics on Metal texture buffers
+      without ShaderAtomic usage** (`typed-uav-atomic`): lost or duplicated
+      slots hand a draw another object's data; contention-dependent, so it
+      varies frame to frame;
+   b. **cross-queue ordering**: culling on the async COMPUTE queue (or the
+      instance upload on the COPY queue) and the DIRECT queue's Wait taking
+      the early return while the signalling batch is not yet committed
+      (section 8.4, cause 2; `fence-strict = 1` closes it and counts it,
+      `queue-trace` shows the threads);
+   c. **barriers inside an open render pass** are not honoured
+      (`barrier-render = 0`: a pass is not closed at a ResourceBarrier, Metal
+      orders nothing inside one encoder); `barrier-render = 1` closes it.
+2. **Descriptor tables rewritten while the GPU uses them** (`desc-guard`, and
+   now `upload-guard`'s table hash) -- desc-guard was never run (0 writes
+   checked: it was off).
+3. **Upload copies whose source changes before the copy runs** (now watched:
+   `copy source` lines).
+4. A converter bug in a culling / compaction compute shader (wave ops,
+   group-shared memory). Would not react to any switch here; the next step
+   would be `capture-cs` on the culling kernels.
+
+### 9.3 What changed (code)
+
+`madeira_d3d12.c`, all OFF unless set:
+
+* `upload-guard` (1 or 2) now also covers, at replay:
+  - every **descriptor table** a draw or dispatch binds: the table's own
+    descriptors (bounded ranges, up to 256) -> `[upload-guard] DESCRIPTORS
+    CHANGED while the GPU used them: descriptor table P of '<shader>' ->
+    descriptors A..B of the shader-visible heap`;
+  - each **CBV and buffer-SRV descriptor** in those tables that points into
+    UPLOAD/CUSTOM memory, over the view's own size (exact; CBVs their first
+    256 bytes) -> `table CBV` / `table SRV` in the CHANGED line;
+  - the **source of CopyBufferRegion** (exact, up to `upload-guard-bytes`)
+    and the first bytes of a buffer->texture copy (approximate) ->
+    `copy source`.
+  The `[sync-diag]` line adds `N descriptor tables watched, M CHANGED`.
+* `queue-trace = N` (1 = 400 lines): `[queue-trace] #k tid T queue Q (type
+  0/2/3) Signal|Wait fence F value V: fence at X, asked A, committed C; GPU
+  serial S of Z committed` and `... ExecuteCommandLists n list(s)`.
+* `typed-uav-atomic = 1`: R32_UINT / R32_SINT UAV texture-buffer views (the
+  views behind RWBuffer<uint> and the UAV counters of append/consume buffers)
+  are created with MTLTextureUsageShaderAtomic; if Metal refuses, the view is
+  created as before (`typed-uav-atomic: Metal refused ...`). Log once:
+  `madeira-bcd typed-uav-atomic = 1: ...`.
+* Existing and relevant: `barrier-render = 1` (render passes close at every
+  ResourceBarrier; each new encoder waits on the device fence),
+  `fence-strict = 1 / 2`, `desc-guard = 1`.
+
+Host test `tests/host/check-got-diagnostics.py` (PASS, ASan/UBSan clean):
+static checks for the new hooks (all behind `g_sd_state` / the key) and the
+harness runs table coverage (descriptor + table CBV/SRV records, a rewritten
+descriptor and constant both reported, UAV and GPU-only ranges skipped, one
+record per table per replay), copy sources, and queue-trace's line limit.
+Catalog regenerated (`queue-trace`, `typed-uav-atomic`): ships in an IPA.
+
+### 9.4 Device plan (next IPA)
+
+One launch per block, `dxil-tess = 0` in all, 30-60 s at the burning bridge,
+**screen recording every time** (HUD visible), send log + recording, then
+delete the block's other lines.
+
+**Blok K1 -- tanı (dedektörler + hafif sıralama):**
+```
+dxil-tess = 0
+upload-guard = 1
+upload-guard-bytes = 1024
+desc-guard = 1
+queue-trace = 1
+fence-strict = 1
+```
+Log: `[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=1 upload-guard=1 (1024
+bytes a range) desc-guard=1 cbv-snapshot=0 bytes queue-trace=400`,
+`[desc-guard] watching shader-visible heap ...`, 400 `[queue-trace]` lines,
+then every 300 presents `[sync-diag] present #N: ...`. Read:
+* `DESCRIPTORS CHANGED` / `[desc-guard] ... rewrote descriptor` -> cause 2;
+* `CHANGED ... table CBV|table SRV|copy source` (not approximate) -> the game
+  rewrites data the GPU still needs;
+* `[fence-strict] Queue::Wait for ...` lines -> cause 1b happened (and was
+  closed in this run: if the shapes are GONE in the recording, that was it);
+* `[queue-trace]`: which queue types signal / wait, from which threads.
+FPS drops somewhat (hashing).
+
+**Blok K2 -- en güçlü düzeltme denemesi (yavaş):**
+```
+dxil-tess = 0
+typed-uav-atomic = 1
+barrier-render = 1
+fence-strict = 2
+```
+Log: `madeira-bcd typed-uav-atomic = 1 ...`, `ml1098 barrier-render = 1`,
+`fence-strict=2`. Screen: are the shapes gone? FPS will be low (no CPU/GPU
+overlap, more render passes).
+* Gone -> Blok K3 decides which of the three.
+* Still there -> it is not ordering or atomics: data produced wrongly
+  (converter) or a descriptor problem -> K1's lines decide; next step
+  `capture-cs` on the culling kernels.
+
+**Blok K3 -- yalnız K2 şekilleri kaldırırsa:**
+```
+dxil-tess = 0
+typed-uav-atomic = 1
+```
+Gone -> the append-counter atomics (fix: make it the default after a GoW /
+GTA check). Still there -> next launch `barrier-render = 1` alone, then
+`fence-strict = 1` alone.
+
+### 9.5 Paragraph for HANDOFF (ready to paste)
+
+* **GoT shapes, round 2 (agent, 2026-10-02; docs/got-corruption.md
+  section 9).** Build 313: G1 `upload-swap = 0`, G2 `ind-probe = 0`, H
+  `upload-guard = 2` (4096 bytes) did not remove the shapes; H: 18424 ranges,
+  0 CHANGED, 0 GPU-different (the 100 approximate hits are an immediate-mode
+  VB ring, `vs_VertexStream` r#15, windows 384 bytes apart). Rules out stale
+  swap-tier pages, root-CBV/SRV/IB rewrites and the probe splits. But H saw
+  only ~10 ranges a frame: GoT's 3D passes bind per-draw data through
+  descriptor tables and their instance streams are DEFAULT buffers (GPU
+  culling or copies), none of which H watched. Re-ranked: (1) GPU-produced
+  instance data wrong for a frame -- append-counter / RWBuffer<uint> atomics
+  on Metal texture buffers without ShaderAtomic usage, cross-queue (async
+  compute / copy) Wait taking the early return before the signal's commit,
+  barriers inside an open render pass (`barrier-render = 0`); (2) descriptor
+  tables rewritten in flight (desc-guard was never on); (3) upload copy
+  sources rewritten before the copy; (4) a converter bug in a culling kernel.
+  **Added, OFF by default:** `upload-guard` now also hashes every bound
+  descriptor table (`DESCRIPTORS CHANGED`), its CBV / buffer-SRV ranges in
+  UPLOAD memory (`table CBV|SRV`) and CopyBufferRegion / CopyTextureRegion
+  sources (`copy source`); `queue-trace = N` (thread, queue type, fence
+  state per ECL/Signal/Wait); `typed-uav-atomic = 1` (ShaderAtomic usage on
+  R32 UAV texture-buffer views, fallback if refused). Host tests PASS (ASan
+  clean), arm64ec links, catalog regenerated (IPA). **Device plan** (each
+  with `dxil-tess = 0` and a screen recording): K1 `upload-guard = 1`,
+  `upload-guard-bytes = 1024`, `desc-guard = 1`, `queue-trace = 1`,
+  `fence-strict = 1`; K2 `typed-uav-atomic = 1`, `barrier-render = 1`,
+  `fence-strict = 2`; K3 (only if K2 clears them) `typed-uav-atomic = 1`
+  alone.
