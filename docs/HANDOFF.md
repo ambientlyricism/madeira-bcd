@@ -2429,6 +2429,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
        range becomes executable on Windows -- VirtualProtect to PAGE_EXECUTE_*
        or section flags -- and whether our NtProtectVirtualMemory path tells
        the child's FEX tracker).
+  - **Build 324 FAILED** (run 36981058237, head 0508110) in "Build
+    madeira_d3d12.dll from source": `offsetof` is not declared in
+    madeira_d3d12.c (llvm-mingw's windows.h does not pull stddef.h); the
+    sampler-reduction tag line now uses `__builtin_offsetof`. Found with the
+    Linux llvm-mingw in the scratchpad (`arm64ec-w64-mingw32-clang
+    -fsyntax-only`; only the 4 known WMTGeometryEmulationInfo errors of the
+    unpatched winemetal.h remain). Lesson: run that syntax check on
+    madeira_d3d12.c before every push that touches it.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

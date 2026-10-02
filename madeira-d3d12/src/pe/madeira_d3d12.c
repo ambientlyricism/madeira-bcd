@@ -11002,7 +11002,7 @@ static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UI
             si->min_filter = si->mag_filter = WMTSamplerMinMagFilterNearest; si->mip_filter = WMTSamplerMipFilterNearest;
             si->max_anisotroy = 1;
         } else if (g_smp_red == 3) {
-            ((unsigned char *)si)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] = red == 2 ? 0xA1 : 0xA2;
+            ((unsigned char *)si)[__builtin_offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] = red == 2 ? 0xA1 : 0xA2;
             if (si->mip_filter == WMTSamplerMipFilterNearest &&
                 (si->min_filter == WMTSamplerMinMagFilterLinear || si->mag_filter == WMTSamplerMinMagFilterLinear))
                 si->mip_filter = WMTSamplerMipFilterLinear;
