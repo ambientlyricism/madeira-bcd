@@ -2890,6 +2890,52 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     fails on its VideoToolbox check while the frameworks section of
     project.pbxproj is identical before and after the merge -- both
     unrelated to this merge, open.
+  - **Owner's decision (2026-10-02): no more automatic upstream merges.**
+    "bir daha bana sormadan merge yapma upstream ile ... Sadece kontrol et
+    ve bana haber ver." The 12h routine (trig_01RysU4rxozWMJJtiV5TSi7F) was
+    rewritten: fetch, list upstream's new commits, try the merge with
+    --no-commit and abort it, report changes / conflicts / risk for GoW,
+    GoT and GTA in Turkish, record the check here; merge only after the
+    owner says so in chat. **Risk of merge 67ea7de (kept, not reverted):
+    low.** #110 (unaligned shared section -> private) and #111 (stripped-
+    relocation image < 64 MB gets the exe window) only change cases that
+    failed before: every "NOT releasing the window ... under the 64MB floor"
+    line in our GoW / GTA logs is a relocatable image or a non-image
+    request, which #111 leaves alone (it only flags images with
+    IMAGE_FILE_RELOCS_STRIPPED in map_image_view); no log has an "unaligned
+    shared" failure. LocalLow creation and the Dock text are harmless. The
+    one behaviour change for every game: a launch now needs StikJITHelper
+    .ready (CS_DEBUGGED and a debugger attached, or this run's pool already
+    made) instead of CS_DEBUGGED alone -- the owner's normal flow has the
+    debugger attached at launch (16:00 log: "Debugger attached"), and the
+    old path crashed in that case anyway; escape hatch
+    `env.MADEIRA_JIT_ATTACH_CHECK = 0`. Build 334 stays the fallback.
+  - **GTA log PlayGTAV.exe 2026-10-02 16:00:24 (build 334) + screenshot.**
+    The zoom fix works: the loading screen is full size (1920x1080) with a
+    normal Metal HUD. New stop: the loading screen ("Initializing" spinner,
+    artwork slideshow, ~60 FPS) never ends. **Cause: the JIT pool is full,
+    so Social Club's Chromium (libcef.dll, 0xefbe000 = 240 MB) cannot
+    load.** Log lines 25-60: the 896 MB pool fits no hole in
+    [0x119000000,0x7000000000) (holes 0x133400000+204MB, 0x148000000+631MB,
+    0x16fd60000+258MB with the exe window [0x140000000,+128MB) held) and
+    shrinks to 624 MB. Line 29932: libcef in the game process (socialclub.dll)
+    -> `[jit-pool] EXHAUSTED` (bump 274 MB + tail_resv 160 MB + 240 MB >
+    624 MB); the SocialClubHelper.exe children (spawned at 43679) hit the
+    same at 48406 / 53084 / 57762, then even secur32.dll's delay-load fails
+    (59411+, c0000005). The game opens `\pipe\chrome.rgsc_gameinst_0` 5
+    times and it never exists: Social Club's browser never comes up, so the
+    game waits forever. The 15:30 run (build 332) had the same (171
+    EXHAUSTED, 3 libcef loads) -- what looked like the main menu then was
+    this loading screen. File trace: no missing game file (misses are the
+    usual loose-file overrides, Documents\Rockstar Games directories that
+    already exist, c_10000.nls, FEX AppConfig). Pool consumers before libcef:
+    the game exe 91 MB, nvngx_dlss.dll twice (28 MB each). On PC the same
+    "Initializing" hang is the known symptom of Social Club failing to
+    start. Agent a951d1d5 started: root cause of the hole layout and a fix
+    that gets libcef in (bigger / relocated pool, separate grant for FEX
+    code buffers, single-process CEF like upstream's steamwebhelper gate in
+    process_ios.c, or dropping copies that can never run), neutral for GoW
+    and GoT.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
