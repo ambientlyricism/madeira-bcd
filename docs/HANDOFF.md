@@ -2780,6 +2780,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     \BIOS do not exist** (wineboot's create_hardware_registry_keys never runs
     here; the prefix has no CentralProcessor key; WMI Win32_Processor/BIOS read
     them) -- agent ad9ffa50 started to create them per session.
+  - **Correction / precision to the registry-trace entry (owner: "socialclub.dll
+    is already in the game folder").** True: the game-folder socialclub.dll
+    (the emulator, next to socialclub_emu.ini) IS loaded early by the GTA
+    child (15:13:38 log lines 3527-3537, tid 002c, base 0x71f9570000), and
+    socialclub_emu.ini is read (#54, #145-#148). The failing probe right
+    before the screen is a SEPARATE check on the GTA main thread (0034, which
+    module issues it is not known): `C:\Program Files\Rockstar Games\Social
+    Club\socialclub.dll` (#1669, 0xc000003a), i.e. the real Social Club
+    install location, then `\pipe\GTAVLauncher_Pipe`. The game-folder copy
+    does not satisfy that check; making it do so is the emulator's side and
+    out of scope. Madeira resolves that path correctly (Program Files exists,
+    #1668).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
