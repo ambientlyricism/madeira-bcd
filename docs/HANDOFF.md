@@ -2936,6 +2936,27 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     code buffers, single-process CEF like upstream's steamwebhelper gate in
     process_ios.c, or dropping copies that can never run), neutral for GoW
     and GoT.
+  - **GTA log 16:19:17 (build 334, owner set `pool = 1152`): same stop.**
+    The bigger pool setting cannot help: no hole fits 1152 MB either
+    (holes 0x133c00000+196MB, 0x148000000+623MB, 0x16f59c000+266MB) and the
+    pool shrinks to 608 MB, smaller than before. GTA5_Enhanced.exe is a
+    fixed-base image (`ml977: RELEASED the executable window to
+    0x140000000+0x5b84000 (fixed-base main image)`), so the exe window
+    cannot move. Guest furniture window 0x7000000000..0x73ffff0000 (16 GB,
+    biggest free gap 3148 MB). libcef.dll is first loaded by the game
+    process itself (tid 0034) and fails (bump 272 MB + tail_resv 160 MB +
+    240 MB > 608 MB); the game then starts SocialClubHelper.exe five times
+    (relaunch after each failure; Wine's log cuts the command line before
+    `--type=`). Forwarded to agent a951d1d5. Owner's madeira.cfg in this
+    run: mempool-mb=2048 pool=1152 swap-mb=3072.
+  - **Build 335 green** (run 37010739257, head 0f3ccdd): upstream merge
+    67ea7de + hardware registry keys (9026ed9; server_ios.c / loader_ios.c
+    compiled by CI). OTA 0.1.335 mailed. main fast-forwarded to 0f3ccdd and
+    verified with `git ls-remote` (workflow unchanged, no push run). Extra
+    DLLs as before (failed: wbemdisp hnetcfg). Device test: every game
+    should start as on 334 (look for one `[hw-registry]` line and the new
+    `[device]` lines); GTA still stops at the loading screen until the
+    JIT-pool fix lands. Fallback: 334.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
