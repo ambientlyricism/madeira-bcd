@@ -2132,6 +2132,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     gameplay shapes (GPU-driven foliage instances / motion vectors wrong for
     single frames). Useful: the menu is a static, reproducible test scene --
     the K1/K2 runs can be done there (no need to reach the bridge).
+  - **Build 316 green** (run 36971640328, head 98618c4): GoT round-3
+    diagnostics (wider upload-guard, queue-trace, typed-uav-atomic). main
+    fast-forwarded to 98618c4. Owner to run K1 / K2 (/ K3) in the GoT main
+    menu. KMT-adapter agent for GTA still running.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
