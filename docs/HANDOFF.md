@@ -2361,6 +2361,36 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     porting the app to SwiftPM and every native step to a cross toolchain --
     large. Usable now: xtool's sign + USB install from Windows for an IPA the
     CI built. Owner told; no change.
+  - **GoT M1 on build 321 (log GhostOfTsushima.exe 2026-10-02 10:47:07 +
+    ScreenRecording_10-02-2026_10-47-51, main menu, `dxil-tess = 0`,
+    `ind-count = 6000`, `sampler-census = 1`): both suspicions confirmed.**
+    (1) The game creates a **MINIMUM reduction sampler** (`filter 0x114`,
+    min/mag linear, mip point, from CreateSampler) -- the Hi-Z pyramid's min
+    filter, which Metal (as we used it) averaged. (2) **Two GPU culling
+    compute pipelines swing frame to frame**: `cs_main/3edb3d28b7e2ae5e`
+    3 <-> 72 threadgroups and `cs_main/cef43c956633f019` 0 <-> 69 (121
+    DIP/SPIKE lines), with one-frame spikes of `vs_LowLod|ps_Deferred`,
+    `vs_HighLod|ps_Deferred` and `vs_Main|ps_DrawFromClipmapNoPomTriplanar`
+    instances -- the grass in front of the katana appearing / vanishing
+    (recording frames 1860-1865). Other samplers: 0x000/0x004/0x010/0x014/
+    0x015/0x055, comparison 0x080 (Less) and 0x094 (GreaterEqual).
+    **Research:** Metal gained `MTLSamplerDescriptor.reductionMode` in iOS 26
+    (`MTLSamplerReductionModeWeightedAverage 0 / Minimum 1 / Maximum 2`);
+    MoltenVK 1.4.2 exposes VK_EXT_sampler_filter_minmax with it only on
+    Apple10 GPUs (A19 = the owner's phone) and OS 26; Apple's docs: ignored
+    when mipFilter is nearest / not mipmapped or min / mag is nearest.
+    **Added (this commit, opt-in `sampler-reduction = 3`):** PE side puts the
+    mode in WMTSamplerInfo's padding byte after support_argument_buffers
+    (0xA1 min / 0xA2 max), drops the comparison, turns a nearest mip filter
+    into linear (same result at whole LODs); new
+    `tools/patch-winemetal-sampler-reduction.py` (workflow step "Patch
+    winemetal sampler reduction") makes _MTLDevice_newSamplerState set
+    reductionMode by selector when the same key is 3 and the device supports
+    MTLGPUFamilyApple10 (1010), logging `[sampler-reduction] ... Metal
+    reductionMode set` (DXMT's D3D11 samplers leave that byte uninitialised,
+    hence the key gate on both sides). check-got-diagnostics extended
+    (mode 3) PASS; patch applies after lum-probe + readback-census. Open:
+    device test.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

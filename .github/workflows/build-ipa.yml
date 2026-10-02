@@ -1008,6 +1008,12 @@ jobs:
       - name: Patch winemetal readback census
         run: python3 tools/patch-winemetal-readback-census.py
 
+      # D3D12 MIN/MAX reduction samplers (Ghost of Tsushima's Hi-Z culling)
+      # through Metal's own reductionMode on Apple10 GPUs (iOS 26), with
+      # madeira.cfg sampler-reduction = 3. Native only.
+      - name: Patch winemetal sampler reduction
+        run: python3 tools/patch-winemetal-sampler-reduction.py
+
       # Is God of War at 1080p GPU-bound? The logs had no GPU timing. The
       # [frame] instrument (server_ios.c, MADEIRA_FRAME_STATS=1, off by
       # default) gets each command buffer's GPU start/end, so it can print the

@@ -661,6 +661,7 @@ check("both sampler paths (static and CreateSampler) go through mad_sampler_info
 
 SMP_STUBS = r"""
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -715,6 +716,15 @@ int main(void) {
     reload(2, 0);
     a = S(0x195, 0); T(a.compare_function == WMTCompareFunctionNever && a.min_filter == WMTSamplerMinMagFilterLinear && a.mip_filter == WMTSamplerMipFilterLinear);
     a = S(0x1d5, 0); T(a.compare_function == WMTCompareFunctionNever && a.max_anisotroy == 8);
+    /* 3: Metal reductionMode -- tag in the padding byte, no comparison, nearest mip -> linear */
+    reload(3, 0);
+    a = S(0x114, D3D12_COMPARISON_FUNC_NEVER); T(((unsigned char *)&a)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] == 0xA1 &&
+                       a.compare_function == WMTCompareFunctionNever && a.mip_filter == WMTSamplerMipFilterLinear && a.min_filter == WMTSamplerMinMagFilterLinear);
+    T(strstr(g_last_log, "Metal reductionMode (sampler-reduction = 3"));
+    a = S(0x195, 0); T(((unsigned char *)&a)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] == 0xA2 && a.compare_function == WMTCompareFunctionNever);
+    a = S(0x100, 0); T(((unsigned char *)&a)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] == 0xA1 && a.mip_filter == WMTSamplerMipFilterNearest);   /* all point: Metal ignores it anyway */
+    b = S(0x95, D3D12_COMPARISON_FUNC_LESS); T(((unsigned char *)&b)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] == 0 && b.compare_function == WMTCompareFunctionLess);
+    b = S(0x14, 0); T(((unsigned char *)&b)[offsetof(struct WMTSamplerInfo, support_argument_buffers) + 1] == 0 && b.mip_filter == WMTSamplerMipFilterNearest);
     reload(9, 0); a = S(0x195, 0); T(g_smp_red == 0 && a.compare_function == WMTCompareFunctionAlways);   /* out of range: off */
     /* census: every distinct filter once */
     reload(0, 1); g_logs = 0;
