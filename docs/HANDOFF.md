@@ -3074,6 +3074,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     engine not yet exercised, 25 s plain-player restart blip, i386 xinput
     patch, no mic-LED API. Owner is back on GTA (JIT pool + 64 GB
     reservation, agent a951d1d5).
+  - **GoW rumble works on build 336 (owner, 2026-10-02, no log):** "336 da
+    gow denedim ... normal titreşim onda da çalışıyor"; GoW has no adaptive
+    trigger effects. DualSense rumble is now confirmed in both GoW and GoT.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

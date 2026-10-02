@@ -287,8 +287,8 @@ the start.
 - **Hissedilen şey basit titreşim**, PS5'teki ses tabanlı "haptic feedback"
   değil: o, PC'de kolun USB ses kanalından gidiyor (kablo şart); sanal
   kolumuzun ses kısmı yok.
-- **God of War:** tetiklere efekt göndermiyor (yalnız "off"); 336'daki
-  titreşim GoW'da cihazda henüz denenmedi (çalışması bekleniyor).
+- **God of War:** tetiklere efekt göndermiyor (yalnız "off"; oyunda adaptif
+  tetik yok); titreşim build 336'da çalışıyor (sahibi, 2026-10-02).
 - **Sonra (sahibinin kararı, GTA'dan sonra):** gerçek haptic projesi --
   sanal DualSense'e 4 kanallı "Wireless Controller" ses aygıtı eklemek ve
   kanal 3/4'ü anlık olarak Core Haptics'e çevirmek; iOS'ta denenmemiş,
