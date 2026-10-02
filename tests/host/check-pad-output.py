@@ -308,11 +308,16 @@ for sel in ['setModeOff', 'setModeFeedbackWithStartPosition:', 'resistiveStrengt
             '@"setModeVibrationWithAmplitudes:frequency:"', 'respondsToSelector:',
             'createEngineWithLocality:', 'GCHapticsLocalityLeftHandle', 'GCHapticsLocalityRightHandle',
             'CHHapticEventTypeHapticContinuous', 'CHHapticDynamicParameterIDHapticIntensityControl',
-            'createAdvancedPlayerWithPattern:', 'stoppedHandler', 'resetHandler', 'light.color',
+            'createPlayerWithPattern:', 'stoppedHandler', 'resetHandler', 'light.color',
             'playerIndex', 'winios_pad_output_set_notify', 'winios_gamepad_set_rumble_caps',
             'winios_hidpad_get_output', 'winios_gamepad_get_vibration']:
     need(sel in pad, f'PadOutput.m lacks {sel}')
 need(re.search(r'float values\[WINIOS_TRIGGER_ZONES\]', pad), 'positional struct must be float values[10]')
+# GoW log 2026-10-02 16:38:12: asking a DualSense for the advanced player broke
+# the engine for the plain one too; game controllers get plain players only,
+# and a failed set-up backs off and tries again instead of giving up.
+need('createAdvancedPlayerWithPattern' not in pad, 'PadOutput.m must not ask a game controller for the advanced player')
+need('_retryAt' in pad and 'RUMBLE_GIVE_UP' in pad, 'PadOutput.m must back off and retry a failed haptics set-up')
 need('dispatch_get_main_queue' in pad and 'atomic_flag_test_and_set' in pad,
      'PadOutput.m must coalesce the notify into one main-thread pass')
 

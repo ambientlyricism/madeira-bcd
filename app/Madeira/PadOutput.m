@@ -37,6 +37,7 @@
 
 #define PAD_SLOTS WINIOS_GAMEPAD_MAX
 #define PAD_LOG_LIMIT 8
+#define RUMBLE_GIVE_UP 8        // failed haptics set-ups in a row before a pad goes without rumble
 
 /* GCDualSenseAdaptiveTriggerPositionalResistiveStrengths and
  * GCDualSenseAdaptiveTriggerPositionalAmplitudes (iOS 15.4+) are both
@@ -71,13 +72,14 @@ static void on_main(dispatch_block_t block)
     int _slot;
     int _channels;              // 0 not looked yet, 2 left+right handles, 1 one engine, -1 no haptics
     CHHapticEngine *_engine[2];
-    id<CHHapticPatternPlayer> _player[2];
-    BOOL _looping[2];           // advanced player with loopEnabled; NO: plain player, restarted by push
+    id<CHHapticPatternPlayer> _player[2];   // plain players: push restarts them before their event ends
     CFAbsoluteTime _startedAt[2];
     BOOL _playing[2];
     float _want[2];             // per engine: 0 left/low (or the only one), 1 right/high
     float _sent[2];
-    unsigned int _failures, _losses;
+    unsigned int _failures;     // failed engine/player set-ups in a row; 0 again once one works
+    unsigned int _logged, _losses;
+    CFAbsoluteTime _retryAt;    // no new set-up before this (back-off after a failure)
 }
 
 - (instancetype)initWithController:(GCController *)controller slot:(int)slot
@@ -99,17 +101,45 @@ static void on_main(dispatch_block_t block)
     else if ([where containsObject:GCHapticsLocalityLeftHandle] && [where containsObject:GCHapticsLocalityRightHandle])
         _channels = 2;
     else _channels = 1;
-    fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics: %s\n", _slot,
+    fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics: %s (localities %s)\n", _slot,
             _channels == 2 ? "left + right handle engines" :
-            _channels == 1 ? "one engine (default locality)" : "none, this pad gets no rumble");
+            _channels == 1 ? "one engine (default locality)" : "none, this pad gets no rumble",
+            where.count ? [where.allObjects componentsJoinedByString:@","].UTF8String : "none");
     return _channels > 0;
 }
 
+/* A failed engine or player set-up. The pad's haptics service
+ * (gamecontrollerd) can refuse one attempt and take a later one, so this
+ * backs off (2, 4, 8, then 15 s) instead of giving up at once. Two failures
+ * in a row before either handle ever played switch the pad to one engine
+ * (default locality); RUMBLE_GIVE_UP in a row leave it without rumble for
+ * the session. */
 - (void)fail:(const char *)what error:(NSError *)error
 {
-    if (_failures++ < 3)
-        fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics %s failed: %s\n", _slot, what,
-                error ? error.localizedDescription.UTF8String : "no detail");
+    NSError *under = error.userInfo[NSUnderlyingErrorKey];
+    char detail[192] = "";
+    double wait;
+
+    _failures++;
+    wait = _failures >= 4 ? 15.0 : (double)(1u << _failures);
+    _retryAt = CFAbsoluteTimeGetCurrent() + wait;
+    if (under)
+        snprintf(detail, sizeof(detail), ", underlying %s %ld", under.domain.UTF8String, (long)under.code);
+    if (_logged++ < 8)
+        fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics %s failed (%u in a row): %s [%s %ld%s]%s\n",
+                _slot, what, _failures, error ? error.localizedDescription.UTF8String : "no detail",
+                error ? error.domain.UTF8String : "-", error ? (long)error.code : 0L, detail,
+                _failures < RUMBLE_GIVE_UP ? "; trying again later" : "");
+    if (_channels == 2 && _failures == 2 && !_player[0] && !_player[1]) {
+        _channels = 1;
+        _want[0] = fmaxf(_want[0], _want[1]);
+        _want[1] = 0;
+        fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics: the per-handle engines keep failing; "
+                "one engine (default locality) from now on\n", _slot);
+    }
+    if (_failures == RUMBLE_GIVE_UP)
+        fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics: %u failures in a row, no rumble on this pad "
+                "for this session\n", _slot, _failures);
 }
 
 - (void)engineLost:(int)i engine:(CHHapticEngine *)engine reason:(long)reason
@@ -122,14 +152,14 @@ static void on_main(dispatch_block_t block)
     _player[i] = nil;
     _playing[i] = NO;
     _sent[i] = -1;
-    if (_losses > 20) _failures = 3;    // a pad that keeps dropping its engine: leave it alone
+    if (_losses > 20) _failures = RUMBLE_GIVE_UP;   // a pad that keeps dropping its engine: leave it alone
     if (g_active) [self push];
 }
 
 - (id<CHHapticPatternPlayer>)playerFor:(int)i
 {
     if (_player[i]) return _player[i];
-    if (_failures >= 3) return nil;
+    if (_failures >= RUMBLE_GIVE_UP || CFAbsoluteTimeGetCurrent() < _retryAt) return nil;
     GCDeviceHaptics *haptics = _controller.haptics;
     if (!haptics) return nil;
     GCHapticsLocality where = _channels == 2 ? (i == 0 ? GCHapticsLocalityLeftHandle : GCHapticsLocalityRightHandle)
@@ -170,28 +200,26 @@ static void on_main(dispatch_block_t block)
                                                        relativeTime:0
                                                            duration:30.0];
     CHHapticPattern *pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
-    // madeira-bcd: game controllers refuse the ADVANCED player -- on a DualSense
-    // it fails with "Couldn't communicate with a helper application" (owner's
-    // GoT log 2026-10-02 10:37:29; the same on Apple's developer forums,
-    // thread 773615, where a plain CHHapticPatternPlayer works). Try the
-    // advanced one (it loops), else take the plain one: it takes the same
-    // intensity control, and push restarts it before the 30 s event ends.
-    id<CHHapticAdvancedPatternPlayer> advanced = pattern ? [engine createAdvancedPlayerWithPattern:pattern error:&error] : nil;
-    id<CHHapticPatternPlayer> player = advanced;
-    if (advanced) advanced.loopEnabled = YES;
-    else if (pattern) {
-        if (_failures == 0)
-            fprintf(stderr, "[hidpad-out] ml2107 slot %d advanced player refused (%s); using a plain pattern player\n",
-                    _slot, error ? error.localizedDescription.UTF8String : "no detail");
-        error = nil;
-        player = [engine createPlayerWithPattern:pattern error:&error];
-    }
+    // madeira-bcd: a PLAIN player only, on this fresh engine. Game controllers
+    // refuse the advanced one with "Couldn't communicate with a helper
+    // application" (Apple developer forums thread 773615: the engine's
+    // connection to com.apple.GameController.gamecontrollerd.haptics breaks,
+    // a plain CHHapticPatternPlayer works). Asking for the advanced player
+    // first broke the engine for the plain one too: GoW log 2026-10-02
+    // 16:38:12 (build 335) has the plain player failing with the same error
+    // right after the advanced one on the same engine, both handles, three
+    // times, after which the pad never rumbled. The plain player takes the
+    // same intensity control; push restarts it before the 30 s event ends.
+    id<CHHapticPatternPlayer> player = pattern ? [engine createPlayerWithPattern:pattern error:&error] : nil;
     if (!player) {
         [engine stopWithCompletionHandler:nil];
         [self fail:"pattern player" error:error];
         return nil;
     }
-    _looping[i] = advanced != nil;
+    if (_logged++ < 8)
+        fprintf(stderr, "[hidpad-out] ml2107 slot %d haptics ready on %s%s\n", _slot, where.UTF8String,
+                _failures ? " after failed attempts" : "");
+    _failures = 0;
     _engine[i] = engine;
     _player[i] = player;
     _playing[i] = NO;
@@ -221,7 +249,7 @@ static void on_main(dispatch_block_t block)
         id<CHHapticPatternPlayer> player = [self playerFor:i];
         if (!player) continue;
         // A plain player does not loop: start it again well before its 30 s event ends.
-        if (_playing[i] && !_looping[i] && CFAbsoluteTimeGetCurrent() - _startedAt[i] > 25.0) {
+        if (_playing[i] && CFAbsoluteTimeGetCurrent() - _startedAt[i] > 25.0) {
             [player stopAtTime:CHHapticTimeImmediate error:nil];
             _playing[i] = NO;
         }
@@ -229,6 +257,12 @@ static void on_main(dispatch_block_t block)
             NSError *error = nil;
             [self sendLevel:level to:player];
             if (![player startAtTime:CHHapticTimeImmediate error:&error]) {
+                // Drop this handle's engine: the next try (after the back-off)
+                // builds a fresh one instead of starting a dead player again.
+                CHHapticEngine *engine = _engine[i];
+                _engine[i] = nil;   // before stopping: its stoppedHandler then finds nothing to restart
+                _player[i] = nil;
+                [engine stopWithCompletionHandler:nil];
                 [self fail:"player start" error:error];
                 continue;
             }

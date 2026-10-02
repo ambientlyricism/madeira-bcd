@@ -2979,6 +2979,32 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `address-map=[0x1025a4000,0x8000000000) 512GB` -- 0x7400000000..
     0x8000000000 lies above the guest window and outside the pool census
     range. Both facts forwarded to agent a951d1d5.
+  - **DualSense on GoW (log GoW.exe 2026-10-02 16:38:12, build 335): no
+    rumble, no triggers.** The pad works as input (HID DualSense 054c:0ce6
+    registered, GameController connected 16:40:40). Rumble requests arrive
+    (`slot 0 rumble low 0.39 high 0.40` at 16:40:45 and later), but every
+    haptics set-up failed: `advanced player refused (Couldn't communicate
+    with a helper application.); using a plain pattern player`, then the
+    plain player failed with the same error on the same engine, both
+    handles, and after the third failure the old code gave up for the
+    session. Apple developer forums thread 773615: on a game controller the
+    advanced player breaks the engine's connection to
+    com.apple.GameController.gamecontrollerd.haptics (CoreHaptics -4811,
+    NSCocoaErrorDomain 4097) while a plain player works. **Fix (this
+    commit, PadOutput.m):** plain players only, each on a fresh engine; a
+    failed set-up or player start drops that engine and backs off (2, 4, 8,
+    then 15 s) instead of giving up; two failures before any handle played
+    switch the pad to one engine (default locality); 8 in a row end rumble
+    for the session; the log now carries the error domain / code /
+    underlying error and the supported localities, and `haptics ready on
+    <locality>` when it works. tests/host/check-pad-output.py updated
+    (asserts no advanced player and the back-off) and PASS; the ObjC
+    compile is CI's. **Triggers:** GoW sent only "off" (mode 0x5) for both
+    triggers in this session (`L2/R2: sony off`, 1 trigger report out of
+    1000) -- it never asked for an adaptive effect, so there is nothing to
+    apply; test triggers in a game that uses them (GoT). The DualSense's
+    audio-based (voice-coil) haptics are not reachable from an iOS app;
+    rumble is mapped to the pad's haptic motors.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
