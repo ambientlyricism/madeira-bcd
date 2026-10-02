@@ -2177,6 +2177,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Merged as 26bf9d0 (agent commit ed8948f); host checks after the merge:
     kmt-adapter, dxgi-factory7, vmon-identity, got-diagnostics, catalog
     PASS. Not yet compiled for iOS (next CI).
+  - **GoT K1 / K2 in the main menu (build 316, logs GhostOfTsushima.exe
+    2026-10-02 09:38:43 K1, 09:39:49 K2): no change.** K1 at present #900:
+    upload-guard 330361 ranges checked, 0 changed in flight; 31447
+    descriptor tables watched, 0 changed; desc-guard 25 writes into
+    in-flight slots out of 426706; fence-strict found 3-8 uncommitted
+    Signals (waited ~1 ms). K2: typed-uav-atomic, barrier-render (passes
+    closed at ResourceBarrier) and fence-strict=2 all active, shapes
+    unchanged. Upload / descriptor races, cross-queue ordering, in-pass
+    barriers and UAV atomics are effectively ruled out. Agent resumed on:
+    GPU occlusion culling (Hi-Z from the previous depth: store actions,
+    depth copies, and especially min/max REDUCTION samplers -- Metal has no
+    D3D12 filter reduction mode), motion vectors, culling-kernel
+    conversion; with a per-frame ExecuteIndirect count readback to find the
+    frame where the grass count dips.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
