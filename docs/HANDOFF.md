@@ -437,8 +437,7 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     write to 0x7100000000 (the 32-bit base, prot 0) kills it. DXMT itself
     held only ~220 MB (Metal 206 MB), footprint 3.5 GB: the game's own
     32-bit VA use fills the 4 GB. Advice: start Bin64\Crysis3.exe (64-bit,
-    D3D11 via the committed d3d11.dll, no 4 GB wall). No crack lines seen
-    in the parts read.
+    D3D11 via the committed d3d11.dll, no 4 GB wall).
   - **God of War, build 273, Memory pool Off (log 11:56:52, 7 min, 1280x720,
     20 MB).** Furthest the owner has played. Pool off gave the guest window
     back its room: `[furniture]` at start free 7629 MB / biggest gap 7293 MB
@@ -1105,8 +1104,7 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     helper filter / age filter); the rest is first compiled by CI. Not
     looked at: anything GTA V does after this point (D3D12, its own checks).
     The launcher's command line carries `-nobattleye -scOfflineOnly`; this
-    is a Madeira process-lifetime fix only (hard rule: nothing about crack or
-    emulator setups).
+    is a Madeira process-lifetime fix.
   - **GTA5_Enhanced.exe started directly (log 2026-10-01 17:32:19, build
     286): the mirror image.** The game loads socialclub.dll, spawns
     `PlayGTAV.exe` (cmdline "PlayGTAV.exe") and terminates itself with exit
@@ -2591,16 +2589,13 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     NtCreateFile/NtOpenFile and NtQuery(Full)AttributesFile logs `[file-trace]
     #N open|attr status=... name=...` (4000 lines, MADEIRA_FILE_TRACE_LIMIT;
     DLL-search misses skipped); results unchanged. Patch applies after
-    guest-log on a copy, idempotent. Note: the owner's copy is not a store
-    copy -- only Madeira-side file I/O bugs are in scope here; if the trace
-    shows a missing game data file, that is an installation matter, not ours.
+    guest-log on a copy, idempotent. If the trace shows a missing file, tell
+    the owner plainly which file belongs where (section 2, "Say the plain fix
+    out loud").
   - **Owner forwarded a forum tip for the "incomplete installation" screen
-    (2026-10-02): `WINEDLLOVERRIDES="socialclub=n,b;version=n,b"`.** Declined:
-    a native version.dll / socialclub.dll in the game folder of this
-    (non-store) copy is the crack's loader, and helping configure it is
-    outside the hard rules (Madeira-side bugs only). No change; the
-    `[file-trace]` diagnostic (build 330) stays the route for real file I/O
-    bugs on our side.
+    (2026-10-02): `WINEDLLOVERRIDES="socialclub=n,b;version=n,b"`.** No
+    Madeira change. The screen's cause was found later with the registry
+    trace (Social Club runtime missing from Program Files, see below).
   - **Build 330 green** (run 36993002764, head b80ff39): guest file trace
     (`env.MADEIRA_FILE_TRACE = 1`). main fast-forwarded to b80ff39; push run
     331 cancelled. Waiting on device: GTA with the file trace; GoT R1/R2.
@@ -2613,19 +2608,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     common.rpf, x64a..x64i.rpf, update\x64\data\errorcodes\american.txt,
     x64\audio\sfx; the only misses are nvngx_update.exe (Streamline's DLSS
     updater probes), FEX AppConfig files, dxmt.conf, commandline.txt -- all
-    benign. **The game folder holds `socialclub_emu.ini`, opened at startup
-    (#79, #170-#173): a Social Club emulator**, i.e. this copy is not a
-    store or DRM-free release. The "incomplete installation" screen most
-    likely comes from that layer; per the hard rules we do not debug or
-    configure it. GTA work on this copy stops here unless a Madeira-side I/O
-    or emulation fault shows up; everything fixed for it (Agility layout,
-    driver version, WMI, child ntdll / stale-heal fixes) carries over to a
-    store copy. Improvement left open: [file-trace] should skip Madeira's
-    own ShaderCache paths.
+    benign. The game folder holds `socialclub_emu.ini`, opened at startup
+    (#79, #170-#173). This trace does not explain the "incomplete
+    installation" screen; the registry trace later did (the Social Club
+    runtime is missing from `C:\Program Files\Rockstar Games\Social Club`,
+    see below). Everything fixed for GTA so far (Agility layout, driver
+    version, WMI, child ntdll / stale-heal fixes) is generic Madeira work.
+    Improvement left open: [file-trace] should skip Madeira's own
+    ShaderCache paths.
   - **GTA: Madeira-side work continues on the logs (owner, 2026-10-02:
-    "help me see whether it runs before I buy").** Agreed scope: fix every
-    Madeira bug the copy exposes (emulation, I/O, crashes); never debug the
-    Social Club emulator itself. Items: (1) NtGetContextThread on the calling
+    "help me see whether it runs before I buy").** Goal: fix every Madeira
+    bug the game exposes (emulation, I/O, crashes). Items: (1)
+    NtGetContextThread on the calling
     thread returns an all-zero context (`[ec-getctx] ml715 ... rip=0 rsp=0`)
     and (2) the IAT sync writes a child's ntdll hooks into the parent's ntdll
     copy -- agent ab89a8c9 started; (3) **dxgi-src fault symbolized**: I
@@ -2699,8 +2693,8 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     overrides of archive content such as common\shaders\db\*.sps and
     common\data\*.xml -> 0xc000003a as on Windows, RAGE `memory:$...`
     pseudo-paths, the support URL tried as a file by ShellExecute, dxmt.conf,
-    nvngx_update.exe). The screen is the Social Club emulator's decision;
-    per scope nothing further on it.
+    nvngx_update.exe). The screen's cause was found later: the Social Club
+    runtime missing from Program Files (registry-trace entry below).
   - **GTA broad review of the build 332 log (owner asked to rule out every
     non-emulator cause, 2026-10-02).** Checked against the working Proton
     run (Heroic/Epic copy, PROTONLOG): (1) crashes: none (only 4
@@ -2733,9 +2727,9 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     OutputDebugString events; the missing DLL list is the one build 333 fills
     (msasn1, wldp, hnetcfg, msctf; drvstore/devobj not in Wine). File trace:
     all 135 dlcpacks\*\dlc.rpf open; the 86 `dlc_update.rpf` misses are
-    optional per-pack overrides (also in 14:31:38). The loader traces concern
-    which game-folder DLLs load (the Social Club emulator's side) -- not
-    analysed, per scope. Note: trace+module is heavy; drop it for normal runs.
+    optional per-pack overrides (also in 14:31:38). The loader traces (which
+    game-folder DLLs load) are reviewed in the next entry. Note:
+    trace+module is heavy; drop it for normal runs.
   - **GTA DLL-loading review (15:01:11 log with trace+loaddll/module,
     owner's request).** Loader behaves like Windows: all 15 game-folder DLLs
     load native from the game folder (DSTORAGE, RUNE64, VERSION,
@@ -2789,9 +2783,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     module issues it is not known): `C:\Program Files\Rockstar Games\Social
     Club\socialclub.dll` (#1669, 0xc000003a), i.e. the real Social Club
     install location, then `\pipe\GTAVLauncher_Pipe`. The game-folder copy
-    does not satisfy that check; making it do so is the emulator's side and
-    out of scope. Madeira resolves that path correctly (Program Files exists,
-    #1668).
+    does not satisfy that check: the game wants the real Social Club runtime
+    at that path. **Resolved (owner, 2026-10-02 15:30):** he copied
+    `C:\Program Files\Rockstar Games` from his own PC into the prefix and the
+    game reached its main menu. Madeira resolves that path correctly
+    (Program Files exists, #1668).
   - **Build 333 green** (run 37004335912, head af5cfc3): "built 97 extra
     Wine DLLs for arm64ec (failed: wbemdisp hnetcfg)" -- msasn1, wldp, msctf,
     xmllite now ship; hnetcfg and wbemdisp fail to build (open: both use
@@ -2823,6 +2819,15 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Open: IOSDisplayShim also calls winios_note_game_metal_hwnd() for the temp
     window, so the "game window whose GDI surface is not drawn" became the
     RGSC temp hwnd -- watch for GDI drawing over the game after that point.
+  - **HANDOFF kept technical (owner, 2026-10-02).** Removed the remarks about
+    the legal status of the owner's game copies and the matching "out of
+    scope / declined" notes: the GTA entries of 2026-10-02, the "Say the plain
+    fix out loud" convention and the section 3 bullet about game copies.
+    Technical findings are unchanged; the GTA entries now point to the real
+    cause (Social Club runtime missing from Program Files) and its
+    resolution. The owner's own hard rules in section 3 (binaries, IPAs,
+    signing files, secrets) stay. Owner: do not add such legal notes to this
+    file again.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
@@ -3047,8 +3052,7 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   is missing and where it goes ("copy/install X to Y"). Lesson: GTA V
   Enhanced needed the real `C:\Program Files\Rockstar Games\Social Club`
   runtime; the trace showed the exact path, but the answer stayed vague and
-  the owner found "copy the folder from my PC" himself. Only configuring or
-  patching DRM/crack components stays out of scope.
+  the owner found "copy the folder from my PC" himself.
 
 ## 2b. Over-the-air install (owner's decision 2026-09-30)
 
@@ -3110,9 +3114,6 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   contains Microsoft redistributables and Apple's converter library).
 * Do not commit externally supplied binaries (exception already granted: the
   125hz PR #28/#29 DLLs).
-* The owner's Ghost of Tsushima / Crysis copies are cracked (RUNE / Steam
-  emulator). Fix Madeira-side bugs only; **do not help configure crack or
-  Steam-emulator files** (e.g. `steam_api.ini`).
 * A GitHub PAT was once pasted in chat; the owner was told to revoke it. Never
   use tokens from chat. The signing `.p12` (+password) and `.mobileprovision`
   must never be committed or printed. Since 2026-09-30 (owner's decision) CI
