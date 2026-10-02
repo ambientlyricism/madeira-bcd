@@ -63,7 +63,7 @@ print('PASS: NtCreateUserProcess refuses conhost.exe in an ARM64EC session befor
 mprot = function(native, 'static inline int mprotect_exec( void *base, size_t size, int unix_prot )')
 refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes"):]
 refuse = refuse[:refuse.index('/* ml457 REVERTED (ml458)')]
-assert 'ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() )' in refuse
+assert 'ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub(),\n                                   ios_sc_game_cef() )' in refuse
 assert 'ios_sc_cef_enabled() && ios_sc_refused_name( sc_mod ) &&' in refuse
 assert 'ios_jit_copy_refused = 1;' in refuse and 'return -1;' in refuse
 exhausted = mprot[mprot.index('[jit-pool] EXHAUSTED (image %p+0x%lx)'):][:900]
@@ -295,16 +295,18 @@ static void gate_and_cmdline( void )
            "--single-process, jitless unless asked otherwise, --no-proxy-server unless it has a proxy switch, extra flags "
            "appended, nothing doubled\n");
 
-    if (!ios_sc_cef_refuse( "libcef.dll", 1, 0, 1 ) || !ios_sc_cef_refuse( "LIBCEF.DLL", 1, 0, 1 )) FAIL("client libcef\n");
-    if (ios_sc_cef_refuse( "libcef.dll", 1, 1, 1 )) FAIL("helper refused\n");
-    if (ios_sc_cef_refuse( "libcef.dll", 0, 0, 1 )) FAIL("MADEIRA_SC_CEF=0 refused\n");
-    if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 0 )) FAIL("non-Social Club process (Steam) refused\n");
-    if (ios_sc_cef_refuse( "libcef.dll.bak", 1, 0, 1 ) || ios_sc_cef_refuse( NULL, 1, 0, 1 )) FAIL("other names\n");
-    if (!ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 1 ) || !ios_sc_cef_refuse( "NVNGX_DLSSG.DLL", 1, 0, 1 ))
+    if (!ios_sc_cef_refuse( "libcef.dll", 1, 0, 1, 0 ) || !ios_sc_cef_refuse( "LIBCEF.DLL", 1, 0, 1, 0 )) FAIL("client libcef\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 1, 1, 1, 0 )) FAIL("helper refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 0, 0, 1, 0 )) FAIL("MADEIRA_SC_CEF=0 refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 0, 0 )) FAIL("non-Social Club process (Steam) refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll.bak", 1, 0, 1, 0 ) || ios_sc_cef_refuse( NULL, 1, 0, 1, 0 )) FAIL("other names\n");
+    if (!ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 1, 0 ) || !ios_sc_cef_refuse( "NVNGX_DLSSG.DLL", 1, 0, 1, 0 ))
         FAIL("client DLSS runtime\n");
-    if (ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 0 ) || ios_sc_cef_refuse( "nvngx_dlss.dll", 0, 0, 1 ) ||
-        ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 1, 1 )) FAIL("DLSS refused outside a Social Club client\n");
-    if (ios_sc_cef_refuse( "sl.dlss.dll", 1, 0, 1 ) || ios_sc_cef_refuse( "nvngx_dlssd.dll.x", 1, 0, 1 ))
+    if (ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 0, 0 ) || ios_sc_cef_refuse( "nvngx_dlss.dll", 0, 0, 1, 0 ) ||
+        ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 1, 1, 0 )) FAIL("DLSS refused outside a Social Club client\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 1, 1 ) || !ios_sc_cef_refuse( "nvngx_dlss.dll", 1, 0, 1, 1 ))
+        FAIL("MADEIRA_SC_GAME_CEF=1\n");
+    if (ios_sc_cef_refuse( "sl.dlss.dll", 1, 0, 1, 0 ) || ios_sc_cef_refuse( "nvngx_dlssd.dll.x", 1, 0, 1, 0 ))
         FAIL("Streamline's own plugin refused\n");
     {
         int len;

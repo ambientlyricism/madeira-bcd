@@ -12417,11 +12417,30 @@ static int ios_sc_refused_name( const char *module )
            ios_sc_name_is( module, "nvngx_dlssg.dll" );
 }
 
+/* env.MADEIRA_SC_GAME_CEF = 1 (experiment): the game keeps its libcef.dll.
+ * GTA log 2026-10-02 23:03 (file trace): GTA5_Enhanced.exe's socialclub.dll
+ * probes the Social Club files, loads libcef.dll -- refused here -- and later
+ * the helper connects (OnChannelConnected) but the game never asks it for a UI.
+ * In the owner's working Proton log the game process loads chrome_elf.dll and
+ * libcef.dll right after socialclub.dll (2028.2 s) and keeps both loaded until
+ * it exits, so the refusal is the one difference left in the game process. */
+static int ios_sc_game_cef(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char *e = getenv( "MADEIRA_SC_GAME_CEF" );
+        on = e && e[0] == '1';
+    }
+    return on;
+}
+
 /* The decision, separated from the lookups for the host test: refuse the copy
  * of `module` when it is one of those, the switch is on, the process is not
- * the helper and it is a Social Club client. */
-static int ios_sc_cef_refuse( const char *module, int enabled, int is_helper, int has_socialclub )
+ * the helper and it is a Social Club client; `game_cef` keeps libcef.dll. */
+static int ios_sc_cef_refuse( const char *module, int enabled, int is_helper, int has_socialclub, int game_cef )
 {
+    if (game_cef && ios_sc_name_is( module, "libcef.dll" )) return 0;
     return enabled && !is_helper && has_socialclub && ios_sc_refused_name( module );
 }
 
@@ -14136,7 +14155,8 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
              * exhausted pool, below. */
             const char *sc_mod = ios_pe_module_name( image_base, image_size );
             if (ios_sc_cef_enabled() && ios_sc_refused_name( sc_mod ) &&
-                ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() ))
+                ios_sc_cef_refuse( sc_mod, 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub(),
+                                   ios_sc_game_cef() ))
             {
                 static int sc_refused_n;
                 if (sc_refused_n++ < 8)
