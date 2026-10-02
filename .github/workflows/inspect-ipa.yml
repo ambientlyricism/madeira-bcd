@@ -23,6 +23,8 @@ permissions:
 
 jobs:
   inspect:
+    # madeira-bcd: runs only in the owner's repository; a fork's run is skipped.
+    if: github.repository == 'bahacan16/madeira-bcd'
     runs-on: macos-latest
     steps:
       - name: Download the draft IPA and our newest IPA artifact

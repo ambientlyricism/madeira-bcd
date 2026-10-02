@@ -2026,6 +2026,17 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     `madeira-unsigned-ipa`). Consequences: builds older than the 10 the R2
     bucket keeps are gone for good; `inspect-ipa.yml` (compares the draft
     with "our newest IPA artifact") has nothing to compare against now.
+  - **Owner (2026-10-02): make the workflows hard to use from a clone** (the
+    repo stays public for free runners; Will asked that people stop linking
+    the fork's builds). Every workflow job now has
+    `if: github.repository == 'bahacan16/madeira-bcd'`, so a fork's run is
+    skipped. Barriers that already existed for a fork: the Metal Shader
+    Converter comes only from this repo's DRAFT release `msc-private` (a fork
+    cannot see it; the build fails with "no msc-private release"), the OTA
+    signing material and R2 keys are this repo's secrets, and no IPA
+    artifact is uploaded any more. A skilled person can still remove the
+    guard and supply their own MSC/certificate; this only stops casual
+    reuse. Source stays public (LGPL obligations of Wine are met by that).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
