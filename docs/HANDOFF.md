@@ -2967,6 +2967,18 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     instruction. The game itself passes its CPU checks and runs the loading
     screen at ~60 FPS with AVX off. AVX stays a candidate only if a later
     crash points at AVX code.
+  - **GTA log 16:33:48 (build 335, owner: AVX on, 720p): same stop, as
+    expected.** 89 EXHAUSTED, `\pipe\chrome.rgsc_gameinst_0` never
+    appears, SocialClubHelper started 6 times. The pool shrank to 592 MB
+    this time (holes 0x135400000+172MB, 0x148000000+599MB,
+    0x16dcbc000+291MB): the low area 0x119000000..0x180000000 is shared
+    with something whose size changes per launch. Build 335 itself works
+    on device: `[hw-registry] ... 6/6 CentralProcessor + 6
+    FloatingPointProcessor ... FeatureSet 0xe3f9ffff` (AVX bits with
+    MADEIRA_FEX_AVX=1), upstream's `[device]` lines show
+    `address-map=[0x1025a4000,0x8000000000) 512GB` -- 0x7400000000..
+    0x8000000000 lies above the guest window and outside the pool census
+    range. Both facts forwarded to agent a951d1d5.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
