@@ -2843,6 +2843,53 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     normal size with a normal-sized Metal HUD; the log should show
     `another swapchain reconfigured the shared Metal layer -- ... restored`
     once the RGSC temp window's swapchain has come and gone.
+  - **Upstream sync (12h routine, fired 2026-10-02 12:59 UTC): merge 67ea7de,
+    14 upstream commits up to ca3183e.** Upstream added: sessions start on
+    the standard 63 GB address map (#109; the RW alias of the JIT pool lets
+    the kernel place it when 0x7000000000 is past the map's end,
+    `env.MADEIRA_RW_ALIAS_RETRY`), a failed start says why (StikJITHelper
+    .poolFailure, an Enable JIT offer when no debugger is attached;
+    `env.MADEIRA_JIT_ATTACH_CHECK`, `env.MADEIRA_JIT_TRAP_FALLBACK`) and
+    `[device]` lines in the log (model, OS, address map, signing, profile);
+    ntdll: a shared writable section that is not host-page aligned is mapped
+    private instead of failing the load (#110,
+    `env.MADEIRA_SHARED_SECTION_PRIVATE`); a small image with stripped
+    relocations gets the executable window (#111,
+    `env.MADEIRA_EXE_WINDOW_SMALL_FIXED`); the prefix gets the running user's
+    AppData\LocalLow (#112, `env.MADEIRA_PROFILE_LOCALLOW`); Dock explains
+    Steam's launch refusal 29 (#113); version 0.1.1 from the project's
+    version settings. All new switches default on, 0 = old behaviour. No
+    submodule pin changed. Conflicts: project.pbxproj (MARKETING_VERSION
+    0.1.1 taken; our bundle id com.willfaust.mythicemu kept, so OTA still
+    updates the installed app in place; CI still stamps 0.1.<run>),
+    Info.plist (`$(CURRENT_PROJECT_VERSION)` taken, our madeira:// URL type
+    kept), ContentView.swift (upstream's JIT pool failure text taken; our
+    increased-debugging-memory-limit log line kept), catalog regenerated.
+    Auto-merged and reviewed: virtual_ios.c (#110/#111 hunks sit beside our
+    exec-window claim / map_image_into_view changes), StikJITHelper.swift,
+    Library.swift, WineProcessBridge.m, JITAllocator.c/h,
+    EntitlementChecker.swift; every symbol the new Swift uses exists.
+  - **Hardware registry keys (agent ad9ffa50, cherry-picked as 9026ed9).**
+    wineboot's volatile HKLM\HARDWARE\DESCRIPTION\System tree is now written
+    at session start (build/ntdll-unix/server_ios.c ios_hw_registry_publish
+    + hw_registry_ios.h, called from loader_ios.c start_main_thread):
+    CentralProcessor\N / FloatingPointProcessor\N for every processor
+    (Identifier "Intel64 Family 6 Model 166 Stepping 1", GenuineIntel,
+    FeatureSet and ~MHz as FEX reports them), BIOS from the guest's SMBIOS
+    table, System Identifier / SystemBiosDate. Evidence: GTA 15:13:38 trace
+    (CentralProcessor\0 and BIOS opens failed; WMI Win32_Processor Caption
+    NULL). `env.MADEIRA_HW_REGISTRY` = 1 default, 0 off, 2 also rewrites the
+    template's processor values in Session Manager\Environment. One
+    `[hw-registry]` line per session. Details: docs/hw-registry.md.
+    tests/host/check-hw-registry.py PASS. The iOS compile is CI's.
+  - **Host tests after the merge + hw-registry:** 42 of 61 pass (incl.
+    check-hw-registry, image-reload, stale-heal-owner, section-abort,
+    kmt-adapter). 17 cannot run here (no swiftc, no configured macOS Wine
+    tree, a cryptography panic in this container). check-swap-coverage
+    fails the same way on 7151f36 (before the merge); check-wg-parser
+    fails on its VideoToolbox check while the frameworks section of
+    project.pbxproj is identical before and after the merge -- both
+    unrelated to this merge, open.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
