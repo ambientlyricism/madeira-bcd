@@ -118,6 +118,10 @@ heap the game creates as a tile pool is allocated too (DEFAULT heaps are
 Metal placement heaps, ml1145), so a game that streams through a big tile pool
 pays for the pool AND the full backing; watch `ml1057` / `ml1150` memory lines.
 Also lenient: 3D reserved textures (Tier 3) are accepted.
+Tier 2 also implies MIN/MAX reduction filtering (D3D12_FILTER_MINIMUM_* /
+MAXIMUM_*), which Metal samplers do not have: such samplers are logged
+(`[sampler] filter 0x1.. (MINIMUM|MAXIMUM reduction ...`) and mapped as
+before unless `sampler-reduction = 1 / 2` (docs/got-corruption.md section 10).
 ID3D12GraphicsCommandList::CopyTiles is still the stub.
 
 **Later, real residency:** Metal sparse textures (MTLHeapTypeSparse,

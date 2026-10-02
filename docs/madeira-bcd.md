@@ -516,6 +516,23 @@ the update pack, the game's options and starts the per-game session log.
   the first N ExecuteCommandLists / Signal / Wait calls with thread, queue
   type and fence state; `typed-uav-atomic = 1` creates R32 UAV texture-buffer
   views (RWBuffer<uint>, UAV counters) with ShaderAtomic usage.
+  Round 3 (section 10, the main menu's flickering grass): `ind-count = N`
+  (1 = 3000 frames, from present `ind-count-from`) copies every indirect
+  command's argument records with one blit when its encoder ends, sums them
+  per pipeline once the GPU has finished the batch and logs one
+  `[ind-count] frame #N` line per frame, a pipeline table now and then, and
+  `DIP` / `SPIKE` lines when a pipeline's instances (draws) or threadgroups
+  (dispatches) fall or jump for one frame against both neighbours;
+  `capture-cs` also takes `name/hash-prefix` (one kernel when every kernel is
+  `cs_main`).
+- D3D12 sampler reduction (`madeira_d3d12.c`, `mad_sampler_info`;
+  docs/got-corruption.md section 10): Metal samplers have no MIN/MAX
+  reduction, and the mapping took MAXIMUM filters (0x180 set) for COMPARISON
+  samplers (`filter & 0x80`) and MINIMUM ones for plain filtering. Unchanged by
+  default, but every MIN/MAX filter value is logged once (`[sampler] filter
+  0x1..`); `sampler-reduction = 1` maps MIN/MAX to point filtering without a
+  comparison, `= 2` only drops the comparison; `sampler-census = 1` logs every
+  distinct filter value with its Metal mapping.
 - D3D12 tiled resources, opt-in (`madeira_d3d12.c`, TILED RESOURCES block;
   docs/gta5-d3d12-caps.md): `d3d12-tiled-resources = 1` (madeira.cfg or the
   game's file, default 0) answers OPTIONS.TiledResourcesTier 2 and

@@ -27,6 +27,13 @@ unchanged, GPU-only or READBACK one is not), descriptor writes into slots of
 an unfinished batch are reported, root-CBV copies land 256-aligned in the
 argument slot's own ring chunk and are reused within a replay.
 
+Section 10 (round 3, the main menu's flickering grass) added ind-count (+
+ind-count-from), capture-cs by name/hash, and sampler-reduction /
+sampler-census: the test checks their defaults and hooks, runs the per-frame
+sums and the dip detection inside the sync harness, and cuts the sampler
+mapping out and runs it: unchanged by default (MIN/MAX filters are logged),
+point-sampled without comparison (1), without comparison only (2).
+
 The runtime parts are skipped when no host C compiler is found (cc, gcc or
 clang); the static checks still run.
 """
@@ -293,12 +300,15 @@ static LONG InterlockedExchangeAdd(volatile LONG *p, LONG v) { LONG o = *p; *p +
 #define MAD_ARG_SLOT_BYTES  1088u
 enum { D3D12_HEAP_TYPE_DEFAULT = 1, D3D12_HEAP_TYPE_UPLOAD = 2, D3D12_HEAP_TYPE_READBACK = 3, D3D12_HEAP_TYPE_CUSTOM = 4 };
 static unsigned g_list_seq = 77;
-static int g_logs; static char g_last_log[512];
-static void d3d12_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); g_logs++; vsnprintf(g_last_log, sizeof g_last_log, fmt, ap); va_end(ap); fputs(g_last_log, stdout); }
-static long long g_cfg[6]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot, queue-trace */
+static int g_logs; static char g_last_log[512], g_logbuf[65536]; static size_t g_logbuf_n;
+static void d3d12_log(const char *fmt, ...) {
+    va_list ap; size_t n; va_start(ap, fmt); g_logs++; vsnprintf(g_last_log, sizeof g_last_log, fmt, ap); va_end(ap); fputs(g_last_log, stdout);
+    n = strlen(g_last_log); if (g_logbuf_n + n < sizeof g_logbuf) { memcpy(g_logbuf + g_logbuf_n, g_last_log, n + 1); g_logbuf_n += n; }
+}
+static long long g_cfg[8]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot, queue-trace, ind-count, ind-count-from */
 static long long mad_cfg_int_pe(const char *key, long long dflt) {
-    static const char *const k[6] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot", "queue-trace" };
-    int i; for (i = 0; i < 6; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
+    static const char *const k[8] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot", "queue-trace", "ind-count", "ind-count-from" };
+    int i; for (i = 0; i < 8; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
     return dflt;
 }
 struct mad_device { obj_handle_t gpu_event, mtl_device; volatile LONG64 gpu_serial_committed, gpu_serial_failed; };
@@ -564,6 +574,37 @@ int main(void) {
         g_cfg[5] = 0; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 0 && g_qtrace == 0);
     }
 
+    /* 5d. ind-count: per-frame sums, the frame table, one-frame dips (and the end of the window) */
+    {
+        static UINT32 rec[64 * 5]; static const unsigned grass_n[7] = { 40, 40, 40, 20, 40, 40, 40 };   /* frame 103: half the grass culled away */
+        UINT32 disp[3] = { 8, 4, 1 }; unsigned k, f;
+        const void *grass = (const void *)0x1000, *rock = (const void *)0x2000, *cull = (const void *)0x3000;
+        g_cfg[0] = g_cfg[1] = g_cfg[2] = g_cfg[3] = g_cfg[4] = g_cfg[5] = g_cfg[6] = g_cfg[7] = 0;
+        g_sd_state = -1; g_logs = 0; mad_sync_diag_load(); T(g_sd_state == 0 && g_ic_frames == 0 && g_logs == 0);   /* unset: off, silent */
+        g_cfg[6] = 1; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 1 && g_ic_frames == 3000 && g_ic_from == 0);
+        g_cfg[6] = 6; g_cfg[7] = 101; g_sd_state = -1; mad_sync_diag_load(); T(g_ic_frames == 6 && g_ic_from == 101);
+        for (k = 0; k < 64; k++) { rec[k * 5] = k < 40 ? 36 : 0; rec[k * 5 + 1] = 10; }   /* {index count, instances, ...}; 0 indices draws nothing */
+        g_logbuf_n = 0; g_logbuf[0] = 0;
+        for (f = 0; f < 7; f++) {   /* frames 100 (before ind-count-from: compared, not logged) .. 106 */
+            unsigned skip = 40 - grass_n[f];
+            mad_ic_add(100 + f, grass, "vs_Grass|ps_Grass", MAD_IC_DRAW_INDEXED, rec + skip * 5, 64 - skip, 5, 0);
+            if (f != 4) mad_ic_add(100 + f, rock, "vs_Rock|ps_Rock", MAD_IC_DRAW_INDEXED, rec, 3, 5, 0);   /* absent in frame 104 */
+            mad_ic_add(100 + f, cull, "cs_main/00112233aabbccdd", MAD_IC_DISPATCH, disp, 1, 3, 0);
+        }
+        mad_ic_add(200, cull, "cs_main/00112233aabbccdd", MAD_IC_DISPATCH, disp, 1, 3, 0);   /* the next frame flushes 106 */
+        mad_ic_add(201, cull, "cs_main/00112233aabbccdd", MAD_IC_DISPATCH, disp, 1, 3, 0);   /* past the window: silent */
+        T(g_ic_logged == 6 && g_ic_flagged == 2);
+        T(!strstr(g_logbuf, "frame #100:") && strstr(g_logbuf, "frame #101:") && strstr(g_logbuf, "frame #106:") && !strstr(g_logbuf, "frame #200:"));
+        T(strstr(g_logbuf, "[ind-count] frame #101: 2 indirect draws (67 records, 43 non-empty, 430 instances), 1 indirect dispatches (32 threadgroups); 3 pipelines\n"));
+        T(strstr(g_logbuf, "[ind-count] frame #103: 2 indirect draws (47 records, 23 non-empty, 230 instances)"));
+        T(strstr(g_logbuf, "[ind-count] DIP at frame #103: draw-indexed 'vs_Grass|ps_Grass' 400 -> 200 -> 400 instances (frames #102..#104)"));
+        T(strstr(g_logbuf, "[ind-count] DIP at frame #104: draw-indexed 'vs_Rock|ps_Rock' 30 -> 0 -> 30 instances"));
+        T(strstr(g_logbuf, "cs_main/00112233aabbccdd") && strstr(g_logbuf, "threadgroups 32\n"));   /* the table, once, at the first frame */
+        T(strstr(g_logbuf, "[ind-count] 6 frames logged; 2 dips/spikes; 0 commands not copied"));
+        T(mad_ic_odd(100, 79, 100) == -1 && mad_ic_odd(100, 81, 100) == 0 && mad_ic_odd(10, 3, 10) == 0 && mad_ic_odd(100, 126, 90) == 1 && mad_ic_odd(4, 0, 4) == 0);
+        g_cfg[6] = g_cfg[7] = 0; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 0 && g_ic_frames == 0);
+    }
+
     /* 6. fence-strict helpers */
     load(1, 0, 0, 0, 0); g_waits = 0;
     dev.gpu_serial_committed = 0; mad_strict_cb_wait(&dev, 0x77); T(g_waits == 0);
@@ -593,6 +634,113 @@ else:
             r = subprocess.run([str(exe)], capture_output=True, text=True)
             check("fence-strict / upload-guard / desc-guard / cbv-snapshot behave (" + (r.stdout.strip().splitlines() or ["?"])[-1] + ")",
                   r.returncode == 0 and "sync harness ok" in r.stdout)
+            if r.returncode:
+                print(r.stdout[-4000:])
+
+# --- round 3 (docs/got-corruption.md section 10): ind-count, capture-cs by hash, sampler reduction ----
+check("ind-count / ind-count-from default to 0",
+      'ic = mad_cfg_int_pe("ind-count", 0);' in SRC and 'icf = mad_cfg_int_pe("ind-count-from", 0);' in SRC)
+check("ind-count: the replay hook is behind g_sd_state and the key",
+      "if (g_sd_state > 0 && g_ic_frames) mad_ic_note(&e, c);   /* madeira-bcd: ind-count */" in SRC)
+check("ind-count: the copies are made when an encoder ends, after it is ended",
+      "if (e->nic) mad_ic_encode(e);" in cut("static void exec_end(struct mad_exec *e) {") and
+      cut("static void exec_end(struct mad_exec *e) {").index("if (e->cenc) { MTLCommandEncoder_endEncoding(e->cenc); e->cenc = 0; }") <
+      cut("static void exec_end(struct mad_exec *e) {").index("if (e->nic) mad_ic_encode(e);"))
+check("ind-count: batches get a ticket, Present collects",
+      "if (g_upload_guard || g_desc_guard || g_ic_frames) q->open_ticket = mad_ticket_new();" in SRC and
+      "if (g_ic_frames) mad_ic_collect(s->queue->device);" in pr)
+ie = cut("static void mad_ic_encode(struct mad_exec *e) {")
+check("ind-count: the blit waits and updates the encoder fence like every other encoder",
+      ie.index("exec_fence_blit(e, benc, 0);") < ie.index("MTLBlitCommandEncoder_encodeCommands(benc") < ie.index("exec_fence_blit(e, benc, 1);"))
+check("capture-cs: a plain name matches as before, name/hash picks one kernel",
+      "mad_cs_match(e->cpso, g_capture_cs)" in SRC and "if (!slash) return !strcmp(p->vs_name, want);" in SRC)
+check("sampler-reduction / sampler-census default to 0",
+      'v = mad_cfg_int_pe("sampler-reduction", 0);' in SRC and 'g_smp_census = mad_cfg_int_pe("sampler-census", 0) ? 1 : 0;' in SRC)
+check("both sampler paths (static and CreateSampler) go through mad_sampler_info",
+      SRC.count("mad_sampler_info(&si, ") == 3)
+
+SMP_STUBS = r"""
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef unsigned UINT; typedef long LONG;
+enum WMTSamplerBorderColor { WMTSamplerBorderColorTransparentBlack = 0, WMTSamplerBorderColorOpaqueBlack = 1, WMTSamplerBorderColorOpaqueWhite = 2 };
+enum WMTSamplerAddressMode { WMTSamplerAddressModeClampToEdge = 0, WMTSamplerAddressModeMirrorClampToEdge = 1, WMTSamplerAddressModeRepeat = 2,
+                             WMTSamplerAddressModeMirrorRepeat = 3, WMTSamplerAddressModeClampToZero = 4, WMTSamplerAddressModeClampToBorderColor = 5 };
+enum WMTSamplerMipFilter { WMTSamplerMipFilterNotMipmapped = 0, WMTSamplerMipFilterNearest = 1, WMTSamplerMipFilterLinear = 2 };
+enum WMTSamplerMinMagFilter { WMTSamplerMinMagFilterNearest = 0, WMTSamplerMinMagFilterLinear = 1 };
+enum WMTCompareFunction { WMTCompareFunctionNever = 0, WMTCompareFunctionLess, WMTCompareFunctionEqual, WMTCompareFunctionLessEqual,
+                          WMTCompareFunctionGreater, WMTCompareFunctionNotEqual, WMTCompareFunctionGreaterEqual, WMTCompareFunctionAlways };
+struct WMTSamplerInfo { enum WMTSamplerMinMagFilter min_filter, mag_filter; enum WMTSamplerMipFilter mip_filter;
+    enum WMTSamplerAddressMode r_address_mode, s_address_mode, t_address_mode; enum WMTSamplerBorderColor border_color;
+    enum WMTCompareFunction compare_function; float lod_min_clamp, lod_max_clamp; uint32_t max_anisotroy;
+    bool normalized_coords, lod_average, support_argument_buffers; uint64_t gpu_resource_id; };
+typedef enum { D3D12_COMPARISON_FUNC_NEVER = 1, D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_LESS_EQUAL,
+               D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_NOT_EQUAL, D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_ALWAYS } D3D12_COMPARISON_FUNC;
+static int g_logs; static char g_last_log[1024];
+static void d3d12_log(const char *fmt, ...) { va_list ap; va_start(ap, fmt); g_logs++; vsnprintf(g_last_log, sizeof g_last_log, fmt, ap); va_end(ap); fputs(g_last_log, stdout); }
+static long long g_red_cfg, g_census_cfg;
+static long long mad_cfg_int_pe(const char *key, long long dflt) {
+    if (!strcmp(key, "sampler-reduction")) return g_red_cfg; if (!strcmp(key, "sampler-census")) return g_census_cfg; return dflt;
+}
+"""
+SMP_HARNESS = r"""
+#define T(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+static struct WMTSamplerInfo S(UINT filter, UINT cmp) { struct WMTSamplerInfo si; mad_sampler_info(&si, filter, 1, 1, 1, 8, cmp, 0, 0.0f, 3.4e38f, "test"); return si; }
+static void reload(long long red, long long census) { g_red_cfg = red; g_census_cfg = census; g_smp_red = -1; memset((void *)g_smp_seen, 0, sizeof g_smp_seen); }
+int main(void) {
+    struct WMTSamplerInfo a, b;
+    /* unset: every mapping exactly as before, MIN/MAX logged once each, nothing else */
+    reload(0, 0); g_logs = 0;
+    a = S(0x15, 0); T(a.min_filter == WMTSamplerMinMagFilterLinear && a.mip_filter == WMTSamplerMipFilterLinear && a.compare_function == WMTCompareFunctionNever && g_logs == 0);
+    a = S(0x95, D3D12_COMPARISON_FUNC_LESS_EQUAL); T(a.compare_function == WMTCompareFunctionLessEqual && a.min_filter == WMTSamplerMinMagFilterLinear && g_logs == 0);
+    a = S(0xd5, D3D12_COMPARISON_FUNC_GREATER); T(a.compare_function == WMTCompareFunctionGreater && a.max_anisotroy == 8 && g_logs == 0);
+    a = S(0x115, 0); T(a.min_filter == WMTSamplerMinMagFilterLinear && a.compare_function == WMTCompareFunctionNever && g_logs == 1);   /* MINIMUM: an average */
+    T(strstr(g_last_log, "filter 0x115 (MINIMUM reduction") && strstr(g_last_log, "an averaging filter (as before"));
+    a = S(0x195, 0); T(a.compare_function == WMTCompareFunctionAlways && a.min_filter == WMTSamplerMinMagFilterLinear && g_logs == 2);   /* MAXIMUM: the old bug, kept */
+    T(strstr(g_last_log, "MAXIMUM taken for a COMPARISON sampler") && strstr(g_last_log, "compare Always"));
+    a = S(0x195, 0); a = S(0x115, 0); T(g_logs == 2);   /* once per filter value */
+    T(a.lod_max_clamp == 1000.0f && a.s_address_mode == WMTSamplerAddressModeRepeat);
+    /* 1: point filtering and no comparison for MIN/MAX only */
+    reload(1, 0); g_logs = 0;
+    a = S(0x195, 0); T(a.compare_function == WMTCompareFunctionNever && a.min_filter == WMTSamplerMinMagFilterNearest && a.mag_filter == WMTSamplerMinMagFilterNearest &&
+                       a.mip_filter == WMTSamplerMipFilterNearest && a.max_anisotroy == 1);
+    T(g_logs == 2 && strstr(g_last_log, "point-sampled, comparison dropped (sampler-reduction = 1)"));   /* the key line + the sampler */
+    a = S(0x155, 0); T(a.min_filter == WMTSamplerMinMagFilterNearest && a.max_anisotroy == 1);   /* MINIMUM_ANISOTROPIC */
+    b = S(0x95, D3D12_COMPARISON_FUNC_LESS); T(b.compare_function == WMTCompareFunctionLess && b.min_filter == WMTSamplerMinMagFilterLinear);   /* comparison untouched */
+    b = S(0x15, 0); T(b.min_filter == WMTSamplerMinMagFilterLinear && b.mip_filter == WMTSamplerMipFilterLinear);
+    /* 2: only the comparison goes */
+    reload(2, 0);
+    a = S(0x195, 0); T(a.compare_function == WMTCompareFunctionNever && a.min_filter == WMTSamplerMinMagFilterLinear && a.mip_filter == WMTSamplerMipFilterLinear);
+    a = S(0x1d5, 0); T(a.compare_function == WMTCompareFunctionNever && a.max_anisotroy == 8);
+    reload(9, 0); a = S(0x195, 0); T(g_smp_red == 0 && a.compare_function == WMTCompareFunctionAlways);   /* out of range: off */
+    /* census: every distinct filter once */
+    reload(0, 1); g_logs = 0;
+    S(0x15, 0); S(0x15, 0); S(0x95, D3D12_COMPARISON_FUNC_LESS); S(0x00, 0);
+    T(g_logs == 4 && strstr(g_last_log, "filter 0x000 (standard reduction, D3D min point mag point mip point"));
+    printf("sampler harness ok\n");
+    return 0;
+}
+"""
+smp_code = SMP_STUBS + cut("static enum WMTCompareFunction mad_compare(D3D12_COMPARISON_FUNC f) {") + "\n"
+i0 = SRC.index("static int g_smp_red = -1, g_smp_census;")
+i1 = SRC.index("static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border, float minlod, float maxlod, const char *who) {")
+smp_code += SRC[i0:i1] + cut(SRC[i1:SRC.index("{", i1) + 1]) + "\n" + SMP_HARNESS
+if cc:
+    with tempfile.TemporaryDirectory() as t:
+        c = pathlib.Path(t) / "smp.c"
+        c.write_text(smp_code)
+        exe = pathlib.Path(t) / "smp"
+        p = subprocess.run([cc, "-std=c11", "-Wall", "-Wno-unused-function", "-o", str(exe), str(c)], capture_output=True, text=True)
+        check("sampler harness compiles", p.returncode == 0)
+        if p.returncode:
+            print(p.stderr[-4000:])
+        else:
+            r = subprocess.run([str(exe)], capture_output=True, text=True)
+            check("sampler mapping: unchanged by default, MIN/MAX logged; sampler-reduction 1 / 2; census (" +
+                  (r.stdout.strip().splitlines() or ["?"])[-1] + ")", r.returncode == 0 and "sampler harness ok" in r.stdout)
             if r.returncode:
                 print(r.stdout[-4000:])
 

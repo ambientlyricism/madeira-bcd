@@ -917,7 +917,7 @@ struct mad_descriptor {
 static enum WMTCompareFunction mad_compare(D3D12_COMPARISON_FUNC f);
 static UINT64 mad_uavctr_get(UINT64 va);   /* madeira-bcd: UAV counters, see CreateUnorderedAccessView */
 static LONG g_uavctr_hits, g_uavctr_misses;
-static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border, float minlod, float maxlod);
+static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border, float minlod, float maxlod, const char *who);
 
 /* RTV and DSV heaps hold resource pointers and never reach the GPU; the other
  * two hold real descriptors in a Metal buffer the shader reads. Both kinds hand
@@ -1607,10 +1607,14 @@ struct mad_exec {
     UINT64 dg_va[MAD_ROOT_PARAM_MAX]; UINT dg_n[MAD_ROOT_PARAM_MAX];
     UINT64 sn_src[8], sn_dst[8]; unsigned sn_chunk[8], sn_n;
     UINT64 ug_va[MAD_ROOT_PARAM_MAX];   /* upload-guard: tables noted in this replay */
+    /* madeira-bcd: ind-count -- indirect commands of the open encoder whose
+     * argument records are copied when it ends (mad_ic_encode) */
+    struct { struct mad_resource *args; UINT64 off; UINT32 count, stride; UINT16 kind; const struct mad_pso *pso; } ic[64]; unsigned nic;
 };
 static void mad_capture_pass(struct mad_exec *e, struct mad_resource **rt, unsigned nrt, const struct mad_rtvp *rtp,
                              struct mad_resource *depth, const struct mad_rtvp *dp, unsigned seq, unsigned draws);
 static void mad_mip_dims(const struct mad_resource *r, UINT level, UINT *w, UINT *h, UINT *d);
+static void mad_ic_encode(struct mad_exec *e);   /* madeira-bcd: ind-count */
 
 /* ml1088: OCCLUSION QUERIES.
  *
@@ -1997,6 +2001,7 @@ static void exec_end(struct mad_exec *e) {
     if (e->benc) { MTLCommandEncoder_endEncoding(e->benc); e->benc = 0; }
     if (e->cenc) { MTLCommandEncoder_endEncoding(e->cenc); e->cenc = 0; }
     if (cdraws && g_capture_on) mad_capture_pass(e, crt, cn, crtp, cdepth, &cdp, cseq, cdraws);   /* ml1098: after the pass, before anything else */
+    if (e->nic) mad_ic_encode(e);   /* madeira-bcd: ind-count, the argument records this encoder consumed */
 }
 
 static obj_handle_t mad_capbuf_alloc(struct mad_device *d, UINT64 len, void **cpu) {
@@ -3448,7 +3453,22 @@ static int exec_ring_take(struct mad_exec *e, obj_handle_t *buf, UINT64 *off, vo
  *                     binds the copy, so the GPU reads what the game had written
  *                     when it called ExecuteCommandLists. A fix attempt for root
  *                     constant buffers only; a cbuffer larger than N reads ring
- *                     bytes past the copy. */
+ *                     bytes past the copy.
+ *   ind-count = N     (round 3, GoT main menu: grass in front of the katana
+ *                     present in one frame, missing in the next) logs N frames
+ *                     (1 = 3000) of what ExecuteIndirect really drew: when an
+ *                     encoder that ran indirect draws or dispatches ends, one
+ *                     blit copies their argument records (up to 64 KB a
+ *                     command) to shared memory; once the GPU has finished the
+ *                     batch, the records are summed per pipeline (instances of
+ *                     non-empty draw records, threadgroups of dispatches) and
+ *                     one line per frame is logged, with a pipeline table now
+ *                     and then. A pipeline whose total falls (or jumps) in one
+ *                     frame against BOTH neighbours is logged as a DIP (SPIKE):
+ *                     with a static camera that is GPU culling deciding
+ *                     differently from frame to frame. ind-count-from = P
+ *                     starts at present P. Ends every encoder that ran
+ *                     indirect commands with an extra blit pass. */
 static int g_sd_state = -1;   /* -1 = not read yet, 0 = everything off, 1 = something on */
 static int g_fence_strict, g_upload_guard, g_desc_guard, g_qtrace;
 static UINT g_ug_bytes = 256, g_cbv_snap;
@@ -3456,8 +3476,10 @@ static volatile LONG g_sd_strict_waits, g_sd_ug_noted, g_sd_ug_checked, g_sd_ug_
                      g_sd_ug_gpu_copied, g_sd_ug_gpu_diff, g_sd_ug_tables, g_sd_ug_desc_changed, g_sd_dg_checked, g_sd_dg_inflight, g_sd_snaps,
                      g_sd_qtrace_lines;
 static volatile LONG64 g_sd_snap_bytes;
+static int g_ic_frames;     /* ind-count: frames to log (0 = off) */
+static UINT64 g_ic_from;    /* ind-count-from: the first present logged */
 static void mad_sync_diag_load(void) {
-    long long fs, ug, ub, dg, cs, qt;
+    long long fs, ug, ub, dg, cs, qt, ic, icf;
     if (g_sd_state >= 0) return;
     fs = mad_cfg_int_pe("fence-strict", 0);           /* diagnostic: 1 = Queue::Wait waits for the commit and batches finish in serial order; 2 = also synchronous Signal and Present waits for its frame (slow) */
     ug = mad_cfg_int_pe("upload-guard", 0);           /* diagnostic: 1 = log UPLOAD-heap data the game rewrites while the GPU still uses it; 2 = also compare with what the GPU read */
@@ -3465,17 +3487,24 @@ static void mad_sync_diag_load(void) {
     dg = mad_cfg_int_pe("desc-guard", 0);             /* diagnostic: log descriptor writes into shader-visible slots a running batch still uses */
     cs = mad_cfg_int_pe("cbv-snapshot", 0);           /* fix attempt: copy N bytes (1 = 4096) of every UPLOAD-heap root CBV at replay and bind the copy */
     qt = mad_cfg_int_pe("queue-trace", 0);            /* diagnostic: log the first N ExecuteCommandLists / Signal / Wait calls (1 = 400) with thread, queue type and fence state */
+    ic = mad_cfg_int_pe("ind-count", 0);              /* diagnostic: log N frames (1 = 3000) of per-pipeline ExecuteIndirect instance / threadgroup totals read back from the GPU; one-frame dips are flagged */
+    icf = mad_cfg_int_pe("ind-count-from", 0);        /* ind-count: the first present logged */
     g_fence_strict = fs >= 2 ? 2 : fs == 1 ? 1 : 0;
     g_upload_guard = ug >= 2 ? 2 : ug ? 1 : 0;
     g_ug_bytes = ub < 16 ? 16u : ub > 4096 ? 4096u : (UINT)ub;
     g_desc_guard = dg ? 1 : 0;
     g_cbv_snap = cs <= 0 ? 0u : cs == 1 ? 4096u : cs > 16384 ? 16384u : (UINT)((cs + 255) & ~255LL);
     g_qtrace = qt <= 0 ? 0 : qt == 1 ? 400 : qt > 100000 ? 100000 : (int)qt;
+    g_ic_frames = ic <= 0 ? 0 : ic == 1 ? 3000 : ic > 1000000 ? 1000000 : (int)ic;
+    g_ic_from = icf > 0 ? (UINT64)icf : 0;
     if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace)
         d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=%d upload-guard=%d (%u bytes a range) desc-guard=%d cbv-snapshot=%u bytes queue-trace=%d\n",
                   g_fence_strict, g_upload_guard, g_ug_bytes, g_desc_guard, g_cbv_snap, g_qtrace);
+    if (g_ic_frames)
+        d3d12_log("[ind-count] madeira-bcd DIAGNOSTIC: %d frames from present #%llu; every encoder with indirect commands gets a blit pass after it\n",
+                  g_ic_frames, (unsigned long long)g_ic_from);
     MemoryBarrier();
-    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace) ? 1 : 0;
+    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace || g_ic_frames) ? 1 : 0;
 }
 
 /* Tickets name a batch before it has a serial: the replay knows its open
@@ -3858,6 +3887,110 @@ static const UINT64 *mad_sd_root(struct mad_exec *e, const struct mad_rootsig *r
     memcpy(tmp, root, MAD_ROOT_PARAM_MAX * sizeof *tmp);
     mad_cbv_snapshot(e, rs, tmp);
     return tmp;
+}
+/* ind-count, the CPU half: argument records the GPU has finished with are
+ * summed per (pipeline, kind) into the frame they were replayed in. A frame is
+ * logged when the first record of a later frame arrives; then it is compared
+ * with its two predecessors. */
+#define MAD_IC_KEYS 160
+enum { MAD_IC_DRAW = 0, MAD_IC_DRAW_INDEXED, MAD_IC_DISPATCH };
+struct mad_ic_key { const void *pso; char name[80]; UINT16 kind; UINT32 cmds, trunc; UINT64 recs, live, total; };
+struct mad_ic_frame { UINT64 frame; unsigned n, overflow; struct mad_ic_key k[MAD_IC_KEYS]; };
+static struct mad_ic_frame g_icf[3];   /* [0] being summed, [1] the frame before, [2] the one before that */
+static int g_ic_nprev;                 /* frames held in [1] and [2] */
+static volatile LONG g_ic_logged, g_ic_flagged, g_ic_dropped;
+static const struct mad_ic_key *mad_ic_find(const struct mad_ic_frame *f, const void *pso, UINT16 kind) {
+    unsigned i;
+    for (i = 0; i < f->n; i++) if (f->k[i].pso == pso && f->k[i].kind == kind) return &f->k[i];
+    return NULL;
+}
+static const char *const g_ic_kind[3] = { "draw", "draw-indexed", "dispatch" };
+/* b against its neighbours a (before) and c (after): a one-frame fall of at
+ * least a fifth and 8 units, or a one-frame rise of a quarter and 8 units. */
+static int mad_ic_odd(UINT64 a, UINT64 b, UINT64 c) {
+    UINT64 lo = a < c ? a : c, hi = a > c ? a : c;
+    if (b * 5 < lo * 4 && lo - b >= 8) return -1;
+    if (b * 4 > hi * 5 && b - hi >= 8) return 1;
+    return 0;
+}
+static void mad_ic_flag(const struct mad_ic_key *k, UINT64 frame, UINT64 a, UINT64 b, UINT64 c, int odd) {
+    LONG n = InterlockedIncrement(&g_ic_flagged);
+    if (n > 4000) return;
+    d3d12_log("[ind-count] %s at frame #%llu: %s '%s' %llu -> %llu -> %llu %s (frames #%llu..#%llu)%s\n", odd < 0 ? "DIP" : "SPIKE",
+              (unsigned long long)frame, g_ic_kind[k->kind % 3], k->name, (unsigned long long)a, (unsigned long long)b, (unsigned long long)c,
+              k->kind == MAD_IC_DISPATCH ? "threadgroups" : "instances", (unsigned long long)frame - 1, (unsigned long long)frame + 1,
+              n == 4000 ? " -- limit of 4000 such lines reached" : "");
+}
+static void mad_ic_flush(void) {
+    struct mad_ic_frame *c = &g_icf[0], *b = &g_icf[1], *a = &g_icf[2];
+    unsigned i;
+    if (!c->n && !c->overflow) return;
+    if (c->frame >= g_ic_from && g_ic_logged < g_ic_frames) {
+        UINT64 dc = 0, dr = 0, dl = 0, di = 0, cc = 0, cg = 0; unsigned tr = 0;
+        LONG n = InterlockedIncrement(&g_ic_logged);
+        for (i = 0; i < c->n; i++) {
+            const struct mad_ic_key *k = &c->k[i];
+            if (k->kind == MAD_IC_DISPATCH) { cc += k->cmds; cg += k->total; }
+            else { dc += k->cmds; dr += k->recs; dl += k->live; di += k->total; }
+            tr += k->trunc;
+        }
+        d3d12_log("[ind-count] frame #%llu: %llu indirect draws (%llu records, %llu non-empty, %llu instances), %llu indirect dispatches "
+                  "(%llu threadgroups); %u pipelines%s%s\n", (unsigned long long)c->frame, (unsigned long long)dc, (unsigned long long)dr,
+                  (unsigned long long)dl, (unsigned long long)di, (unsigned long long)cc, (unsigned long long)cg, c->n,
+                  c->overflow ? " (table full: some not counted)" : "", tr ? " (some commands truncated at 64 KB of records)" : "");
+        if (n == 1 || (n % 120) == 0) {   /* which pipeline is which: the table, biggest first (a selection sort on a copy of the order) */
+            unsigned char done[MAD_IC_KEYS]; unsigned shown;
+            memset(done, 0, sizeof done);
+            for (shown = 0; shown < c->n && shown < 24; shown++) {
+                unsigned best = c->n; UINT64 bv = 0;
+                for (i = 0; i < c->n; i++) if (!done[i] && (best == c->n || c->k[i].total > bv)) { best = i; bv = c->k[i].total; }
+                done[best] = 1;
+                d3d12_log("[ind-count]   %-12s %-60s cmds %u records %llu non-empty %llu %s %llu\n", g_ic_kind[c->k[best].kind % 3], c->k[best].name,
+                          c->k[best].cmds, (unsigned long long)c->k[best].recs, (unsigned long long)c->k[best].live,
+                          c->k[best].kind == MAD_IC_DISPATCH ? "threadgroups" : "instances", (unsigned long long)c->k[best].total);
+            }
+        }
+        if (n == g_ic_frames)
+            d3d12_log("[ind-count] %d frames logged; %ld dips/spikes; %ld commands not copied (encoder table full, misaligned or out of staging memory)\n",
+                      g_ic_frames, (long)g_ic_flagged, (long)g_ic_dropped);
+        if (g_ic_nprev >= 2) {   /* the frame before this one, against both of its neighbours */
+            for (i = 0; i < b->n; i++) {
+                const struct mad_ic_key *k = &b->k[i], *ka = mad_ic_find(a, k->pso, k->kind), *kc = mad_ic_find(c, k->pso, k->kind);
+                UINT64 va = ka ? ka->total : 0, vc = kc ? kc->total : 0; int odd = mad_ic_odd(va, k->total, vc);
+                if (odd) mad_ic_flag(k, b->frame, va, k->total, vc, odd);
+            }
+            for (i = 0; i < a->n; i++) {   /* present before and after, absent in the middle */
+                const struct mad_ic_key *k = &a->k[i], *kc;
+                if (mad_ic_find(b, k->pso, k->kind)) continue;
+                kc = mad_ic_find(c, k->pso, k->kind);
+                if (kc && mad_ic_odd(k->total, 0, kc->total) < 0) mad_ic_flag(k, b->frame, k->total, 0, kc->total, -1);
+            }
+        }
+    }
+    *a = *b; *b = *c;
+    memset(c, 0, sizeof *c);
+    if (g_ic_nprev < 2) g_ic_nprev++;
+}
+/* One indirect command's records (stride in 32-bit words): a draw record
+ * counts its instances when its vertex / index count is not zero, a dispatch
+ * record its threadgroups. */
+static void mad_ic_add(UINT64 frame, const void *pso, const char *name, UINT16 kind, const UINT32 *w, UINT32 count, UINT32 stride_words, int trunc) {
+    struct mad_ic_frame *c = &g_icf[0]; struct mad_ic_key *k = NULL; UINT64 live = 0, tot = 0; unsigned i;
+    if ((c->n || c->overflow) && frame != c->frame) mad_ic_flush();
+    c->frame = frame;
+    for (i = 0; i < count; i++) {
+        const UINT32 *r = w + (size_t)i * stride_words;
+        UINT64 v = kind == MAD_IC_DISPATCH ? (UINT64)r[0] * r[1] * r[2] : (r[0] ? (UINT64)r[1] : 0);
+        if (v) { live++; tot += v; }
+    }
+    for (i = 0; i < c->n; i++) if (c->k[i].pso == pso && c->k[i].kind == kind) { k = &c->k[i]; break; }
+    if (!k) {
+        if (c->n >= MAD_IC_KEYS) { c->overflow++; return; }
+        k = &c->k[c->n++]; memset(k, 0, sizeof *k); k->pso = pso; k->kind = kind;
+        snprintf(k->name, sizeof k->name, "%s", name ? name : "?");
+    }
+    k->cmds++; k->recs += count; k->live += live; k->total += tot;
+    if (trunc) k->trunc++;
 }
 static void mad_sd_report(UINT64 presents) {
     d3d12_log("[sync-diag] present #%llu: upload-guard %ld ranges noted, %ld checked, %ld CHANGED while in flight (+%ld in approximate windows; "
@@ -6148,6 +6281,118 @@ static void exec_indirect_probe(struct mad_exec *e, const struct mad_cmd *c) {
     sp.next.ptr = &sb[0]; sb[0].next.ptr = &sb[1]; sb[1].next.ptr = &sby; sby.next.ptr = &dsp;
     MTLComputeCommandEncoder_encodeCommands(e->cenc, (const struct wmtcmd_base *)&sp);
 }
+/* madeira-bcd: ind-count, the GPU half (the sums are in SYNC DIAGNOSTICS).
+ * Every indirect command of an encoder is noted after it was encoded; when the
+ * encoder ends, one blit copies the commands' argument records into 1 MB
+ * shared chunks (a pass's draws and dispatches read their records while the
+ * pass runs, and nothing can rewrite them before it ends: a write needs a
+ * compute or copy pass, which ends this one). The chunks are read once the
+ * batch's ticket is done, at the next Present, and reused when every record
+ * in them has been read. */
+#define MAD_IC_CHUNK (1u << 20)
+#define MAD_IC_CHUNKS 48
+#define MAD_IC_CMD_MAX (64u << 10)
+struct mad_ic_chunk { obj_handle_t buf; unsigned char *cpu; UINT32 used; LONG refs; };
+struct mad_ic_pend { UINT64 ticket, frame; const void *pso; char name[80]; UINT32 off, count, stride, trunc; UINT16 kind, chunk; };
+static struct mad_ic_chunk g_icc[MAD_IC_CHUNKS]; static int g_icc_cur = -1;
+static struct mad_ic_pend *g_icp; static unsigned g_icp_n, g_icp_cap, g_icp_head;
+static SRWLOCK g_ic_lock = SRWLOCK_INIT;
+static int mad_ic_alloc(struct mad_device *d, UINT32 bytes, UINT16 *chunk, UINT32 *off) {
+    int i, pick = -1;
+    bytes = (bytes + 255) & ~255u;
+    if (bytes > MAD_IC_CHUNK) return 0;
+    if (g_icc_cur < 0 || g_icc[g_icc_cur].used + bytes > MAD_IC_CHUNK) {
+        for (i = 0; i < MAD_IC_CHUNKS && pick < 0; i++) if (g_icc[i].buf && !g_icc[i].refs && i != g_icc_cur) pick = i;
+        for (i = 0; i < MAD_IC_CHUNKS && pick < 0; i++) if (!g_icc[i].buf) {
+            void *cpu = NULL;
+            g_icc[i].buf = mad_capbuf_alloc(d, MAD_IC_CHUNK, &cpu);
+            if (!g_icc[i].buf) return 0;
+            g_icc[i].cpu = (unsigned char *)cpu; pick = i;
+        }
+        if (pick < 0) return 0;
+        g_icc_cur = pick; g_icc[pick].used = 0;
+    }
+    *chunk = (UINT16)g_icc_cur; *off = g_icc[g_icc_cur].used;
+    g_icc[g_icc_cur].used += bytes; g_icc[g_icc_cur].refs++;
+    return 1;
+}
+/* After an indirect command was encoded (its draws or dispatches, so the
+ * encoder it belongs to is the open one). */
+static void mad_ic_note(struct mad_exec *e, const struct mad_cmd *c) {
+    const struct mad_pso *p = c->kind == MC_DISPATCH_INDIRECT ? e->cpso : e->pso;
+    if (!e->q->open_ticket || (UINT64)g_presents_now < g_ic_from || g_ic_logged >= g_ic_frames || !c->u.ind.count) return;
+    if (e->nic >= sizeof e->ic / sizeof e->ic[0]) { InterlockedIncrement(&g_ic_dropped); return; }
+    e->ic[e->nic].args = c->u.ind.args; e->ic[e->nic].off = c->u.ind.off; e->ic[e->nic].count = c->u.ind.count; e->ic[e->nic].stride = c->u.ind.stride;
+    e->ic[e->nic].kind = (UINT16)(c->kind == MC_DISPATCH_INDIRECT ? MAD_IC_DISPATCH : c->kind == MC_DRAW_INDEXED_INDIRECT ? MAD_IC_DRAW_INDEXED : MAD_IC_DRAW);
+    e->ic[e->nic].pso = p; e->nic++;
+}
+static void mad_ic_encode(struct mad_exec *e) {
+    struct mad_device *d = e->q->device;
+    struct wmtcmd_blit_copy_from_buffer_to_buffer cp[64];
+    obj_handle_t benc; unsigned i, n = 0, nic = e->nic; UINT64 t = e->q->open_ticket, frame = (UINT64)g_presents_now;
+    e->nic = 0;
+    if (!t || !nic) return;
+    benc = MTLCommandBuffer_blitCommandEncoder(e->cb);
+    if (!benc) { InterlockedExchangeAdd(&g_ic_dropped, (LONG)nic); return; }
+    g_enc_seq++;
+    exec_fence_blit(e, benc, 0);
+    memset(cp, 0, sizeof cp);
+    AcquireSRWLockExclusive(&g_ic_lock);
+    for (i = 0; i < nic; i++) {
+        struct mad_resource *r = e->ic[i].args; const struct mad_pso *p = e->ic[i].pso; struct mad_ic_pend *pd;
+        UINT32 rec = e->ic[i].kind == MAD_IC_DISPATCH ? 12u : e->ic[i].kind == MAD_IC_DRAW_INDEXED ? 20u : 16u;
+        UINT32 stride = e->ic[i].stride, count = e->ic[i].count, trunc = 0, off = 0; UINT16 ch = 0; UINT64 bytes;
+        if (!r || !r->buffer || (stride & 3) || stride < rec || (e->ic[i].off & 3) || e->ic[i].off + rec > r->size) { InterlockedIncrement(&g_ic_dropped); continue; }
+        if ((UINT64)(count - 1) * stride + rec > r->size - e->ic[i].off) count = (UINT32)((r->size - e->ic[i].off - rec) / stride + 1);
+        if ((UINT64)(count - 1) * stride + rec > MAD_IC_CMD_MAX) { count = (MAD_IC_CMD_MAX - rec) / stride + 1; trunc = 1; }
+        bytes = (UINT64)(count - 1) * stride + rec;
+        if (!mad_grow((void **)&g_icp, &g_icp_cap, g_icp_n + 1, sizeof *g_icp) || !mad_ic_alloc(d, (UINT32)bytes, &ch, &off)) {
+            InterlockedIncrement(&g_ic_dropped); continue;
+        }
+        pd = &g_icp[g_icp_n++]; memset(pd, 0, sizeof *pd);
+        pd->ticket = t; pd->frame = frame; pd->pso = p; pd->off = off; pd->count = count; pd->stride = stride; pd->trunc = trunc;
+        pd->kind = e->ic[i].kind; pd->chunk = ch;
+        if (!p) snprintf(pd->name, sizeof pd->name, "?");
+        else if (pd->kind == MAD_IC_DISPATCH) snprintf(pd->name, sizeof pd->name, "%s/%016llx", p->vs_name, (unsigned long long)p->cs_hash);
+        else snprintf(pd->name, sizeof pd->name, "%.38s|%.38s", p->vs_name, p->ps_name);
+        cp[n].type = WMTBlitCommandCopyFromBufferToBuffer;
+        cp[n].src = r->buffer; cp[n].src_offset = e->ic[i].off; cp[n].dst = g_icc[ch].buf; cp[n].dst_offset = off; cp[n].copy_length = bytes;
+        if (n) cp[n - 1].next.ptr = &cp[n];
+        n++;
+    }
+    ReleaseSRWLockExclusive(&g_ic_lock);
+    if (n) MTLBlitCommandEncoder_encodeCommands(benc, (const struct wmtcmd_base *)&cp[0]);
+    exec_fence_blit(e, benc, 1);
+    MTLCommandEncoder_endEncoding(benc);
+}
+/* At Present: every record whose batch the GPU has finished, in replay order. */
+static void mad_ic_collect(struct mad_device *d) {
+    AcquireSRWLockExclusive(&g_ic_lock);
+    while (g_icp_head < g_icp_n) {
+        struct mad_ic_pend *pd = &g_icp[g_icp_head];
+        if (!mad_ticket_done(d, pd->ticket)) break;
+        mad_ic_add(pd->frame, pd->pso, pd->name, pd->kind, (const UINT32 *)(g_icc[pd->chunk].cpu + pd->off), pd->count, pd->stride / 4, (int)pd->trunc);
+        g_icc[pd->chunk].refs--;
+        g_icp_head++;
+    }
+    if (g_icp_head == g_icp_n) g_icp_head = g_icp_n = 0;
+    else if (g_icp_head >= 1024) {
+        memmove(g_icp, g_icp + g_icp_head, (size_t)(g_icp_n - g_icp_head) * sizeof *g_icp);
+        g_icp_n -= g_icp_head; g_icp_head = 0;
+    }
+    ReleaseSRWLockExclusive(&g_ic_lock);
+}
+/* capture-cs: an entry name ("cs_main" -- every Ghost of Tsushima kernel), or
+ * madeira-bcd: name/hash ("cs_main/3fa2..."), a prefix of the bytecode hash
+ * that ind-count and the GPU fault reports print, for ONE of them. */
+static int mad_cs_match(const struct mad_pso *p, const char *want) {
+    const char *slash = strchr(want, '/');
+    char hx[24];
+    if (!slash) return !strcmp(p->vs_name, want);
+    if (strlen(p->vs_name) != (size_t)(slash - want) || strncmp(p->vs_name, want, (size_t)(slash - want)) || !slash[1]) return 0;
+    snprintf(hx, sizeof hx, "%016llx", (unsigned long long)p->cs_hash);
+    return !strncmp(hx, slash + 1, strlen(slash + 1));
+}
 static int exec_tess_indirect_prep(struct mad_exec *e, const struct mad_cmd *c, UINT64 *out_off) {
     struct mad_device *d = e->q->device;
     struct wmtcmd_compute_setpso sp; struct wmtcmd_compute_setbuffer sb[2]; struct wmtcmd_compute_setbytes sby; struct wmtcmd_compute_dispatch dsp;
@@ -6208,7 +6453,7 @@ static void exec_dispatch(struct mad_exec *e, const struct mad_cmd *c) {
      * wrong because of that (Astra, 2026-09-16). */
     if (g_census_on) exec_capture_cs(e, c);   /* ml920 */
     if (g_capture_on && g_capture_cs[0] && g_capture_cs_shots < g_capture_cs_max && e->cpso->backend != MADEIRA_IR_BACKEND_AIRCONV &&
-        (!g_capture_cs_ind || c->kind == MC_DISPATCH_INDIRECT) && !strcmp(e->cpso->vs_name, g_capture_cs)) {   /* ml1141 */
+        (!g_capture_cs_ind || c->kind == MC_DISPATCH_INDIRECT) && mad_cs_match(e->cpso, g_capture_cs)) {   /* ml1141 */
         g_capture_cs_shots++;
         mad_capture_dispatch_inputs(e, c);
     }
@@ -6457,6 +6702,7 @@ static void mad_exec_list(struct mad_queue *q, struct mad_list *l, obj_handle_t 
                 if (c->kind == MC_DISPATCH_INDIRECT) exec_dispatch(&e, &t); else exec_draw(&e, &t);
             }
             e.tind_buf = 0; e.tind_off = 0;
+            if (g_sd_state > 0 && g_ic_frames) mad_ic_note(&e, c);   /* madeira-bcd: ind-count */
             break;
         }
         case MC_COPY_BB: case MC_COPY_B2T: case MC_COPY_T2B: case MC_COPY_T2T: case MC_FILL_BB: case MC_FILL_TEX: exec_copy(&e, c); break;
@@ -6560,7 +6806,7 @@ static void mad_ecl_run(ID3D12CommandQueue *This, UINT count, ID3D12CommandList 
             NSObject_retain(q->open_cb);
             if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics */
                 if (g_fence_strict) mad_strict_cb_wait(q->device, q->open_cb);
-                if (g_upload_guard || g_desc_guard) q->open_ticket = mad_ticket_new();
+                if (g_upload_guard || g_desc_guard || g_ic_frames) q->open_ticket = mad_ticket_new();
             }
         }
         if (l) mad_exec_list(q, l, q->open_cb);
@@ -9873,8 +10119,9 @@ static HRESULT device_CreateRootSignature_impl(ID3D12Device *This, UINT node,
             struct mad_descriptor *tab = (struct mad_descriptor *)bi.memory.ptr; UINT32 i, ok = 0;
             memset(tab, 0, bi.length);
             for (i = 0; i < nsampler; i++) {
-                struct madeira_ir_static_sampler *ss = &r->samplers[i]; struct WMTSamplerInfo si; obj_handle_t smp; UINT32 bias_bits;
-                mad_sampler_info(&si, ss->filter, ss->address_u, ss->address_v, ss->address_w, ss->max_anisotropy, ss->comparison, ss->border_color, ss->min_lod, ss->max_lod);
+                struct madeira_ir_static_sampler *ss = &r->samplers[i]; struct WMTSamplerInfo si; obj_handle_t smp; UINT32 bias_bits; char who[40];
+                snprintf(who, sizeof who, "static sampler s%u", ss->shader_register);
+                mad_sampler_info(&si, ss->filter, ss->address_u, ss->address_v, ss->address_w, ss->max_anisotropy, ss->comparison, ss->border_color, ss->min_lod, ss->max_lod, who);
                 smp = MTLDevice_newSamplerState(dd->mtl_device, &si);
                 if (!smp || !si.gpu_resource_id) continue;
                 memcpy(&bias_bits, &ss->mip_lod_bias, 4);
@@ -10672,11 +10919,60 @@ static void STDMETHODCALLTYPE device_CreateShaderResourceView(ID3D12Device *This
 /* ml923: the full D3D12 sampler description -> Metal. D3D12_FILTER packs
  * mip (bit 0), mag (bit 2), min (bit 4), anisotropic (0x40) and comparison
  * (0x80). The previous mapping had no mipmapping, clamp-only addressing and
- * never a comparison function, which breaks tiling, shadow PCF and LOD. */
-static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border, float minlod, float maxlod) {
+ * never a comparison function, which breaks tiling, shadow PCF and LOD.
+ *
+ * madeira-bcd: SAMPLER REDUCTION. Bits 7-8 of D3D12_FILTER are the reduction
+ * type: 0 standard, 1 comparison (0x80), 2 MINIMUM (0x100), 3 MAXIMUM (0x180)
+ * -- a min/max sampler returns the smallest / largest of the texels its
+ * filter footprint covers instead of their weighted average (Hi-Z depth
+ * pyramids for GPU occlusion culling are the classic user). Metal samplers,
+ * as winemetal's WMTSamplerInfo carries them, have no such mode. The test
+ * below was `filter & 0x80`, which MAXIMUM also passes: a MAXIMUM sampler
+ * became a COMPARISON sampler with a comparison function D3D12 ignores for it
+ * (often 0, which mad_compare turns into Always), a MINIMUM one a plain
+ * filtering sampler. Unchanged by default; madeira.cfg sampler-reduction:
+ *   1 = MIN/MAX: no comparison, and POINT min/mag/mip filtering -- one real
+ *       texel of the footprint, never an average of a near and a far depth
+ *       that is neither (the closest Metal gets without shader changes);
+ *   2 = MIN/MAX: no comparison, the filter as given (only the comparison bug).
+ * Every MIN/MAX filter value is logged once with its mapping (default on: a
+ * game using one renders wrongly here); sampler-census = 1 logs every
+ * distinct filter value. */
+static int g_smp_red = -1, g_smp_census;
+static volatile LONG g_smp_seen[16];   /* filter values 0..0x1ff already logged */
+static const char *const g_cmp_names[8] = { "Never", "Less", "Equal", "LessEqual", "Greater", "NotEqual", "GreaterEqual", "Always" };
+static void mad_sampler_red_load(void) {
+    long long v;
+    if (g_smp_red >= 0) return;
+    v = mad_cfg_int_pe("sampler-reduction", 0);    /* fix attempt: MIN/MAX reduction samplers (Metal has none): 1 = point filtering and no comparison, 2 = no comparison only */
+    g_smp_census = mad_cfg_int_pe("sampler-census", 0) ? 1 : 0;   /* diagnostic: log every distinct sampler filter value once with its Metal mapping */
+    g_smp_red = v == 1 || v == 2 ? (int)v : 0;
+    if (g_smp_red || g_smp_census)
+        d3d12_log("[sampler] madeira-bcd sampler-reduction=%d sampler-census=%d\n", g_smp_red, g_smp_census);
+}
+static void mad_sampler_log(const struct WMTSamplerInfo *si, UINT filter, UINT cmp, const char *who) {
+    static const char *const red[4] = { "standard", "comparison", "MINIMUM", "MAXIMUM" };
+    UINT f = filter & 0x1ff, r = (filter >> 7) & 3;
+    LONG bit = (LONG)(1u << (f & 31));
+    if ((r < 2 && !g_smp_census) || (g_smp_seen[f >> 5] & bit)) return;
+    g_smp_seen[f >> 5] |= bit;
+    d3d12_log("[sampler] filter 0x%03x (%s reduction%s, D3D min %s mag %s mip %s, ComparisonFunc %u) from %s -> Metal min %s mag %s mip %s, "
+              "compare %s, max anisotropy %u%s\n", filter, red[r], (filter & 0x40) ? ", anisotropic" : "",
+              (filter & 0x10) ? "linear" : "point", (filter & 0x04) ? "linear" : "point", (filter & 0x01) ? "linear" : "point", cmp, who,
+              si->min_filter == WMTSamplerMinMagFilterLinear ? "linear" : "nearest", si->mag_filter == WMTSamplerMinMagFilterLinear ? "linear" : "nearest",
+              si->mip_filter == WMTSamplerMipFilterLinear ? "linear" : si->mip_filter == WMTSamplerMipFilterNearest ? "nearest" : "none",
+              (unsigned)si->compare_function < 8 ? g_cmp_names[si->compare_function] : "?", (unsigned)si->max_anisotroy,
+              r < 2 ? "" : g_smp_red == 1 ? " -- NO min/max reduction in Metal: point-sampled, comparison dropped (sampler-reduction = 1)"
+                         : g_smp_red == 2 ? " -- NO min/max reduction in Metal: comparison dropped, filter as given (sampler-reduction = 2)"
+                         : r == 3 ? " -- NO min/max reduction in Metal, and MAXIMUM taken for a COMPARISON sampler (as before; sampler-reduction = 1 or 2 changes it)"
+                                  : " -- NO min/max reduction in Metal: an averaging filter (as before; sampler-reduction = 1 changes it)");
+}
+static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UINT av, UINT aw, UINT aniso, UINT cmp, UINT border, float minlod, float maxlod, const char *who) {
     /* D3D12_TEXTURE_ADDRESS_MODE: 1 wrap, 2 mirror, 3 clamp, 4 border, 5 mirror-once */
     static const enum WMTSamplerAddressMode am[6] = { WMTSamplerAddressModeClampToEdge, WMTSamplerAddressModeRepeat, WMTSamplerAddressModeMirrorRepeat,
                                                       WMTSamplerAddressModeClampToEdge, WMTSamplerAddressModeClampToBorderColor, WMTSamplerAddressModeMirrorClampToEdge };
+    UINT red = (filter >> 7) & 3;
+    if (g_smp_red < 0) mad_sampler_red_load();
     memset(si, 0, sizeof *si);
     si->min_filter = (filter & 0x10) ? WMTSamplerMinMagFilterLinear : WMTSamplerMinMagFilterNearest;
     si->mag_filter = (filter & 0x04) ? WMTSamplerMinMagFilterLinear : WMTSamplerMinMagFilterNearest;
@@ -10692,6 +10988,14 @@ static void mad_sampler_info(struct WMTSamplerInfo *si, UINT filter, UINT au, UI
     si->max_anisotroy = (filter & 0x40) ? (aniso ? aniso : 16) : 1;
     si->normalized_coords = true;
     si->support_argument_buffers = true;
+    if (red >= 2 && g_smp_red) {   /* madeira-bcd: sampler-reduction, see above */
+        si->compare_function = WMTCompareFunctionNever;
+        if (g_smp_red == 1) {
+            si->min_filter = si->mag_filter = WMTSamplerMinMagFilterNearest; si->mip_filter = WMTSamplerMipFilterNearest;
+            si->max_anisotroy = 1;
+        }
+    }
+    if (red >= 2 || g_smp_census) mad_sampler_log(si, filter, cmp, who ? who : "?");
 }
 
 static void STDMETHODCALLTYPE device_CreateSampler(ID3D12Device *This,
@@ -10704,8 +11008,8 @@ static void STDMETHODCALLTYPE device_CreateSampler(ID3D12Device *This,
     struct WMTSamplerInfo si;
     if (desc) {
         UINT border = (desc->BorderColor[0] > 0.5f) ? 2u : (desc->BorderColor[3] > 0.5f) ? 1u : 0u;
-        mad_sampler_info(&si, desc->Filter, desc->AddressU, desc->AddressV, desc->AddressW, desc->MaxAnisotropy, desc->ComparisonFunc, border, desc->MinLOD, desc->MaxLOD);
-    } else mad_sampler_info(&si, D3D12_FILTER_MIN_MAG_MIP_LINEAR, 3, 3, 3, 1, 0, 0, 0.0f, 1000.0f);
+        mad_sampler_info(&si, desc->Filter, desc->AddressU, desc->AddressV, desc->AddressW, desc->MaxAnisotropy, desc->ComparisonFunc, border, desc->MinLOD, desc->MaxLOD, "CreateSampler");
+    } else mad_sampler_info(&si, D3D12_FILTER_MIN_MAG_MIP_LINEAR, 3, 3, 3, 1, 0, 0, 0.0f, 1000.0f, "CreateSampler (no description)");
 
     obj_handle_t smp = MTLDevice_newSamplerState(d->mtl_device, &si);
     if (!smp || !si.gpu_resource_id) {
@@ -14932,6 +15236,7 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
     }
     if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics -- a game that paces by Present reuses frame N-lat's data as soon as this returns */
         if (g_upload_guard) mad_ug_verify(s->queue->device, mad_gpu_completed(s->queue->device));
+        if (g_ic_frames) mad_ic_collect(s->queue->device);   /* ind-count: sum what the GPU has finished */
         if ((s->presents % 300) == 299) mad_sd_report(s->presents + 1);
     }
     { LONG64 td = mad_qpc();   /* ml1128 */

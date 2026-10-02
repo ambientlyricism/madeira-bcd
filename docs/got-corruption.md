@@ -38,6 +38,10 @@
   planı (G1 ve G2 yeni build beklemeden).
 * **Güncelleme 2 (10-02, build 313):** G1, G2 ve H şekilleri kaldırmadı;
   bölüm 9: yeni ölçüm kapsamı, yeni deneme düzeltmesi ve 3 açılışlık plan.
+* **Güncelleme 3 (10-02, build 316, ana menü):** K1/K2 değiştirmedi; senkron
+  elendi. Bölüm 10: titreyen çimen = GPU elemesi kareden kareye farklı karar
+  veriyor; bulunan gerçek hata (MIN/MAX örnekleyiciler), yeni `ind-count`
+  tanısı ve 2 açılışlık ana menü planı.
 
 ## 1. Evidence used
 
@@ -940,3 +944,232 @@ GTA check). Still there -> next launch `barrier-render = 1` alone, then
   `fence-strict = 1`; K2 `typed-uav-atomic = 1`, `barrier-render = 1`,
   `fence-strict = 2`; K3 (only if K2 clears them) `typed-uav-atomic = 1`
   alone.
+
+## 10. Round 3: the main menu's flickering grass (build 316, 2026-10-02 09:15-09:40)
+
+### 10.0 Özet (sahibi için, Türkçe)
+
+* K1 ve K2 (build 316, ana menüde) hiçbir şeyi değiştirmedi. Bu, **senkron
+  (sıralama/çit) hatalarını artık tamamen eliyor**: K2'de `fence-strict = 2`
+  (CPU ile GPU hiç örtüşmüyor), `barrier-render = 1` ve `typed-uav-atomic = 1`
+  birlikte açıktı, çimen yine titredi. K1'in 25 (logun sonunda 35) desc-guard
+  satırına da baktım: hepsi **aynı tek tanımlayıcı (slot 9)**, bin karede 35
+  kez -- her karede olan çimen titremesini açıklayamaz.
+* Yeni ve çok daha iyi bir tekrar: **ana menü** (kamera sabit, katana ve
+  çimen). 99. karede bıçağın önündeki çimen yok, 100.'de var. Kamera
+  oynamadığına göre çimenin hangi örneklerinin (instance) çizileceğine **GPU
+  kendisi karar veriyor ve kararı kareden kareye değişiyor**: oyun çimeni
+  ExecuteIndirect ile çiziyor, örnek sayısını bir compute "eleme" (culling)
+  geçişi yazıyor (logda `vs_SetMaterial_techDefault` dolaylı çizimi 0 örnekle
+  görüldü).
+* Koddan bulduklarım:
+  - **Bir gerçek hata buldum:** D3D12'nin MIN/MAX "indirgeme" örnekleyicileri
+    (Hi-Z derinlik piramidiyle eleme yapan motorların klasik aracı) Metal'de
+    yok ve bizim eşlememiz MAXIMUM örnekleyiciyi yanlışlıkla
+    **karşılaştırma (shadow) örnekleyicisi** yapıyordu, MINIMUM'u da düz
+    ortalama. Oyunun bunu kullanıp kullanmadığını henüz bilmiyoruz (varsayılan
+    olarak oyuna "Tier 0" diyoruz, düzgün bir motor o durumda kullanmamalı);
+    yeni build kullanırsa **anahtarsız** loga `[sampler] filter 0x1..`
+    yazıyor. Deneme düzeltmesi: `sampler-reduction = 1`.
+  - Render-pass "store" kaybı yok: her ek (renk/derinlik) her zaman STORE
+    ile kapanıyor, "memoryless" yok, DiscardResource hiçbir şey yapmıyor --
+    bu yüzden "her şeyi STORE yap" anahtarı gereksiz.
+  - Sayaç tamponlu ExecuteIndirect yok (logda o satır yok), çözülmemiş
+    (unimplemented) bir çağrı da yok.
+* Yeni tanı: `ind-count`. Her dolaylı çizimin/dispatch'in GPU'nun yazdığı
+  argümanlarını (örnek sayıları) GPU işi bitince okuyup **her kare için
+  boru hattı başına toplam** yazıyor ve bir boru hattının sayısı tek bir
+  karede düşüp sonra geri gelirse `DIP` satırı basıyor. Tek açılış, ekran
+  kaydıyla: titreyen karelerle `DIP` satırları eşleşirse sorun elemede
+  (eleme verisi / Hi-Z / dönüştürücü); eşleşmezse (sayılar sabitse) eleme
+  doğru, sorun sonraki aşamada: en güçlü aday o zaman **TAA + "stipple"**
+  (logda en çok dönüştürülen gölgelendirici `ps_SetMaterialMoving_techStipple`:
+  rüzgârla sallanan bitki + kareden kareye değişen nokta deseniyle
+  yumuşatma; TAA geçmişi bozuksa çimen bir karede var bir karede yok ve
+  yatay sürtmeler görülür -- videodakine çok benziyor).
+* Plan (10.4): **M1** tanı (sadece okuma), **M2** örnekleyici düzeltmesi --
+  yalnız M1 logunda `[sampler] filter 0x1..` satırı varsa. Her ikisi ana
+  menüde, 60 sn, kamerayı oynatmadan, **ekran kaydıyla**.
+
+### 10.1 What K1 / K2 said (logs 83ae5b54 09:38:43 and fb138a92 09:39:49)
+
+* K2 (`typed-uav-atomic = 1`, `barrier-render = 1`, `fence-strict = 2`, all
+  confirmed active): no change. With the CPU and GPU serialised, every render
+  pass closed at every barrier and atomics on texture buffers, ordering and
+  atomics are out.
+* K1 desc-guard: 35 hits in the whole log (25 by present #900), **all
+  `CopyDescriptors rewrote descriptor 9`** of a CBV/SRV/UAV shader-visible heap,
+  2-4 serials ahead of the GPU, at log lines 13743..26428 -- about once per 30
+  frames, always the same slot. Either a game-side slot recycled with a frame
+  of latency too little, or a false positive of the bounded table extent (a
+  table starting at 0 whose range covers slot 9 without the shader reading
+  it). Not a per-frame grass effect; left alone.
+* K1 fence-strict: 8 `Queue::Wait for N: the Signal was asked for but its
+  batch was not committed yet; waited 1 ms`. Real, and closed by
+  fence-strict 1 -- which did not change the picture.
+* K1 queue-trace (400 lines): render thread `00bc` submits to the DIRECT queue
+  (type 0) and signals fence A every frame; thread `0024` submits one list to
+  a COPY queue (type 3), signals fence B, then calls `Wait(B)` on the DIRECT
+  queue -- interleaved with `00bc`'s submissions (streaming uploads into the
+  graphics queue). One async-compute queue (type 2) signals once. On our single
+  Metal queue this is ordered by commit; fence-strict 2 excluded it.
+* K1 probes (`[probe]`, every 3 s per pipeline, first record only): indirect
+  DISPATCHES `cs_main` with 0 / 8160 / 32640 groups, indirect DRAW-INDEXED
+  draws for `vs_SetMaterial_techDefault` (first record 12 indices, **0
+  instances**), `vs_ShadowMap_techShadowMap` (0 instances), `vs_LowLod` (5),
+  `vs_Main`, `vs_TerrainShadow*`, `vs_SetMaterial_techParticleEmissive`. So
+  the scene is GPU-driven: per-record instance counts come from culling
+  kernels. Every compute entry point is named `cs_main`, so `capture-cs` by
+  name could not single one out (fixed below).
+
+### 10.2 Ranked causes (from the code)
+
+1. **GPU culling decides differently from frame to frame** (static camera, so
+   it should not). Sub-causes, by evidence:
+   a. **MIN/MAX reduction samplers.** `mad_sampler_info` tested
+      `filter & 0x80` for "comparison"; D3D12_FILTER's reduction field is bits
+      7-8 (0 standard, 1 comparison, 2 MINIMUM, 3 MAXIMUM), so a MAXIMUM
+      filter (0x180..0x1d5) became a comparison sampler with whatever
+      ComparisonFunc the game left there (0 -> Always), a MINIMUM one a plain
+      averaging filter. A Hi-Z pyramid built or read through them is wrong
+      exactly at depth edges (the katana blade against the sky), and with TAA
+      jitter the sample footprint moves every frame. Metal has no reduction
+      mode in WMTSamplerInfo (32 bytes, no field), so the fix can only
+      approximate: point sampling returns one real texel of the footprint
+      instead of an average of a near and a far depth that is neither. Caveat:
+      by default we report TiledResourcesTier 0, and D3D12 ties min/max
+      filtering to Tier 2 -- a careful engine does not use them; the
+      default-on `[sampler]` line settles it in the next log.
+   b. A converter (MSC) difference in a culling kernel: wave intrinsics,
+      groupshared, NaN handling. Next step once ind-count names the pipeline:
+      `capture-cs = cs_main/<hash>` (now possible).
+   c. Hi-Z from the wrong depth: ruled out as far as the code goes -- every
+      attachment ends with STORE (`rpi.*.store_action = WMTStoreActionStore`
+      everywhere), no memoryless textures, `DiscardResource` is a no-op;
+      ResolveSubresource is never called (no `unimplemented` line); the depth
+      / stencil aspect copies (8 logged, through one private staging buffer)
+      are blits on a tracked Metal buffer, serialised by Metal.
+2. **TAA / stipple resolve**: the most-converted pixel shader in the log is
+   `ps_SetMaterialMoving_techStipple` (1237 variants; vertex
+   `vs_SetMaterial_techStipple`, depth-only `vs_DepthOnly_techStippleDepthOnly`):
+   wind-animated foliage that fades through a per-frame dither pattern and
+   relies on TAA to blend it. A broken history (wrong motion vectors, a
+   history read from the wrong frame) shows as grass present / absent between
+   frames and horizontal smears -- what the recording shows. ind-count without
+   DIPs points here; the next round would capture the TAA pass (CAP +
+   `capture-ps` on its pixel shader).
+3. Sync (ruled out by K2), upload / descriptor rewrites (ruled out by K1 /
+   round 2), store actions (code, above).
+
+### 10.3 What changed (code)
+
+All in `madeira-d3d12/src/pe/madeira_d3d12.c`, all off unless set (one
+exception, a log line, below).
+
+* `ind-count = N` (1 = 3000 frames), `ind-count-from = P` (SYNC DIAGNOSTICS
+  block + `mad_ic_*` after `exec_indirect_probe`). After each
+  ExecuteIndirect's draws/dispatches are encoded, the command is noted on the
+  open encoder; when that encoder ends (`exec_end`), ONE blit encoder (fence
+  wait/update like every encoder) copies the commands' argument records (up
+  to 64 KB a command, clamped to the buffer) into 1 MB shared chunks (at most
+  48). At each Present, records whose batch ticket the GPU has finished are
+  summed per (pipeline, kind) into the frame they were replayed in: draw
+  records count their instances when the vertex/index count is non-zero,
+  dispatch records their threadgroups. Log:
+  `[ind-count] frame #F: D indirect draws (R records, L non-empty, I
+  instances), C indirect dispatches (G threadgroups); K pipelines`, at the
+  first logged frame and every 120th a table `[ind-count]   draw-indexed
+  vs|ps  cmds records non-empty instances N` (dispatches as
+  `cs_main/<16-hex bytecode hash>`), and
+  `[ind-count] DIP at frame #F: draw-indexed 'vs|ps' 400 -> 200 -> 400
+  instances (frames #F-1..#F+1)` (a fall of >= 1/5 and >= 8 against BOTH
+  neighbours; `SPIKE` for a rise of >= 1/4; a pipeline absent for one frame
+  counts as 0). After N frames: `[ind-count] N frames logged; X dips/spikes; Y
+  commands not copied`. Cost: one extra blit pass after every pass with
+  indirect commands.
+* `capture-cs` accepts `name/hash-prefix` (`cs_main/3fa2...`, the hash
+  ind-count and GPU fault reports print); a plain name matches as before.
+* Sampler reduction (`mad_sampler_info`, static samplers and CreateSampler):
+  default mapping unchanged; **every MIN/MAX filter value is logged once,
+  key or not** (`[sampler] filter 0x195 (MAXIMUM reduction, D3D min linear
+  ... ComparisonFunc 0) from CreateSampler -> Metal min linear ... compare
+  Always ... -- NO min/max reduction in Metal, and MAXIMUM taken for a
+  COMPARISON sampler (as before ...)`). That line appears only if the game
+  uses such a sampler; nothing else changes. `sampler-reduction = 1`:
+  MIN/MAX samplers get no comparison and point min/mag/mip filtering
+  (anisotropy 1); `= 2`: no comparison, filter as given. `sampler-census = 1`
+  logs every distinct filter value once with its mapping.
+
+Host test `tests/host/check-got-diagnostics.py` (PASS; the sync harness also
+ASan/UBSan clean): static checks for the hooks and defaults, the per-frame
+sums / table / DIP detection / logging window in the sync harness, and the
+cut-out sampler mapping run for all three modes and the census. Catalog
+regenerated (`ind-count`, `ind-count-from`, `sampler-reduction`,
+`sampler-census`): ships in an IPA. God of War (D3D11/DXMT) never reaches
+this file.
+
+### 10.4 Device plan (next IPA) -- main menu, static camera
+
+Each block is one launch. Go to the main menu, **do not move the mouse /
+stick**, start the **screen recording**, wait 60 s, stop, quit; send the log
+and the recording; then delete the block's lines (keep `dxil-tess = 0`).
+
+**Blok M1 -- tanı (ölçüm, davranış değişmez):**
+```
+dxil-tess = 0
+ind-count = 6000
+sampler-census = 1
+```
+Log: `[ind-count] madeira-bcd DIAGNOSTIC: 6000 frames from present #0 ...`,
+`[sampler] madeira-bcd sampler-reduction=0 sampler-census=1`, one
+`[sampler] filter 0x...` line per distinct filter, then one
+`[ind-count] frame #N` line per frame. Read:
+* `[sampler] filter 0x1..` with `MINIMUM` / `MAXIMUM` -> run M2.
+* `[ind-count] DIP at frame #N: ... 'vs_SetMaterial...|ps_SetMaterialMoving_...'`
+  repeating while the recording shows the grass flicker -> the culling output
+  changes per frame (1a/1b); next: `capture-cs = cs_main/<hash>` on the
+  dispatch whose threadgroups move with it.
+* Steady numbers for the foliage pipelines while the grass flickers -> the
+  culling is fine; the TAA / stipple resolve (cause 2) is next.
+FPS drops a little (one blit pass after each pass with indirect commands).
+
+**Blok M2 -- örnekleyici düzeltmesi (yalnız M1'de MIN/MAX satırı varsa):**
+```
+dxil-tess = 0
+sampler-reduction = 1
+ind-count = 6000
+```
+Log: `[sampler] madeira-bcd sampler-reduction=1 ...` and the MIN/MAX lines
+ending `point-sampled, comparison dropped (sampler-reduction = 1)`. Grass
+steady in the recording and no DIP lines -> that was it (then try
+`sampler-reduction = 2` once to see whether the comparison alone was enough,
+before making it a default after a GoW / GTA check).
+
+### 10.5 Paragraph for HANDOFF (ready to paste)
+
+* **GoT grass flicker, round 3 (agent, 2026-10-02; docs/got-corruption.md
+  section 10).** Build 316 K1/K2 in the main menu: no change. K2 (fence-strict
+  2 + barrier-render 1 + typed-uav-atomic 1) rules out ordering and atomics;
+  K1's desc-guard hits are one slot (9) about once per 30 frames, fence-strict
+  waited 8 times, queue-trace shows thread 0024 doing COPY-queue Signal +
+  DIRECT-queue Wait between the render thread's submits. New repro: static
+  main menu, grass in front of the katana present/absent from frame to frame,
+  i.e. GPU culling deciding differently each frame (GoT's 3D draws are
+  ExecuteIndirect with GPU-written instance counts). From the code: every
+  attachment is always STORE, no memoryless, DiscardResource no-op, no count
+  buffers, no resolves -- no store-action switch needed; **found a real
+  mapping bug**: `mad_sampler_info` treated MAXIMUM reduction filters
+  (0x180 set) as COMPARISON samplers and MINIMUM as plain filtering (Metal has
+  no min/max reduction). **Added:** `ind-count = N` / `ind-count-from` (per
+  frame, per pipeline instance/threadgroup totals of ExecuteIndirect read back
+  after the GPU finished; `DIP` / `SPIKE` lines for one-frame changes; one
+  blit after each pass with indirect commands), `capture-cs = name/hash`,
+  `sampler-reduction = 1` (MIN/MAX: point, no comparison) / `2` (no
+  comparison only), `sampler-census = 1`; default mapping unchanged, but MIN/MAX
+  samplers are now logged once without a key. Host tests PASS (ASan clean),
+  arm64ec links, catalog regenerated (IPA). **Device plan** (main menu, 60 s,
+  static camera, screen recording, `dxil-tess = 0` in each): M1 `ind-count =
+  6000`, `sampler-census = 1`; M2 (only if M1 logs a MIN/MAX sampler)
+  `sampler-reduction = 1`, `ind-count = 6000`. Open: if ind-count stays flat
+  while the grass flickers, the TAA / stipple resolve
+  (`ps_SetMaterialMoving_techStipple`) is next.
