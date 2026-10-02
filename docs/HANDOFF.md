@@ -2557,6 +2557,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     build 327 (keep `env.MADEIRA_EXECREQ_LEAVE = 1`); expect the child's
     emulator copy healed to its own ntdll copy and no NoExec at 148467050.
     Build 328 (GoT round 4) was cancelled for build 329 carrying both.
+  - **Build 329 green** (run 36988558823, head 1837709): GoT round 4 keys
+    (gpu-sync, present-min-ms, pso-first-use) + GTA owner-aware stale heal.
+    main fast-forwarded to 1837709 (no push run). Build 328 was cancelled.
+    Waiting on device: GTA (same file as 327, EXECREQ_LEAVE on); GoT R1/R2.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
