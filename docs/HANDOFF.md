@@ -2074,6 +2074,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     ExecuteIndirect data / barrier ordering in the replay, cross-queue
     COMPUTE->DIRECT ordering, descriptor tables (desc-guard was off), motion
     vectors, heap aliasing.
+  - **Build 314 green** (run 36969827027, head 34cbb77): DXR-tier experiment
+    + NVAPI clocks + the no-IPA-artifact / repository-guard workflow. First
+    build without an IPA artifact: the run's only artifact is `build-logs`;
+    OTA mailed. main fast-forwarded to 34cbb77; its push run 315 (workflow
+    changed) cancelled.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
