@@ -2682,6 +2682,10 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     copy in place`, a second `[dxgi-src] first factory request`, no fault at
     dxgi.dll+0x2c058. Open: whether ERR_SYS_SYSREQ_GPU goes away with it.
     Build 332 carries this and the IAT sync fix.
+  - **Build 332 green** (run 36999411673, head f51cf47): image reload fix
+    (fresh .data/.bss on a same-base reload), IAT sync owner fix, file-trace
+    skips the shader cache. main fast-forwarded to f51cf47 (no push run).
+    Waiting on device: GTA (no dxgi fault? SYSREQ box?), GoT R1/R2, DualSense.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
