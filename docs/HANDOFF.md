@@ -2475,6 +2475,34 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     fast-forwarded to a2e959d (no push run: workflow unchanged). Waiting on
     device: GTA with `env.MADEIRA_EXECREQ_LEAVE = 1`; GoT sampler-reduction
     = 3 + DualSense.
+  - **Build 327 device results (owner, 2026-10-02 11:49-11:52).**
+    - **GTA** (logs PlayGTAV.exe 11:49:21 and 11:50:19, both with
+      `env.MADEIRA_EXECREQ_LEAVE = 1`): "now crashes 2-3 s EARLIER, in the
+      middle of the intro video". `[execreq-leave]` applied to the session
+      copy (pool 0x1484373b8) and the child copy (0x14fbff3b8). New death:
+      `NoExec instruction in entry block: 148467050` on the GTA5_Enhanced
+      child (tid 0034) = the PARENT's ntdll pool copy + 0x87050
+      (invoke_arm64ec_syscall) -- the docs/gta5-child-crash.md address class,
+      now with the parent's copy. `[prot-img]` gives GTA5_Enhanced.exe's
+      sections (.text 0x1000, .rdata 0x247b000, .data 0x286a000, .pdata
+      0x4fac000, .tls 0x5083000, .rsrc 0x509b000, .reloc 0x50ca000, #13 .text
+      0x5123000); the TLS callback makes all of them RWX (#11-#18, insc=1 even
+      with the fix). The old target rva 0x509a144 lies in sections #7/#8
+      (between .tls and .rsrc, < 64 KB, unlogged). wbemprox.dll now loads
+      (`system32\wbem: 2/5 links`), but **ERR_SYS_SYSREQ_GPU still shows**;
+      which WMI/DXGI/NVAPI value fails is unknown (Rockstar's minimum: 4 GB
+      VRAM GTX 1630 class on Windows 10; we report vram-mb 4096). The agent
+      (a30a88b8) was resumed with both logs.
+    - **GoT** (log 11:51:33 + ScreenRecording 11:52:20; dxil-tess 0,
+      sampler-reduction 3, ind-count 6000): `[sampler-reduction] MINIMUM
+      sampler: Metal reductionMode set` -- **no visible change**, still 73
+      DIP/SPIKE lines on the same two culling dispatches. **New owner
+      observation: when the main menu first appears the FPS falls to ~4-5 for
+      a few seconds (grass moves very slowly) and there is NO corruption; as
+      soon as the frame rate recovers the corruption returns** -> points at a
+      timing / GPU-overlap hazard (or a pass that is not running yet while its
+      pipeline compiles). The GoT agent (a4ed2adc) was resumed with this.
+    - DualSense not tested yet.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
