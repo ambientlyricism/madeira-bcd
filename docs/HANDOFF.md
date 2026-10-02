@@ -2828,6 +2828,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     resolution. The owner's own hard rules in section 3 (binaries, IPAs,
     signing files, secrets) stay. Owner: do not add such legal notes to this
     file again.
+  - **Upstream PR inventory: not now (owner, 2026-10-02).** When Will asks
+    for the PRs, build the list from git (506 commits / 172 files ahead of
+    upstream/main 69b2fc0) and this file, not from chat memory: group by
+    topic (upstream fix / fork-only infra such as OTA, signing, mail /
+    diagnostics only / unproven experiment), one topic per PR on a fresh
+    branch from upstream main, host tests + CI build before sending, owner
+    picks which ones go. Best done in a fresh session.
+  - **Build 334 green** (run 37007641469, head 445c747): GTA shared Metal
+    layer restore. OTA 0.1.334 mailed. main fast-forwarded to 445c747 and
+    verified with `git ls-remote` (workflow unchanged, no build-ipa push
+    run). Same extra-DLL result as 333 (failed: wbemdisp hnetcfg). **Device
+    test:** GTA after the intro videos -- the menu should fill the screen at
+    normal size with a normal-sized Metal HUD; the log should show
+    `another swapchain reconfigured the shared Metal layer -- ... restored`
+    once the RGSC temp window's swapchain has come and gone.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
