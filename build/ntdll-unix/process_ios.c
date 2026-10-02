@@ -993,6 +993,121 @@ static void madeira_steam_session_log( const UNICODE_STRING *image )
         dprintf( 2, "[session-log] madeira-bcd Steam game %s: could not link logs/%s-%s.txt (errno %d)\n",
                  name, name, stamp, errno );
 }
+
+/* madeira-bcd: Social Club's Chromium (SocialClubHelper.exe).
+ *
+ * GTA V Enhanced's socialclub.dll starts SocialClubHelper.exe as CEF's BROWSER
+ * process (no --type=) and connects to it over \\.\pipe\chrome.rgsc_gameinst_0.
+ * On Windows that browser then starts its renderer, GPU and utility children
+ * (nine SocialClubHelper.exe processes in a Proton log of a PC run). Here all
+ * pseudo-processes share one address space and one JIT pool, and every CEF
+ * process needs its own 240 MB pool copy of libcef.dll and its own 32 GB
+ * PartitionAlloc reservation on a 32 GB boundary, of which the address space
+ * has at most one (with env.MADEIRA_SC_PA_POOLS = 1, virtual_ios.c
+ * ios_sc_glued_pools). So, as for Steam's webhelper (task #34 above):
+ *   - the browser gets --single-process: renderer and GPU become its threads;
+ *   - a --type= child it still starts is refused;
+ *   - PartitionAllocBackupRefPtr is disabled where the switch is honoured: only
+ *     the first 4 GB of the BackupRefPtr pool are real memory (virtual_ios.c
+ *     ios_sc_glued_pools), and Steam's CEF died on BRP's refcount check (ml297;
+ *     ml616 saw it run with the switch set, so nothing relies on it);
+ *   - V8 gets --js-flags=--jitless unless MADEIRA_JITLESS=0 (as for Steam);
+ *   - env.MADEIRA_SC_CEF_FLAGS (madeira.cfg) is appended verbatim, for tests.
+ * env.MADEIRA_SC_CEF = 0 turns this off, together with virtual_ios.c's parts. */
+enum { SC_NOT_HELPER = 0, SC_BROWSER = 1, SC_CHILD = 2 };
+enum { SC_BRP_SPLICED = 1, SC_BRP_NEW = 2, SC_SINGLE_ADDED = 4, SC_JITLESS_ADDED = 8,
+       SC_OWN_JS_FLAGS = 16, SC_EXTRA_ADDED = 32 };
+
+/* Index of the first character after the LAST `sw` (an ASCII switch such as
+ * "--disable-features=") in `cl` that starts an argument, or -1. A switch
+ * without '=' only matches a whole argument. */
+static int sc_switch_end( const WCHAR *cl, int cl_len, const char *sw )
+{
+    int n = (int)strlen( sw ), k, j, last = -1;
+
+    for (k = 0; cl && k + n <= cl_len; k++)
+    {
+        if (k && cl[k - 1] != ' ' && cl[k - 1] != '\t' && cl[k - 1] != '"') continue;
+        for (j = 0; j < n; j++) if (cl[k + j] != (WCHAR)sw[j]) break;
+        if (j < n) continue;
+        if (sw[n - 1] != '=' && k + n < cl_len && cl[k + n] != ' ' && cl[k + n] != '\t' &&
+            cl[k + n] != '"' && cl[k + n] != '=') continue;
+        last = k + n;
+    }
+    return last;
+}
+
+/* What kind of Social Club process `image` with command line `cl` is. */
+static int sc_helper_kind( const WCHAR *image, int image_len, const WCHAR *cl, int cl_len )
+{
+    static const char helper[] = "socialclubhelper.exe";
+    int n = sizeof(helper) - 1, base = 0, k;
+
+    if (!image || image_len <= 0) return SC_NOT_HELPER;
+    for (k = 0; k < image_len; k++) if (image[k] == '\\' || image[k] == '/') base = k + 1;
+    if (image_len - base != n) return SC_NOT_HELPER;
+    for (k = 0; k < n; k++)
+    {
+        WCHAR c = image[base + k];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != (WCHAR)helper[k]) return SC_NOT_HELPER;
+    }
+    return sc_switch_end( cl, cl_len, "--type=" ) >= 0 ? SC_CHILD : SC_BROWSER;
+}
+
+/* The browser's new command line, written to `out` (`cap` WCHARs with the
+ * NUL): `cl` with PartitionAllocBackupRefPtr put first in its last
+ * --disable-features= list (Chromium uses only the last one; a second switch
+ * would drop the app's own list), or a new --disable-features= when it has
+ * none; then --single-process unless present, --js-flags=--jitless when
+ * `jitless` and `cl` has no --js-flags= of its own, and ` extra` when
+ * non-empty. Returns the length and the SC_* bits in *how, or -1 when `cap` is
+ * too small. */
+static int sc_browser_cmdline( const WCHAR *cl, int cl_len, int jitless, const char *extra,
+                               WCHAR *out, int cap, int *how )
+{
+    static const char brp[] = "PartitionAllocBackupRefPtr";
+    int df = sc_switch_end( cl, cl_len, "--disable-features=" ), o = 0, k;
+    int need = cl_len + 1 + 64 + 24 + 24 + (extra ? 1 + (int)strlen( extra ) : 0);
+    const char *add;
+
+    *how = 0;
+    if (cap < need || cl_len < 0) return -1;
+    if (df >= 0)
+    {
+        for (k = 0; k < df; k++) out[o++] = cl[k];
+        for (add = brp; *add; add++) out[o++] = (WCHAR)*add;
+        out[o++] = ',';
+        for (k = df; k < cl_len; k++) out[o++] = cl[k];
+        *how |= SC_BRP_SPLICED;
+    }
+    else
+    {
+        for (k = 0; k < cl_len; k++) out[o++] = cl[k];
+        for (add = " --disable-features="; *add; add++) out[o++] = (WCHAR)*add;
+        for (add = brp; *add; add++) out[o++] = (WCHAR)*add;
+        *how |= SC_BRP_NEW;
+    }
+    if (sc_switch_end( cl, cl_len, "--single-process" ) < 0)
+    {
+        for (add = " --single-process"; *add; add++) out[o++] = (WCHAR)*add;
+        *how |= SC_SINGLE_ADDED;
+    }
+    if (sc_switch_end( cl, cl_len, "--js-flags=" ) >= 0) *how |= SC_OWN_JS_FLAGS;
+    else if (jitless)
+    {
+        for (add = " --js-flags=--jitless"; *add; add++) out[o++] = (WCHAR)*add;
+        *how |= SC_JITLESS_ADDED;
+    }
+    if (extra && *extra)
+    {
+        out[o++] = ' ';
+        for (add = extra; *add; add++) out[o++] = (WCHAR)(unsigned char)*add;
+        *how |= SC_EXTRA_ADDED;
+    }
+    out[o] = 0;
+    return o;
+}
 #endif
 
 /**********************************************************************
@@ -1512,6 +1627,64 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                         dprintf(2, "[proc-gate] cmdline-tail(ml428): ...%s\n", tail);
                     }
                 }
+            }
+        }
+    }
+
+    /* madeira-bcd: Social Club's Chromium -- see sc_helper_kind. */
+    {
+        const char *sc = getenv( "MADEIRA_SC_CEF" );
+        int kind = (sc && sc[0] == '0') ? SC_NOT_HELPER
+                 : sc_helper_kind( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR),
+                                   params->CommandLine.Buffer, params->CommandLine.Length / sizeof(WCHAR) );
+        if (kind == SC_CHILD)
+        {
+            dprintf( 2, "[sc-cef] REFUSING a SocialClubHelper.exe --type= child: its browser runs "
+                        "--single-process, one CEF process is all the address space holds "
+                        "(env.MADEIRA_SC_CEF=0 allows it)\n" );
+            return STATUS_ACCESS_DENIED;
+        }
+        if (kind == SC_BROWSER)
+        {
+            const char *jl = getenv( "MADEIRA_JITLESS" );
+            const char *extra = getenv( "MADEIRA_SC_CEF_FLAGS" );
+            int cl_len = params->CommandLine.Length / sizeof(WCHAR), how = 0, o = -1;
+            int cap = cl_len + 160 + (extra ? (int)strlen( extra ) : 0);
+            WCHAR *nbuf = malloc( cap * sizeof(WCHAR) );   /* leaks once per launch, as above */
+
+            if (nbuf)
+                o = sc_browser_cmdline( params->CommandLine.Buffer, cl_len, !(jl && jl[0] == '0'), extra,
+                                        nbuf, cap, &how );
+            if (o >= 0)
+            {
+                char tail[136];
+                int tstart = o > 128 ? o - 128 : 0, ti;
+
+                params->CommandLine.Buffer = nbuf;
+                params->CommandLine.Length = o * sizeof(WCHAR);
+                params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
+                dprintf( 2, "[sc-cef] SocialClubHelper.exe browser: %s; BackupRefPtr off (%s); V8 %s; "
+                            "MADEIRA_SC_CEF_FLAGS %s\n",
+                         (how & SC_SINGLE_ADDED) ? "--single-process added" : "already --single-process",
+                         (how & SC_BRP_SPLICED) ? "spliced into its --disable-features list"
+                                                : "new --disable-features switch",
+                         (how & SC_JITLESS_ADDED) ? "--jitless (MADEIRA_JITLESS=0 turns it off)"
+                         : (how & SC_OWN_JS_FLAGS) ? "flags left as the app set them"
+                                                   : "JIT (MADEIRA_JITLESS=0)",
+                         (how & SC_EXTRA_ADDED) ? "appended" : "unset" );
+                for (ti = 0; ti + tstart < o && ti < 135; ti++)
+                {
+                    WCHAR c = nbuf[tstart + ti];
+                    tail[ti] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+                }
+                tail[ti] = 0;
+                dprintf( 2, "[sc-cef] cmdline-tail: ...%s\n", tail );
+            }
+            else
+            {
+                free( nbuf );
+                dprintf( 2, "[sc-cef] SocialClubHelper.exe browser: command line NOT rewritten "
+                            "(no memory) -- it runs multi-process\n" );
             }
         }
     }

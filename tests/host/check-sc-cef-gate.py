@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Social Club's Chromium: one CEF process, its libcef.dll copy and its glued pools; no Wine runs.
+
+GTA V Enhanced (logs 2026-10-02 16:19 / 16:33): the game loaded libcef.dll itself and its
+240 MB pool copy was refused (pool EXHAUSTED); each SocialClubHelper.exe then reserved
+PartitionAlloc's glued 32 GB pools, got 0x7400000000 (not 32 GB aligned) three times,
+asked for 64 GB - 64 KB to align it itself and died at chrome_elf.dll+0x13add4. Five
+helpers were started.
+
+Compiles the production code and checks:
+  - process_ios.c (sc_switch_end, sc_helper_kind, sc_browser_cmdline): only
+    SocialClubHelper.exe matches; a --type= child is a child; the browser gets
+    --single-process, --js-flags=--jitless (unless MADEIRA_JITLESS=0 or its own
+    --js-flags=), PartitionAllocBackupRefPtr first in its LAST --disable-features= list
+    (a new switch only when it has none) and MADEIRA_SC_CEF_FLAGS; a too small buffer
+    fails; look-alike switches are not taken for the real ones;
+  - virtual_ios.c (ios_sc_name_is, ios_sc_path_is_helper, ios_sc_cef_refuse): libcef.dll
+    is refused only in a Social Club client that is not the helper, with the switch on;
+  - virtual_ios.c env.MADEIRA_SC_PA_POOLS (ios_sc_pa_hold_arena, ios_sc_glued_pools,
+    ios_sc_pa_drop_hold) against a model Mach map and allocator: not opted in, nothing
+    moves and nothing is granted; opted in, the FEX arena boots at 0x7d00000000 (12 GB)
+    with [0x7c00000000, +4 GB) held, the helper's ask gets 32 GB at 0x7800000000 with
+    [0x7800000000, 0x7d00000000) really reserved, a blocked range puts the hold back, a
+    restarted helper gets the range again;
+and the call sites textually (NtCreateUserProcess gate, mprotect_exec refusal,
+map_image_into_view's STATUS_NO_MEMORY, the hinted jumbo branch, the FEX arena).
+Needs python3 and a C compiler (AddressSanitizer/UBSan).
+"""
+from pathlib import Path
+import os
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[2]
+proc = (root / 'build/ntdll-unix/process_ios.c').read_text()
+native = (root / 'build/ntdll-unix/virtual_ios.c').read_text()
+
+
+def function(source, signature):
+    start = source.index(signature)
+    return source[start:source.index('\n}', start) + 2] + '\n'
+
+
+# --- call sites ---------------------------------------------------------------
+create = function(proc, 'NTSTATUS WINAPI NtCreateUserProcess(')
+gate = create[create.index('/* madeira-bcd: Social Club\'s Chromium -- see sc_helper_kind. */'):]
+gate = gate[:gate.index('unixdir = get_unix_curdir( params );')]
+assert 'getenv( "MADEIRA_SC_CEF" )' in gate and "(sc && sc[0] == '0') ? SC_NOT_HELPER" in gate
+assert 'if (kind == SC_CHILD)' in gate and 'return STATUS_ACCESS_DENIED;' in gate
+assert 'getenv( "MADEIRA_JITLESS" )' in gate and 'getenv( "MADEIRA_SC_CEF_FLAGS" )' in gate
+assert 'params->CommandLine.Buffer = nbuf;' in gate
+assert create.index('task #34 single-process CEF') < create.index("Social Club's Chromium -- see sc_helper_kind") \
+    < create.index('create_startup_info( attr.ObjectName')
+print('PASS: NtCreateUserProcess refuses a helper --type= child and rewrites the browser before the startup info')
+
+mprot = function(native, 'static inline int mprotect_exec( void *base, size_t size, int unix_prot )')
+refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll gets no pool copy"):]
+refuse = refuse[:refuse.index('/* ml457 REVERTED (ml458)')]
+assert 'ios_sc_cef_refuse( "libcef.dll", 1, ios_sc_current_is_helper(), ios_sc_current_has_socialclub() )' in refuse
+assert 'ios_jit_copy_refused = 1;' in refuse and 'return -1;' in refuse
+exhausted = mprot[mprot.index('[jit-pool] EXHAUSTED (image %p+0x%lx)'):][:900]
+assert 'ios_jit_copy_refused = 1;' in exhausted
+mapimg = function(native, 'static NTSTATUS map_image_into_view(')
+loop = mapimg[mapimg.index('ios_jit_copy_refused = 0;'):mapimg.index('VALGRIND_LOAD_PDB_DEBUGINFO')]
+assert 'if (ios_jit_copy_refused)' in loop and 'status = STATUS_NO_MEMORY;' in loop and 'goto done;' in loop
+assert loop.index('for (i = 0; i < nt->FileHeader.NumberOfSections; i++)') > 0
+print('PASS: a refused pool copy (exhausted, or a client\'s libcef.dll) fails the image load with STATUS_NO_MEMORY')
+
+hinted = native[native.index('/* task#29 CEF plan C: a HINTED jumbo reserve that fails placement'):][:6000]
+glue = hinted[hinted.index('ios_sc_glued_pools( &pick, &sz, type, protect )') - 200:]
+assert '*size_ptr == 0x800000000ULL && !((ULONG_PTR)hint & (0x800000000ULL - 1))' in glue
+assert 'ios_sc_cef_enabled() && ios_sc_current_is_helper()' in glue
+assert 'if (st2 && off)' in hinted and 'else if (st2) for (slot = 0x7C00000000ULL;' in hinted
+arena = function(native, 'void ios_reserve_fex_arena(void)')
+assert 'if (i == 0 && ios_sc_pa_hold_arena( &addr, &size )) goto sc_arena_placed;' in arena
+assert arena.index('goto sc_arena_placed;') < arena.index('    sc_arena_placed:\n        base = (void *)(ULONG_PTR)addr;')
+assert 'if (ios_sc_brp_layout) { ios_sc_pa_drop_hold(); i--; }' in arena
+assert 'ios_soft' not in function(native, 'static NTSTATUS ios_sc_glued_pools('), 'no soft entry over FEX\'s arena'
+print('PASS: only SocialClubHelper.exe\'s 32 GB-aligned 32 GB reserve takes the glued-pools path; '
+      'the FEX arena moves only with env.MADEIRA_SC_PA_POOLS = 1')
+
+# --- the code under test ----------------------------------------------------------
+enums = proc[proc.index('enum { SC_NOT_HELPER = 0'):]
+enums = enums[:enums.index('\n\n')] + '\n'
+proc_helpers = enums + ''.join(function(proc, sig) for sig in (
+    'static int sc_switch_end(',
+    'static int sc_helper_kind(',
+    'static int sc_browser_cmdline(',
+))
+virt_helpers = ''.join(function(native, sig) for sig in (
+    'static int ios_sc_name_is(',
+    'static int ios_sc_path_is_helper(',
+    'static int ios_sc_cef_refuse(',
+))
+sc_decl = native[native.index('#define IOS_SC_GLUED_BASE'):]
+sc_decl = sc_decl[:sc_decl.index('static int ios_sc_brp_layout;')] + 'static int ios_sc_brp_layout;\n'
+glued = function(native, 'static int ios_sc_pa_hold_arena(') + \
+    function(native, 'static void ios_sc_pa_drop_hold(void)') + \
+    function(native, 'static NTSTATUS ios_sc_glued_pools(')
+
+harness = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+typedef uint16_t WCHAR;
+typedef unsigned int NTSTATUS, ULONG;
+typedef size_t SIZE_T;
+#define STATUS_SUCCESS 0
+#define STATUS_NO_MEMORY 0xc0000017
+#define STATUS_CONFLICTING_ADDRESSES 0xc0000018
+#define dprintf(fd, ...) fprintf( stderr, __VA_ARGS__ )
+#define FAIL(...) do { fprintf(stderr, __VA_ARGS__); exit(1); } while (0)
+''' + proc_helpers + virt_helpers + r'''
+/* --- a model of the Mach map: a list of ranges --- */
+typedef uint64_t mach_vm_address_t, mach_vm_size_t;
+typedef int kern_return_t;
+#define KERN_SUCCESS 0
+#define KERN_NO_SPACE 3
+#define VM_FLAGS_FIXED 0
+#define MEMORY_OBJECT_NULL 0
+#define PROT_NONE 0
+#define VM_PROT_ALL 7
+#define VM_INHERIT_COPY 1
+#define MEM_RELEASE 0x8000
+static struct { uint64_t base, size; } vm[16];
+static int nvm, fail_map_n;
+static int mach_task_self( void ) { return 1; }
+static int vm_overlaps( uint64_t b, uint64_t s )
+{
+    int i;
+    for (i = 0; i < nvm; i++) if (b < vm[i].base + vm[i].size && b + s > vm[i].base) return 1;
+    return 0;
+}
+static void vm_add( uint64_t b, uint64_t s ) { vm[nvm].base = b; vm[nvm].size = s; nvm++; }
+static void vm_del( uint64_t b )
+{
+    int i;
+    for (i = 0; i < nvm; i++) if (vm[i].base == b) { vm[i] = vm[--nvm]; return; }
+    FAIL("no range at 0x%llx\n", (unsigned long long)b);
+}
+static kern_return_t mach_vm_map( int t, mach_vm_address_t *a, mach_vm_size_t s, uint64_t mask, int flags, int obj,
+                                  uint64_t off, int copy, int cur, int max, int inh )
+{
+    (void)t; (void)mask; (void)flags; (void)obj; (void)off; (void)copy; (void)cur; (void)max; (void)inh;
+    if (fail_map_n && !--fail_map_n) return KERN_NO_SPACE;
+    if (vm_overlaps( *a, s )) return KERN_NO_SPACE;
+    vm_add( *a, s );
+    return KERN_SUCCESS;
+}
+static kern_return_t mach_vm_deallocate( int t, mach_vm_address_t a, mach_vm_size_t s )
+{
+    int i;
+    (void)t;
+    for (i = 0; i < nvm; i++)
+        if (vm[i].base == a && vm[i].size == s) { vm[i] = vm[--nvm]; return KERN_SUCCESS; }
+    FAIL("deallocate of an unknown range 0x%llx+0x%llx\n", (unsigned long long)a, (unsigned long long)s);
+    return 1;
+}
+static int calls;
+static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size, ULONG type, ULONG protect,
+                                         unsigned long a, unsigned long b, int c, int d )
+{
+    (void)type; (void)protect; (void)a; (void)b; (void)c; (void)d;
+    calls++;
+    if ((uintptr_t)*ret != 0x7800000000ull || *size != 0x500000000ull)
+        FAIL("asked for 0x%llx+0x%llx\n", (unsigned long long)(uintptr_t)*ret, (unsigned long long)*size);
+    if (vm_overlaps( 0x7800000000ull, *size )) return STATUS_CONFLICTING_ADDRESSES;
+    vm_add( 0x7800000000ull, *size );
+    return STATUS_SUCCESS;
+}
+static void *NtCurrentProcess( void ) { return (void *)~(uintptr_t)0; }
+static NTSTATUS NtFreeVirtualMemory( void *p, void **a, SIZE_T *s, ULONG t ) { (void)p; (void)a; (void)s; (void)t; return 0; }
+''' + sc_decl + glued + r'''
+static WCHAR *w( const char *s, int *len )
+{
+    static WCHAR buf[8][2048];
+    static int k;
+    WCHAR *o = buf[k++ & 7];
+    int n = 0;
+    for (; s[n]; n++) o[n] = (unsigned char)s[n];
+    o[n] = 0;
+    *len = n;
+    return o;
+}
+
+static const char *a( const WCHAR *s, int len )
+{
+    static char buf[4096];
+    int i;
+    for (i = 0; i < len; i++) buf[i] = (char)s[i];
+    buf[len] = 0;
+    return buf;
+}
+
+static const char *helper = "C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe";
+
+static int kind( const char *image, const char *cl )
+{
+    int il, cll;
+    WCHAR *wi = w( image, &il ), *wc = w( cl, &cll );
+    return sc_helper_kind( wi, il, wc, cll );
+}
+
+static const char *rewrite( const char *cl, int jitless, const char *extra, int *how )
+{
+    static WCHAR out[4096];
+    int cll, n;
+    WCHAR *wc = w( cl, &cll );
+    n = sc_browser_cmdline( wc, cll, jitless, extra, out, 4096, how );
+    if (n < 0) FAIL("rewrite failed for %s\n", cl);
+    if (out[n]) FAIL("not NUL-terminated\n");
+    return a( out, n );
+}
+
+static void expect( const char *got, const char *want )
+{
+    if (strcmp( got, want )) FAIL("got  [%s]\nwant [%s]\n", got, want);
+}
+
+static void gate_and_cmdline( void )
+{
+    const char *cl = "\"C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe\"  "
+                     "--allow-file-access-from-files --lang=en --off-screen-rendering-enabled";
+    int how;
+
+    if (kind( helper, cl ) != SC_BROWSER) FAIL("browser not recognised\n");
+    if (kind( "\\??\\c:\\program files\\rockstar games\\social club\\socialclubhelper.exe", cl ) != SC_BROWSER)
+        FAIL("NT path, lower case\n");
+    if (kind( helper, "x.exe --type=renderer --lang=en" ) != SC_CHILD) FAIL("renderer child\n");
+    if (kind( helper, "x.exe \"--type=gpu-process\"" ) != SC_CHILD) FAIL("quoted child\n");
+    if (kind( helper, "x.exe --no-type=renderer" ) != SC_BROWSER) FAIL("--no-type= taken for --type=\n");
+    if (kind( "C:\\x\\NotSocialClubHelper.exe", cl ) != SC_NOT_HELPER) FAIL("look-alike image\n");
+    if (kind( "C:\\x\\SocialClubHelper.exe.bak", cl ) != SC_NOT_HELPER) FAIL("suffix\n");
+    if (kind( "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "a --type=renderer" ) != SC_NOT_HELPER)
+        FAIL("steamwebhelper\n");
+    printf("PASS: only SocialClubHelper.exe is matched; --type= makes it a child\n");
+
+    expect( rewrite( cl, 1, NULL, &how ),
+            "\"C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe\"  --allow-file-access-from-files "
+            "--lang=en --off-screen-rendering-enabled --disable-features=PartitionAllocBackupRefPtr --single-process "
+            "--js-flags=--jitless" );
+    if (how != (SC_BRP_NEW | SC_SINGLE_ADDED | SC_JITLESS_ADDED)) FAIL("how=%x\n", how);
+    expect( rewrite( "h.exe --disable-features=A,B --x", 1, NULL, &how ),
+            "h.exe --disable-features=PartitionAllocBackupRefPtr,A,B --x --single-process --js-flags=--jitless" );
+    if (!(how & SC_BRP_SPLICED) || (how & SC_BRP_NEW)) FAIL("splice how=%x\n", how);
+    expect( rewrite( "h.exe --disable-features=A --disable-features=\"B,C\"", 0, NULL, &how ),
+            "h.exe --disable-features=A --disable-features=PartitionAllocBackupRefPtr,\"B,C\" --single-process" );
+    expect( rewrite( "h.exe --single-process --js-flags=--max-old-space-size=64", 1, "--disable-gpu --v=1", &how ),
+            "h.exe --single-process --js-flags=--max-old-space-size=64 --disable-features=PartitionAllocBackupRefPtr "
+            "--disable-gpu --v=1" );
+    if (how != (SC_BRP_NEW | SC_OWN_JS_FLAGS | SC_EXTRA_ADDED)) FAIL("how=%x\n", how);
+    expect( rewrite( "h.exe --single-process-x --foo=--disable-features=Z", 1, "", &how ),
+            "h.exe --single-process-x --foo=--disable-features=Z --disable-features=PartitionAllocBackupRefPtr "
+            "--single-process --js-flags=--jitless" );
+    {
+        WCHAR out[64];
+        int cll;
+        WCHAR *wc = w( "h.exe --lang=en", &cll );
+        if (sc_browser_cmdline( wc, cll, 1, "--a-long-extra-switch", out, 64, &how ) != -1) FAIL("small buffer accepted\n");
+    }
+    printf("PASS: browser command line: BRP off in its last --disable-features list (or a new one), "
+           "--single-process, jitless unless asked otherwise, extra flags appended, nothing doubled\n");
+
+    if (!ios_sc_cef_refuse( "libcef.dll", 1, 0, 1 ) || !ios_sc_cef_refuse( "LIBCEF.DLL", 1, 0, 1 )) FAIL("client libcef\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 1, 1, 1 )) FAIL("helper refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 0, 0, 1 )) FAIL("MADEIRA_SC_CEF=0 refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll", 1, 0, 0 )) FAIL("non-Social Club process (Steam) refused\n");
+    if (ios_sc_cef_refuse( "libcef.dll.bak", 1, 0, 1 ) || ios_sc_cef_refuse( NULL, 1, 0, 1 )) FAIL("other names\n");
+    {
+        int len;
+        WCHAR *p = w( helper, &len );
+        if (!ios_sc_path_is_helper( p, len )) FAIL("helper path\n");
+        p = w( "C:\\Grand Theft Auto V Enhanced\\GTA5_Enhanced.exe", &len );
+        if (ios_sc_path_is_helper( p, len )) FAIL("game path\n");
+        p = w( "SocialClubHelper.exe", &len );
+        if (!ios_sc_path_is_helper( p, len )) FAIL("bare name\n");
+    }
+    printf("PASS: libcef.dll is refused only in a Social Club client that is not the helper, switch on\n");
+}
+
+/* the boot half runs once per process, so each case is its own run of this binary */
+static void not_opted_in( void )
+{
+    mach_vm_address_t addr = 0x7c00000000ull;
+    SIZE_T size = 0x400000000ull, sz;
+    void *pick;
+
+    if (ios_sc_pa_hold_arena( &addr, &size ) || nvm || addr != 0x7c00000000ull) FAIL("arena moved without the switch\n");
+    if (ios_sc_glued_pools( &pick, &sz, 0x2000, 1 ) != STATUS_NO_MEMORY || calls || nvm) FAIL("granted without the switch\n");
+    printf("PASS: without env.MADEIRA_SC_PA_POOLS=1 the FEX arena stays at its old place and nothing is granted\n");
+}
+
+static void move_fails( void )
+{
+    mach_vm_address_t addr = 0x7c00000000ull;
+    SIZE_T size = 0x400000000ull;
+
+    vm_add( 0x7f00000000ull, 0x10000 );   /* something already inside the 12 GB */
+    if (ios_sc_pa_hold_arena( &addr, &size ) || nvm != 1 || ios_sc_brp_layout || ios_sc_brp_held)
+        FAIL("failed move left something held\n");
+    printf("PASS: a move that cannot be mapped holds nothing and leaves the arena where it was\n");
+}
+
+static void opted_in( void )
+{
+    mach_vm_address_t addr = 0x7c00000000ull;
+    SIZE_T size = 0x400000000ull, sz;
+    void *pick;
+
+    if (!ios_sc_pa_hold_arena( &addr, &size ) || addr != 0x7d00000000ull || size != 0x300000000ull)
+        FAIL("arena not moved to 0x7d00000000+12GB\n");
+    if (!ios_sc_brp_held || !ios_sc_brp_layout || nvm != 2 || !vm_overlaps( 0x7c00000000ull, 0x100000000ull ))
+        FAIL("4 GB not held\n");
+    if (ios_sc_pa_hold_arena( &addr, &size )) FAIL("boot half ran twice\n");
+    if (ios_sc_glued_pools( &pick, &sz, 0x2000, 1 ) || (uintptr_t)pick != 0x7800000000ull || sz != 0x800000000ull)
+        FAIL("helper grant\n");
+    if (ios_sc_brp_held || nvm != 2) FAIL("hold not turned into the grant\n");
+    /* a second helper while the first one's view is alive: falls back, the range stays the first one's */
+    if (ios_sc_glued_pools( &pick, &sz, 0x2000, 1 ) != STATUS_CONFLICTING_ADDRESSES) FAIL("taken range granted\n");
+    if (ios_sc_brp_held) FAIL("hold taken over a live grant\n");
+    /* the first helper's view goes away: the next helper gets the range again */
+    vm_del( 0x7800000000ull );
+    if (ios_sc_glued_pools( &pick, &sz, 0x2000, 1 ) || (uintptr_t)pick != 0x7800000000ull) FAIL("restarted helper\n");
+    /* something else sits in the regular pool's range: the hold comes back for a later try */
+    vm_del( 0x7800000000ull );
+    vm_add( 0x7900000000ull, 0x10000 );
+    if (ios_sc_glued_pools( &pick, &sz, 0x2000, 1 ) != STATUS_CONFLICTING_ADDRESSES || !ios_sc_brp_held)
+        FAIL("blocked grant did not put the hold back\n");
+    ios_sc_pa_drop_hold();
+    if (ios_sc_brp_held || ios_sc_brp_layout || vm_overlaps( 0x7c00000000ull, 0x100000000ull )) FAIL("drop_hold\n");
+    printf("PASS: env.MADEIRA_SC_PA_POOLS=1: arena at 0x7d00000000 (12 GB) with 0x7c00000000+4GB held; the helper "
+           "gets 32 GB at 0x7800000000 with 20 GB really reserved; a blocked range puts the hold back; a restarted "
+           "helper gets it again\n");
+}
+
+int main( int argc, char **argv )
+{
+    const char *mode = argc > 1 ? argv[1] : "";
+    if (!strcmp( mode, "gate" )) gate_and_cmdline();
+    else if (!strcmp( mode, "off" )) not_opted_in();
+    else if (!strcmp( mode, "move-fails" )) move_fails();
+    else if (!strcmp( mode, "on" )) opted_in();
+    else FAIL("mode?\n");
+    return 0;
+}
+'''
+
+with tempfile.TemporaryDirectory() as t:
+    c = Path(t) / 'sc.c'
+    c.write_text(harness)
+    exe = Path(t) / 'sc'
+    subprocess.run(['cc', '-std=gnu11', '-O1', '-Wall', '-Wno-unused-function', '-fsanitize=address,undefined',
+                    '-fno-sanitize-recover=all', str(c), '-o', str(exe)], check=True)
+    base_env = {k: v for k, v in os.environ.items() if not k.startswith('MADEIRA_')}
+    for mode, pools in (('gate', None), ('off', None), ('off', '0'), ('move-fails', '1'), ('on', '1')):
+        env = dict(base_env)
+        if pools is not None:
+            env['MADEIRA_SC_PA_POOLS'] = pools
+        out = subprocess.run([str(exe), mode], capture_output=True, text=True, env=env)
+        print(out.stdout, end='')
+        assert out.returncode == 0, (mode, pools, out.stdout + out.stderr)

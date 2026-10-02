@@ -106,6 +106,30 @@ OVERLAY = {
                             ("0", "Off")],
                 "sources": ["app/Madeira/GamepadInput.swift", "app/Madeira/PadOutput.m"]},
     "env.MADEIRA_PROMOTE": {"title": "Hold the display at its maximum rate"},
+    # madeira-bcd: GTA V Enhanced's Social Club (StikJITHelper.swift, process_ios.c, virtual_ios.c).
+    "pool-split": {"category": "Memory & JIT pool", "title": "Split JIT pool around the main thread's stack",
+                "kind": "bool", "default": "0",
+                "note": "1: when the pool would shrink below its size (pool, 896 MB by default) because the main "
+                        "thread's stack splits the only executable band, the free run above the stack becomes a "
+                        "second debugger region and both form one pool (about 880 MB instead of 560-630 MB). Costs "
+                        "the second region's size in memory. Off by default; read at launch, the game's own file "
+                        "wins."},
+    "env.MADEIRA_SC_CEF": {"category": "Wine core (ntdll)", "title": "Social Club's Chromium in one process",
+                "kind": "bool", "default": "1",
+                "note": "On by default; 0 turns it off. SocialClubHelper.exe runs --single-process with "
+                        "PartitionAllocBackupRefPtr disabled and V8 --jitless (MADEIRA_JITLESS = 0 keeps V8's JIT), its "
+                        "--type= children are refused, and a process with socialclub.dll mapped that is not the "
+                        "helper (the game) gets no JIT-pool copy of libcef.dll: its load fails, as it did when the "
+                        "pool was full. No effect on programs without Social Club."},
+    "env.MADEIRA_SC_CEF_FLAGS": {"category": "Wine core (ntdll)", "title": "Extra SocialClubHelper.exe switches",
+                "note": "Appended verbatim to SocialClubHelper.exe's command line while env.MADEIRA_SC_CEF is on, "
+                        "e.g. --disable-gpu or --enable-logging=file --v=1."},
+    "env.MADEIRA_SC_PA_POOLS": {"category": "Memory & JIT pool", "title": "Room for Social Club's PartitionAlloc pools",
+                "kind": "bool", "default": "0",
+                "note": "1: Wine boots with the emulator's arena at 0x7d00000000 (12 GB instead of 16 GB) and keeps "
+                        "0x7c00000000 +4 GB free, so SocialClubHelper.exe's 32 GB PartitionAlloc reservation, which "
+                        "must start on a 32 GB boundary, gets 0x7800000000 (20 GB of it really reserved). Off by "
+                        "default; set it in the game's own file; read at session start."},
     # madeira-bcd: the opt-in source build of DXMT's 64-bit dxgi.dll (tools/build-dxgi-dll.sh).
     "env.MADEIRA_DXGI_SRC": {"category": "Direct3D 9/10/11 (DXMT)", "title": "DXGI built from DXMT source (IDXGIFactory7)",
                 "kind": "bool", "default": "0",

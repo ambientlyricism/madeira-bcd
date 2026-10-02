@@ -3207,6 +3207,13 @@ struct ContentView: View {
                 setenv("WINE_IOS_JIT_RX", String(format: "%lx", Int(bitPattern: pool.rx)), 1)
                 setenv("WINE_IOS_JIT_RW", String(format: "%lx", Int(bitPattern: pool.rw)), 1)
                 setenv("WINE_IOS_JIT_SIZE", String(format: "%lx", pool.size), 1)
+                // madeira-bcd split pool (pool-split = 1): the pool offsets between its two
+                // debugger regions, which ntdll never hands out (StikJITHelper.poolHole).
+                if let hole = StikJITHelper.poolHole {
+                    setenv("WINE_IOS_JIT_HOLE", String(format: "%lx:%lx", hole.off, hole.end), 1)
+                } else {
+                    unsetenv("WINE_IOS_JIT_HOLE")
+                }
                 // ml1330: the pool is allocated once per app run and reused, so this is
                 // the actual size, which the unix side records if a session runs it dry.
                 setenv("MADEIRA_POOL_MB", String(pool.size / 1024 / 1024), 1)
