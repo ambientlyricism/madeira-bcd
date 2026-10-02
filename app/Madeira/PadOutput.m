@@ -71,7 +71,9 @@ static void on_main(dispatch_block_t block)
     int _slot;
     int _channels;              // 0 not looked yet, 2 left+right handles, 1 one engine, -1 no haptics
     CHHapticEngine *_engine[2];
-    id<CHHapticAdvancedPatternPlayer> _player[2];
+    id<CHHapticPatternPlayer> _player[2];
+    BOOL _looping[2];           // advanced player with loopEnabled; NO: plain player, restarted by push
+    CFAbsoluteTime _startedAt[2];
     BOOL _playing[2];
     float _want[2];             // per engine: 0 left/low (or the only one), 1 right/high
     float _sent[2];
@@ -124,7 +126,7 @@ static void on_main(dispatch_block_t block)
     if (g_active) [self push];
 }
 
-- (id<CHHapticAdvancedPatternPlayer>)playerFor:(int)i
+- (id<CHHapticPatternPlayer>)playerFor:(int)i
 {
     if (_player[i]) return _player[i];
     if (_failures >= 3) return nil;
@@ -168,13 +170,28 @@ static void on_main(dispatch_block_t block)
                                                        relativeTime:0
                                                            duration:30.0];
     CHHapticPattern *pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
-    id<CHHapticAdvancedPatternPlayer> player = pattern ? [engine createAdvancedPlayerWithPattern:pattern error:&error] : nil;
+    // madeira-bcd: game controllers refuse the ADVANCED player -- on a DualSense
+    // it fails with "Couldn't communicate with a helper application" (owner's
+    // GoT log 2026-10-02 10:37:29; the same on Apple's developer forums,
+    // thread 773615, where a plain CHHapticPatternPlayer works). Try the
+    // advanced one (it loops), else take the plain one: it takes the same
+    // intensity control, and push restarts it before the 30 s event ends.
+    id<CHHapticAdvancedPatternPlayer> advanced = pattern ? [engine createAdvancedPlayerWithPattern:pattern error:&error] : nil;
+    id<CHHapticPatternPlayer> player = advanced;
+    if (advanced) advanced.loopEnabled = YES;
+    else if (pattern) {
+        if (_failures == 0)
+            fprintf(stderr, "[hidpad-out] ml2107 slot %d advanced player refused (%s); using a plain pattern player\n",
+                    _slot, error ? error.localizedDescription.UTF8String : "no detail");
+        error = nil;
+        player = [engine createPlayerWithPattern:pattern error:&error];
+    }
     if (!player) {
         [engine stopWithCompletionHandler:nil];
         [self fail:"pattern player" error:error];
         return nil;
     }
-    player.loopEnabled = YES;
+    _looping[i] = advanced != nil;
     _engine[i] = engine;
     _player[i] = player;
     _playing[i] = NO;
@@ -182,7 +199,7 @@ static void on_main(dispatch_block_t block)
     return player;
 }
 
-- (void)sendLevel:(float)level to:(id<CHHapticAdvancedPatternPlayer>)player
+- (void)sendLevel:(float)level to:(id<CHHapticPatternPlayer>)player
 {
     CHHapticDynamicParameter *intensity =
         [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
@@ -201,8 +218,13 @@ static void on_main(dispatch_block_t block)
             _sent[i] = 0;
             continue;
         }
-        id<CHHapticAdvancedPatternPlayer> player = [self playerFor:i];
+        id<CHHapticPatternPlayer> player = [self playerFor:i];
         if (!player) continue;
+        // A plain player does not loop: start it again well before its 30 s event ends.
+        if (_playing[i] && !_looping[i] && CFAbsoluteTimeGetCurrent() - _startedAt[i] > 25.0) {
+            [player stopAtTime:CHHapticTimeImmediate error:nil];
+            _playing[i] = NO;
+        }
         if (!_playing[i]) {
             NSError *error = nil;
             [self sendLevel:level to:player];
@@ -211,6 +233,7 @@ static void on_main(dispatch_block_t block)
                 continue;
             }
             _playing[i] = YES;
+            _startedAt[i] = CFAbsoluteTimeGetCurrent();
             [self sendLevel:level to:player];
         } else if (level != _sent[i]) {
             [self sendLevel:level to:player];

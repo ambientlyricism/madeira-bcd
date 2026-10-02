@@ -2308,6 +2308,59 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     is ours (Mac D3DMetal users render GoT correctly, so Metal can). Next:
     the round-3 M1/M2 tests (ind-count, sampler-census / sampler-reduction)
     on build 321.
+  - **Build 321 green** (run 36978510044, head a5fe121): d3d12core.dll built
+    (92672 bytes, D3D12SDKVersion + 11 forwarders), nvapi 581.57, GoT round
+    3 diagnostics, KMT perf data. main fast-forwarded to a5fe121; push run
+    322 cancelled.
+  - **GoT + DualSense test (owner, log GhostOfTsushima.exe 2026-10-02
+    10:37:29, build 317, `env.MADEIRA_PAD_OUTPUT = 1`): "adaptive trigger,
+    haptic, vibration none work, and at the end the game froze".**
+    - Pad path: mode=hid, the game (libScePad) opens the emulated USB
+      DualSense, reads feature reports 0x9/0x20/0x5, writes output report 0x2
+      (USB format) ~1000 times: lightbar 0d0d0d and player LEDs arrive, the
+      HID rumble motors stay 0 (the game drives "haptics" through the pad's
+      USB AUDIO device, which we do not have), triggers only ever "off" (one
+      trigger message in 1000 reports). Vibration did reach us through XInput
+      (`slot 0 rumble low 1.00`) but every CoreHaptics player failed:
+      `haptics pattern player failed: Couldn't communicate with a helper
+      application`. Research: Apple developer forums thread 773615 -- a
+      CHHapticAdvancedPatternPlayer on a game controller fails with exactly
+      this (gamecontrollerd.haptics), a plain CHHapticPatternPlayer works.
+      **Fix (this commit, PadOutput.m):** try the advanced player, else a
+      plain one (same intensity control; push restarts it every 25 s since it
+      does not loop). Public reports: Sony ports (libScePad) send VCM haptics
+      as PCM to the controller's 4-channel USB audio interface and find it
+      via SetupDi/ContainerId; adaptive triggers are plain HID reports and
+      need no audio (Proton issue #5900; xzn/proton-ds5-haptic,
+      Mutcholoko/Haptic-Feedback-Linux patch setupapi CM_Get_Parent +
+      ContainerId). GoT officially supports both only wired. Open: ask the
+      owner to test triggers with the bow drawn (GoT's main trigger effect);
+      real VCM haptics would need a fake 4-channel audio endpoint matched by
+      ContainerId whose channels 3-4 we turn into CoreHaptics -- large.
+    - **Freeze = address-space exhaustion, not the pad.** `[furniture]` at
+      ~10:38:15: guest window 0x7000000000..0x73ffff0000 16383 MB, mapped
+      16327 MB, free 56 MB, biggest gap 7 MB (13+ x 128 MB prot=0 game
+      reserves, 922/548/470 MB blocks; the JIT pool RW alias takes 624 MB at
+      0x7000000000). 128 `[va-scan] FAILED`. At 10:40:31.6 the main thread
+      (0024) created a thread: its 1 MB stack failed (`va-scan FAILED
+      size=0x100000 ... errno=12`), the thread was killed, CreateThread
+      failed (RAX=-1) and the game hit its own int3 at
+      GhostOfTsushima.exe+0xEE9ACC -> crs-handler.exe dumped (and itself
+      faulted c0000005 at 10:40:39), crashpad's kill(self, 9) is BLOCKED on
+      iOS, so the picture stopped instead of the game exiting. Same family
+      as God of War's build-273 crash (HANDOFF "va-scan"). Open: what in GoT
+      fills 16 GB of VA (128 MB reserves -- D3D12 placed-resource heaps or
+      the game's own), whether the 16 GB window can grow, and whether the
+      memory pool / JIT RW alias can move out of it.
+  - **Owner question (2026-10-02): Will suggested xtool for fast local
+    builds without a Mac.** xtool (xtool-org/xtool) builds SwiftPM packages
+    into iOS apps and signs/installs them from Linux / Windows (WSL) /
+    macOS. Our IPA is an Xcode project plus native parts built with Apple's
+    toolchain (wine unix side, LLVM iOS libs, FEX, DXMT, Metal shaders via
+    xcrun metal, xcodebuild archive), so a full xtool build would mean
+    porting the app to SwiftPM and every native step to a cross toolchain --
+    large. Usable now: xtool's sign + USB install from Windows for an IPA the
+    CI built. Owner told; no change.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
