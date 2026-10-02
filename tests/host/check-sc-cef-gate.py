@@ -268,20 +268,23 @@ static void gate_and_cmdline( void )
     expect( rewrite( cl, 1, NULL, &how ),
             "\"C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe\"  --allow-file-access-from-files "
             "--lang=en --off-screen-rendering-enabled --disable-features=PartitionAllocBackupRefPtr --single-process "
-            "--js-flags=--jitless" );
-    if (how != (SC_BRP_NEW | SC_SINGLE_ADDED | SC_JITLESS_ADDED)) FAIL("how=%x\n", how);
+            "--js-flags=--jitless --no-proxy-server" );
+    if (how != (SC_BRP_NEW | SC_SINGLE_ADDED | SC_JITLESS_ADDED | SC_NOPROXY_ADDED)) FAIL("how=%x\n", how);
     expect( rewrite( "h.exe --disable-features=A,B --x", 1, NULL, &how ),
-            "h.exe --disable-features=PartitionAllocBackupRefPtr,A,B --x --single-process --js-flags=--jitless" );
+            "h.exe --disable-features=PartitionAllocBackupRefPtr,A,B --x --single-process --js-flags=--jitless --no-proxy-server" );
     if (!(how & SC_BRP_SPLICED) || (how & SC_BRP_NEW)) FAIL("splice how=%x\n", how);
     expect( rewrite( "h.exe --disable-features=A --disable-features=\"B,C\"", 0, NULL, &how ),
-            "h.exe --disable-features=A --disable-features=PartitionAllocBackupRefPtr,\"B,C\" --single-process" );
-    expect( rewrite( "h.exe --single-process --js-flags=--max-old-space-size=64", 1, "--disable-gpu --v=1", &how ),
-            "h.exe --single-process --js-flags=--max-old-space-size=64 --disable-features=PartitionAllocBackupRefPtr "
-            "--disable-gpu --v=1" );
+            "h.exe --disable-features=A --disable-features=PartitionAllocBackupRefPtr,\"B,C\" --single-process --no-proxy-server" );
+    expect( rewrite( "h.exe --single-process --js-flags=--max-old-space-size=64 --proxy-server=x:1", 1, "--disable-gpu --v=1", &how ),
+            "h.exe --single-process --js-flags=--max-old-space-size=64 --proxy-server=x:1 "
+            "--disable-features=PartitionAllocBackupRefPtr --disable-gpu --v=1" );
     if (how != (SC_BRP_NEW | SC_OWN_JS_FLAGS | SC_EXTRA_ADDED)) FAIL("how=%x\n", how);
     expect( rewrite( "h.exe --single-process-x --foo=--disable-features=Z", 1, "", &how ),
             "h.exe --single-process-x --foo=--disable-features=Z --disable-features=PartitionAllocBackupRefPtr "
-            "--single-process --js-flags=--jitless" );
+            "--single-process --js-flags=--jitless --no-proxy-server" );
+    expect( rewrite( "h.exe --no-proxy-server", 0, NULL, &how ),
+            "h.exe --no-proxy-server --disable-features=PartitionAllocBackupRefPtr --single-process" );
+    if (how & SC_NOPROXY_ADDED) FAIL("--no-proxy-server doubled\n");
     {
         WCHAR out[64];
         int cll;
@@ -289,7 +292,8 @@ static void gate_and_cmdline( void )
         if (sc_browser_cmdline( wc, cll, 1, "--a-long-extra-switch", out, 64, &how ) != -1) FAIL("small buffer accepted\n");
     }
     printf("PASS: browser command line: BRP off in its last --disable-features list (or a new one), "
-           "--single-process, jitless unless asked otherwise, extra flags appended, nothing doubled\n");
+           "--single-process, jitless unless asked otherwise, --no-proxy-server unless it has a proxy switch, extra flags "
+           "appended, nothing doubled\n");
 
     if (!ios_sc_cef_refuse( "libcef.dll", 1, 0, 1 ) || !ios_sc_cef_refuse( "LIBCEF.DLL", 1, 0, 1 )) FAIL("client libcef\n");
     if (ios_sc_cef_refuse( "libcef.dll", 1, 1, 1 )) FAIL("helper refused\n");

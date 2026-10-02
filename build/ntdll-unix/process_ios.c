@@ -1012,11 +1012,15 @@ static void madeira_steam_session_log( const UNICODE_STRING *image )
  *     ios_sc_glued_pools), and Steam's CEF died on BRP's refcount check (ml297;
  *     ml616 saw it run with the switch set, so nothing relies on it);
  *   - V8 gets --js-flags=--jitless unless MADEIRA_JITLESS=0 (as for Steam);
+ *   - --no-proxy-server unless it names its own proxy (as for Steam, ml287):
+ *     GTA log 2026-10-02 22:25, the browser connected to the game's IPC
+ *     channel, started its in-process V8 "PAC thread"s and never created a
+ *     renderer -- proxy resolution is where Steam's webhelper stalled too;
  *   - env.MADEIRA_SC_CEF_FLAGS (madeira.cfg) is appended verbatim, for tests.
  * env.MADEIRA_SC_CEF = 0 turns this off, together with virtual_ios.c's parts. */
 enum { SC_NOT_HELPER = 0, SC_BROWSER = 1, SC_CHILD = 2 };
 enum { SC_BRP_SPLICED = 1, SC_BRP_NEW = 2, SC_SINGLE_ADDED = 4, SC_JITLESS_ADDED = 8,
-       SC_OWN_JS_FLAGS = 16, SC_EXTRA_ADDED = 32 };
+       SC_OWN_JS_FLAGS = 16, SC_EXTRA_ADDED = 32, SC_NOPROXY_ADDED = 64 };
 
 /* Index of the first character after the LAST `sw` (an ASCII switch such as
  * "--disable-features=") in `cl` that starts an argument, or -1. A switch
@@ -1090,7 +1094,7 @@ static int sc_browser_cmdline( const WCHAR *cl, int cl_len, int jitless, const c
 {
     static const char brp[] = "PartitionAllocBackupRefPtr";
     int df = sc_switch_end( cl, cl_len, "--disable-features=" ), o = 0, k;
-    int need = cl_len + 1 + 64 + 24 + 24 + (extra ? 1 + (int)strlen( extra ) : 0);
+    int need = cl_len + 1 + 64 + 24 + 24 + 20 + (extra ? 1 + (int)strlen( extra ) : 0);
     const char *add;
 
     *how = 0;
@@ -1120,6 +1124,12 @@ static int sc_browser_cmdline( const WCHAR *cl, int cl_len, int jitless, const c
     {
         for (add = " --js-flags=--jitless"; *add; add++) out[o++] = (WCHAR)*add;
         *how |= SC_JITLESS_ADDED;
+    }
+    if (sc_switch_end( cl, cl_len, "--no-proxy-server" ) < 0 && sc_switch_end( cl, cl_len, "--proxy-server=" ) < 0 &&
+        sc_switch_end( cl, cl_len, "--proxy-pac-url=" ) < 0)
+    {
+        for (add = " --no-proxy-server"; *add; add++) out[o++] = (WCHAR)*add;
+        *how |= SC_NOPROXY_ADDED;
     }
     if (extra && *extra)
     {
@@ -1698,7 +1708,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                 params->CommandLine.Buffer = nbuf;
                 params->CommandLine.Length = o * sizeof(WCHAR);
                 params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
-                dprintf( 2, "[sc-cef] SocialClubHelper.exe browser: %s; BackupRefPtr off (%s); V8 %s; "
+                dprintf( 2, "[sc-cef] SocialClubHelper.exe browser: %s; BackupRefPtr off (%s); V8 %s; %s; "
                             "MADEIRA_SC_CEF_FLAGS %s\n",
                          (how & SC_SINGLE_ADDED) ? "--single-process added" : "already --single-process",
                          (how & SC_BRP_SPLICED) ? "spliced into its --disable-features list"
@@ -1706,6 +1716,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                          (how & SC_JITLESS_ADDED) ? "--jitless (MADEIRA_JITLESS=0 turns it off)"
                          : (how & SC_OWN_JS_FLAGS) ? "flags left as the app set them"
                                                    : "JIT (MADEIRA_JITLESS=0)",
+                         (how & SC_NOPROXY_ADDED) ? "--no-proxy-server added" : "its own proxy switch kept",
                          (how & SC_EXTRA_ADDED) ? "appended" : "unset" );
                 for (ti = 0; ti + tstart < o && ti < 135; ti++)
                 {
