@@ -4065,6 +4065,66 @@ void *ios_jit_translate_addr_for_owner(void *addr, void *owner_peb)
     return addr;  /* Not in any mapping */
 }
 
+/* madeira-bcd: WHICH POOL COPY THE NtProtectVirtualMemory IAT SYNC WRITES.
+ *
+ * The sync copies a region of a PE image into the image's JIT-pool copy. It
+ * used the FIRST mapping whose PE range holds the region. Images copied per
+ * process (ntdll: the session copy, owner NULL, plus one private copy per
+ * pseudo-process child) share one PE range, so a child's change to ntdll was
+ * copied into the PARENT's copy and never into its own. GTA V Enhanced, build
+ * 327 (PlayGTAV.exe 2026-10-02 11:50:19): the GTA5_Enhanced child's boot
+ * thread 002c protects ntdll at 0x71ffd60520 (`[exec-req]` #11/#12, log lines
+ * 3178/3184); the sync then wrote the session copy. docs/gta5-child-crash.md
+ * section 10.
+ *
+ * Same rule as ios_jit_translate_addr_for_owner: the copy owned by the
+ * writing process wins, else the first NULL-owner copy, else the first match.
+ * A process without its own copy (every main process: God of War, Ghost of
+ * Tsushima) gets the NULL-owner copy -- the only one there is -- as before.
+ * MADEIRA_IAT_SYNC_OWNER=0 restores the first-match rule. */
+static int ios_iat_sync_owner_aware( void )
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        /* Default on. 0 makes the NtProtectVirtualMemory IAT sync write into the
+         * first pool copy of the image again (the old rule): a pseudo-process
+         * child's change to ntdll then lands in the parent's ntdll copy
+         * (GTA V Enhanced, docs/gta5-child-crash.md section 10). */
+        const char *e = getenv( "MADEIRA_IAT_SYNC_OWNER" );
+        cached = !(e && e[0] == '0' && !e[1]);
+    }
+    return cached;
+}
+
+int ios_iat_sync_pick_mapping( uintptr_t rgn_start, uintptr_t rgn_end, void *peb )
+{
+    int i, first = -1, fallback = -1;
+
+    for (i = 0; i < ios_jit_mapping_count; i++)
+    {
+        uintptr_t pe_start = (uintptr_t)ios_jit_mappings[i].pe_base;
+        uintptr_t pe_end = pe_start + ios_jit_mappings[i].size;
+
+        if (!(rgn_start >= pe_start && rgn_end <= pe_end)) continue;
+        if (first < 0) first = i;
+        if (!ios_iat_sync_owner_aware()) break;
+        if (peb && ios_jit_mappings[i].owner_peb == peb) return i;
+        if (!ios_jit_mappings[i].owner_peb && fallback < 0) fallback = i;
+    }
+    if (fallback >= 0 && fallback != first)
+    {
+        static int said;
+        if (said++ < 16)
+            dprintf( 2, "[iat-sync-owner] region %p+0x%lx: peb=%p has no own copy -- NULL-owner copy %p, "
+                        "not the first match %p (owner=%p)\n",
+                     (void *)rgn_start, (unsigned long)(rgn_end - rgn_start), peb,
+                     ios_jit_mappings[fallback].jit_base, ios_jit_mappings[first].jit_base,
+                     ios_jit_mappings[first].owner_peb );
+    }
+    return fallback >= 0 ? fallback : first;
+}
+
 /* Translate a PE address to JIT pool address. Returns original if not mapped.
  * Owner-aware: resolves against the calling thread's process. */
 void *ios_jit_translate_addr(void *addr)
@@ -24066,10 +24126,23 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         if (1)
         {
             int idx;
+            /* madeira-bcd: write into the copy of the WRITING process
+             * (ios_iat_sync_pick_mapping), not the first copy of the image. */
+            void *sync_peb = ios_jit_current_peb();
+            int sync_pick = ios_iat_sync_pick_mapping( (uintptr_t)base, (uintptr_t)base + size, sync_peb );
             ERR("iOS NtProtect-sync: triggered, scanning %d JIT mappings\n", ios_jit_mapping_count);
+            if (sync_pick >= 0 && ios_jit_mappings[sync_pick].owner_peb)
+            {
+                static int own_said;
+                if (own_said++ < 16)
+                    dprintf( 2, "[iat-sync-owner] region %p+0x%lx -> the writing process's own copy %p (peb=%p)\n",
+                             base, (unsigned long)size, ios_jit_mappings[sync_pick].jit_base, sync_peb );
+            }
             for (idx = 0; idx < ios_jit_mapping_count; idx++)
             {
-                uintptr_t pe_start = (uintptr_t)ios_jit_mappings[idx].pe_base;
+                uintptr_t pe_start;
+                if (idx != sync_pick) continue;
+                pe_start = (uintptr_t)ios_jit_mappings[idx].pe_base;
                 uintptr_t pe_end = pe_start + ios_jit_mappings[idx].size;
                 uintptr_t rgn_start = (uintptr_t)base;
                 uintptr_t rgn_end = rgn_start + size;

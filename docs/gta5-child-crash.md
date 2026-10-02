@@ -773,3 +773,97 @@ line needed). Look for:
    now names the copy and owner.
 3. If it still dies: the first `[exc-disp] raise tid=0034` / `[int3-guest]`
    after the heal, and the end of the crash report.
+
+## 10. IAT sync owner fix; GetThreadContext findings (no build log yet)
+
+> **Türkçe özet:** NtProtectVirtualMemory'deki "IAT eşitleme", bir PE
+> imajındaki değişikliği imajın JIT havuzundaki kopyasına yazar. ntdll'in
+> birden çok havuz kopyası var (oturumun kopyası ve her çocuk sürecin kendi
+> kopyası), ama eşitleme her zaman İLK eşleşen kopyayı seçiyordu: GTA5_Enhanced
+> çocuğu ntdll'i değiştirdiğinde (`[exec-req]` #11/#12, 002c) değişiklik ANA
+> sürecin (PlayGTAV) ntdll kopyasına yazılıyor, çocuğun kendi kopyasına hiç
+> ulaşmıyordu. Düzeltme: eşitleme artık değişikliği yapan sürecin kendi
+> kopyasına yazıyor; kendi kopyası olmayan süreç (God of War, Ghost of Tsushima
+> gibi tüm ana süreçler) eskisi gibi tek kopyayı kullanıyor. Varsayılan açık;
+> eski kural `env.MADEIRA_IAT_SYNC_OWNER = 0`. GetThreadContext için: GTA'daki
+> kendi-iş-parçacığı çağrıları CONTROL/INTEGER/FLOATING_POINT istemiyor; Madeira
+> burada upstream Wine ile aynı davranıyor ve genel bir hata gösterilemedi, bu
+> yüzden değiştirilmedi (ayrıntı 10.2).
+
+Logs: PlayGTAV.exe 2026-10-02 11:50:19 (build 327, "gta1150"), 12:38:50 (329),
+13:21:28 (330); Ghost of Tsushima 2026-10-02 10:37 (build 317) for comparison.
+
+### 10.1 The IAT sync wrote a child's ntdll change into the parent's copy
+
+* 1150:1659: `[child-ntdll] copied 0x71ffcd0000+0x130000 -> 0x14fba8000 ...
+  owner_peb=0x10a238000`: the child's private ntdll copy shares ntdll's PE
+  range with the session copy (owner NULL).
+* 1150:3178 / 3184: `002c ... [exec-req] #11 addr=00000071FFD60520 size=7
+  new_prot=40` and `#12 ... new_prot=20`: the child's boot thread changes ntdll
+  (rva 0x90520, `.hexpthk`) and restores it. The restore runs the unix
+  NtProtectVirtualMemory IAT sync.
+* The sync (virtual_ios.c, after `iOS NtProtect-sync: triggered`) took the
+  FIRST mapping whose PE range holds the region -- the session copy -- and
+  copied the region there, then translated its pointers for the child
+  (`sync_owner`, already owner-aware since 2026-07-07). The child's own copy
+  never got the change; the parent's got a change it never made.
+
+**Fix (build/ntdll-unix/virtual_ios.c, default on).**
+`ios_iat_sync_pick_mapping(rgn_start, rgn_end, peb)` picks the destination
+with the rule ios_jit_translate_addr_for_owner uses: the copy owned by the
+writing process (ios_jit_current_peb()), else the first NULL-owner copy, else
+the first match; the sync loop only syncs that copy. Main processes own no
+copy, so they get the NULL-owner copy -- the only copy -- exactly as before.
+New lines (16 each): `[iat-sync-owner] region ... -> the writing process's own
+copy ...` and `[iat-sync-owner] ... has no own copy -- NULL-owner copy ...,
+not the first match ...` (the second only when a child copy was registered
+before the session copy). `env.MADEIRA_IAT_SYNC_OWNER = 0` restores the
+first-match rule (catalog entry added by hand next to MADEIRA_HEAL_OWNER: this
+worktree has no submodules, so the generator could not be run in full).
+
+Host check `tests/host/check-iat-sync-owner.py` (new): compiles the production
+picker against a mapping model (session and two child ntdll copies, a plain
+image): child -> its own copy, parent and unknown process -> session copy,
+plain image unchanged, out-of-image regions -> none, NULL-owner wins for the
+parent when a child copy is listed first; `=0` gives the old first-match
+result; asserts the sync loop uses the pick. PASS with ASan/UBSan;
+check-stale-heal-owner and check-execreq-leave still PASS. The whole
+virtual_ios.c could not be compiled here (needs the iOS SDK and a Wine build
+tree); the new functions compile under -Werror in the check.
+
+Risk: for a pseudo-process child, its changes to ntdll now reach its own copy
+(the copy its code runs from), and no longer the parent's. Nothing changes for
+a process without its own copy.
+
+### 10.2 GetThreadContext: what the logs show (not changed)
+
+* GTA (1149:27253..., 1150:18697/20418, 1238:19472..., 1321:24808...): every
+  `[ec-getctx]` line is thread 0034 asking for ITSELF (`handle=...FFFE`) and
+  gets `flags=00100000`, rip/rsp 0. The request carried none of
+  CONTEXT_CONTROL, CONTEXT_INTEGER, CONTEXT_FLOATING_POINT: had it asked for
+  CONTROL, the unix NtGetContextThread self path fills Pc/Sp from the syscall
+  frame and the wrapper would echo bit 0x1. So the zero rip/rsp were not
+  requested; there is no evidence of a self request losing its live
+  registers. The ARM64EC wrapper in the prebuilt ntdll.dll (VA 0x18005bab0)
+  is the same code as upstream Wine's signal_arm64ec.c. No Madeira-side fault
+  is shown, so nothing is changed for this call.
+* Ghost of Tsushima (got1037, build 317): two different cases, both
+  cross-thread. (a) 51208-51253: thread 0024 asks for thread 0xC0 about 46
+  times and gets `flags=00100002` (no CONTROL, rip 0): the server had no
+  native capture and the CPU-area ContextAmd64 of that thread is empty
+  (`[srv-getctx] #17 tid=00c0 ... rip=0x0`), so the existing
+  ios_ctx_fill_from_amd64 fallback (signal_arm64_ios.c) cannot help. (b)
+  51343 on: the crash handler thread 0050 reads suspended threads blocked in
+  Mach-O system calls and receives the Mach-O PC (0x245244ee8) and native SP
+  as rip/rsp; the opt-in `env.MADEIRA_CTX_FRAME = 1` (wineserver mach_ios.c,
+  ml716) already reports the syscall frame for exactly this case. Neither is
+  changed here: (b) has a switch that was never device-tested, and (a) needs
+  the server to stop a running thread before answering, which is a larger
+  change than this round.
+
+### 10.3 Next device log
+
+Any pseudo-process game (GTA V Enhanced on the current file): look for
+`[iat-sync-owner] region 0x71ffd6.... -> the writing process's own copy
+0x14fb.....` on the child's thread. Main-process games (GoW, GoT) must show no
+`[iat-sync-owner]` line at all.
