@@ -2736,6 +2736,17 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     optional per-pack overrides (also in 14:31:38). The loader traces concern
     which game-folder DLLs load (the Social Club emulator's side) -- not
     analysed, per scope. Note: trace+module is heavy; drop it for normal runs.
+  - **GTA DLL-loading review (15:01:11 log with trace+loaddll/module,
+    owner's request).** Loader behaves like Windows: all 15 game-folder DLLs
+    load native from the game folder (DSTORAGE, RUNE64, VERSION,
+    amd_fidelityfx_dx12, bink2w64, oo2core_5_win64, sl.*, socialclub, the two
+    exes); system DLLs builtin from system32 (a game-folder VERSION.dll and
+    the builtin system32 version.dll both load, as on Windows when a proxy
+    forwards to the real one); D3D12/DXGI/nvapi/winemetal/d3d12core native
+    from system32; every eager delay-load resolve reports failed=0; the only
+    load failures are msasn1/wldp/hnetcfg/msctf (in build 333) and
+    drvstore/devobj (not in Wine, not loaded by Proton either). No loader
+    bug found.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
