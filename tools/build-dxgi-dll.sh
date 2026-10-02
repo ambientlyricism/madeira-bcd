@@ -1,8 +1,9 @@
 #!/bin/bash
 # Build DXMT's dxgi.dll (dxmt/src/dxgi) for arm64ec from the submodule source,
-# with IDXGIFactory7 and EnumAdapterByLuid added (tools/patch-dxgi-factory7.py),
-# and ship it NEXT TO upstream's committed binary as
-# app/Madeira/arm64ec-windows/dxgi-src.dll.
+# with IDXGIFactory7 and EnumAdapterByLuid added (tools/patch-dxgi-factory7.py)
+# and CheckInterfaceSupport's UMD version taken from D3DKMT when
+# env.MADEIRA_KMT_ADAPTER = 1 (tools/patch-dxgi-umd-version.py), and ship it
+# NEXT TO upstream's committed binary as app/Madeira/arm64ec-windows/dxgi-src.dll.
 #
 # Why: the 64-bit dxgi.dll in the bundle is a prebuilt binary upstream
 # committed (9e8291e); CI never compiled it, so a change to dxmt/src/dxgi
@@ -70,6 +71,9 @@ REV="$(git -C "$D" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # The factory with IDXGIFactory7, on a copy (the submodule stays untouched).
 cp "$G/dxgi_factory.cpp" "$OUT/src/dxgi_factory.cpp"
 python3 "$R/tools/patch-dxgi-factory7.py" "$OUT/src/dxgi_factory.cpp" || fail "tools/patch-dxgi-factory7.py did not apply"
+# The adapter with the D3DKMT UMD version (run-time switch MADEIRA_KMT_ADAPTER), also on a copy.
+cp "$G/dxgi_adapter.cpp" "$OUT/src/dxgi_adapter.cpp"
+python3 "$R/tools/patch-dxgi-umd-version.py" "$OUT/src/dxgi_adapter.cpp" || fail "tools/patch-dxgi-umd-version.py did not apply"
 
 # DXMT's meson.build: compiler_args, the project defines, buildtype=release
 # (-O3, b_ndebug=if-release -> NDEBUG), C++20, the include paths of dxgi's
@@ -112,9 +116,11 @@ done
 compile "$D/src/dxmt/dxmt_format.cpp" "$OUT/obj/dxmt_format.o"
 "$AR" csrDT "$OUT/libdxmt.a" "$OUT/obj/dxmt_format.o"
 
-for s in dxgi_adapter dxgi_output dxgi_options dxgi; do
+for s in dxgi_output dxgi_options dxgi; do
     compile "$G/$s.cpp" "$OUT/obj/$s.o"
 done
+compile "$G/dxgi_adapter.cpp" "$OUT/obj/dxgi_adapter_plain.o"
+compile "$OUT/src/dxgi_adapter.cpp" "$OUT/obj/dxgi_adapter.o"
 compile "$G/dxgi_factory.cpp" "$OUT/obj/dxgi_factory_plain.o"
 compile "$OUT/src/dxgi_factory.cpp" "$OUT/obj/dxgi_factory.o" "-DMADEIRA_DXGI_SRC_REV=\"$REV\""
 "$WINDRES" -i "$G/version.rc" -o "$OUT/obj/version.o" 2>> "$OUT/build.err" || fail "windres version.rc failed"
@@ -123,17 +129,17 @@ compile "$OUT/src/dxgi_factory.cpp" "$OUT/obj/dxgi_factory.o" "-DMADEIRA_DXGI_SR
 # dependency archives, -static (libc++ in, UCRT through api-ms-win-crt-*), file
 # alignment 4096, util_dep's -lntdll and meson's default Windows libraries
 # (cpp_winlibs; gdi32 has D3DKMTOpenAdapterFromLuid).
-link_dll() {  # link_dll <factory object> <output>
+link_dll() {  # link_dll <factory object> <output> <adapter object>
     "$CXX" -shared -o "$2" \
-        "$OUT/obj/dxgi_adapter.o" "$1" "$OUT/obj/dxgi_output.o" "$OUT/obj/dxgi_options.o" "$OUT/obj/dxgi.o" \
+        "$3" "$1" "$OUT/obj/dxgi_output.o" "$OUT/obj/dxgi_options.o" "$OUT/obj/dxgi.o" \
         "$OUT/obj/version.o" "$G/dxgi.def" \
         "$OUT/libdxmt.a" "$OUT/libutil.a" -L"$OUT" -lwinemetal -lntdll \
         -static -Wl,--file-alignment=4096 \
         -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 \
         2>> "$OUT/build.err" || { grep -m 20 "error" "$OUT/build.err"; fail "linking $(basename "$2") failed"; }
 }
-link_dll "$OUT/obj/dxgi_factory_plain.o" "$OUT/plain/dxgi.dll"
-link_dll "$OUT/obj/dxgi_factory.o" "$OUT/dxgi.dll"
+link_dll "$OUT/obj/dxgi_factory_plain.o" "$OUT/plain/dxgi.dll" "$OUT/obj/dxgi_adapter_plain.o"
+link_dll "$OUT/obj/dxgi_factory.o" "$OUT/dxgi.dll" "$OUT/obj/dxgi_adapter.o"
 
 # The new DLL must export exactly what upstream's does: Wine and every game
 # bind to these names (DXMT's d3d11 and our nvapi64 import them too).
@@ -145,6 +151,7 @@ diff "$OUT/exports.upstream" "$OUT/exports.built" > "$OUT/exports.diff" \
     || { cat "$OUT/exports.diff"; fail "its exports differ from the committed dxgi.dll"; }
 "$READOBJ" --file-headers "$OUT/dxgi.dll" | grep -q "IMAGE_FILE_MACHINE_ARM64EC" || fail "the result is not an ARM64EC image"
 LC_ALL=C grep -aq "madeira-bcd dxgi.dll from DXMT source" "$OUT/dxgi.dll" || fail "the Factory7 patch is not in the result"
+LC_ALL=C grep -aq "CheckInterfaceSupport: UMD version" "$OUT/dxgi.dll" || fail "the UMD version patch is not in the result"
 "$NM" --defined-only "$OUT/dxgi.dll" | grep -q "RegisterAdaptersChangedEvent" || fail "RegisterAdaptersChangedEvent is not in the result"
 
 # The recipe check: the unpatched link against upstream's binary. Same
@@ -166,4 +173,4 @@ if [ "${DXGI_NO_SHIP:-0}" = "1" ]; then
     exit 0
 fi
 cp "$OUT/dxgi.dll" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST" || fail "copying into the bundle failed"
-echo "::notice::dxgi-src.dll built from DXMT $REV with IDXGIFactory7 + EnumAdapterByLuid ($(wc -c < "$DEST" | tr -d ' ') bytes, exports = upstream's) and shipped next to upstream's dxgi.dll, which stays the default (env.MADEIRA_DXGI_SRC = 1 selects it); the recipe $MATCH"
+echo "::notice::dxgi-src.dll built from DXMT $REV with IDXGIFactory7 + EnumAdapterByLuid + the D3DKMT UMD version ($(wc -c < "$DEST" | tr -d ' ') bytes, exports = upstream's) and shipped next to upstream's dxgi.dll, which stays the default (env.MADEIRA_DXGI_SRC = 1 selects it); the recipe $MATCH"

@@ -230,6 +230,27 @@ the update pack, the game's options and starts the per-game session log.
   (a5e0cd3) and dxgi-src.dll differs from it only by the patch. CI repeats
   that comparison every build (symbols at the same addresses; a mismatch
   warns). A failed build warns and ships nothing.
+- D3DKMT adapter, opt-in (`build/win32u-unix/d3dkmt_ios.c` wrapping upstream
+  `d3dkmt.c`, `madeira_kmt.h`, `sysparams_ios.c`; `tools/patch-dxgi-umd-version.py`
+  for dxgi-src.dll; docs/gta5-d3d12-caps.md section 5): with
+  `env.MADEIRA_KMT_ADAPTER = 1` (default off) the GPU DXGI / madeira_d3d12 /
+  NVAPI report becomes a D3DKMT adapter with their LUID
+  (bswap64(MTLDevice.registryID), looked up via dlsym): `D3DKMTEnumAdapters2`
+  lists it (the virtual-monitor regime listed none), OpenAdapterFromHdc /
+  FromDeviceName / FromGdiDisplayName open it, the registry GPU and its
+  DirectX key carry the same LUID and driver version QWORD, and
+  `D3DKMTQueryAdapterInfo` answers like a WDDM 3.1 desktop driver
+  (DRIVERVERSION 3100, UMD/KMD version = registry DriverVersion 35.0.15.6094
+  as a<<48|b<<32|c<<16|d, ADAPTERTYPE render+display, 10de:2544 device ids,
+  WDDM 1.2-3.1 caps with hardware scheduling on, DRIVER_DESCRIPTION /
+  ADAPTERREGISTRYINFO "NVIDIA GeForce RTX 3060", NODEMETADATA 3D + copy,
+  segment sizes = vram-mb or 4096 MB); other types keep upstream's answer.
+  dxgi-src.dll's CheckInterfaceSupport then returns that version instead of
+  ~0. Always on, bounded: a `[vkmt] tid=...` trace of every adapter-level
+  D3DKMT entry point (QueryAdapterInfo with the type name: first 64 calls and
+  the first of each type). For GTA V Enhanced's ERR_GFX_D3D_NOD3D12 (build
+  314: three EnumAdapters2 calls, 0 adapters). Host test
+  `tests/host/check-kmt-adapter.py`.
 - `madeira_d3d12.c`: `GetAdapterLuid` returns the adapter's LUID and
   `GetDeviceRemovedReason` returns S_OK unless the device is lost; both were
   generated stubs (a zero LUID, E_NOTIMPL). Ghost of Tsushima polls the

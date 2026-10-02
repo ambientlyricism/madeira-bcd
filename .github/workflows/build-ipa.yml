@@ -513,7 +513,10 @@ jobs:
       # (WineProcessBridge.m). Runs before every DXMT patch step, so it compiles
       # the pristine pin, and it reports whether the unpatched build reproduces
       # upstream's binary. A failure only warns: nothing is shipped and
-      # upstream's dxgi.dll goes out alone, as before.
+      # upstream's dxgi.dll goes out alone, as before. Since 2026-10-02 it also
+      # applies tools/patch-dxgi-umd-version.py to a copy of dxgi_adapter.cpp:
+      # CheckInterfaceSupport's UMD version comes from D3DKMT when
+      # env.MADEIRA_KMT_ADAPTER = 1 (else ~0, upstream).
       - name: Build dxgi-src.dll (DXMT dxgi from source, IDXGIFactory7)
         continue-on-error: true
         run: bash tools/build-dxgi-dll.sh

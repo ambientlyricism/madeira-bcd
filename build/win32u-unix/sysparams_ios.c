@@ -37,6 +37,9 @@
 #include "d3dkmdt.h"
 #include "wine/wingdi16.h"
 #include "wine/server.h"
+#ifdef WINE_IOS
+#include "madeira_kmt.h"   /* madeira-bcd: opt-in D3DKMT adapter (d3dkmt_ios.c) */
+#endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(system);
 
@@ -3023,6 +3026,7 @@ static void ios_register_virtual_gpu(void)
     WCHAR bufferW[128];
     DWORD len;
     HKEY hkey;
+    int kmt;
 
     if (done) return;
     done = 1;
@@ -3038,13 +3042,32 @@ static void ios_register_virtual_gpu(void)
     gpu.refcount = 1;
     gpu.index = 0;
     memcpy( gpu.guid, video_guid, sizeof(gpu.guid) );
-    NtAllocateLocallyUniqueId( &gpu.luid );
+    /* madeira-bcd, MADEIRA_KMT_ADAPTER=1: the registry GPU carries the LUID
+     * DXGI / madeira_d3d12 / NVAPI report and EnumAdapters2 lists, and the
+     * dedicated size of DXGI's budget; off: a fresh LUID and 4096 MB, as
+     * before. */
+    kmt = madeira_kmt_adapter_enabled() && madeira_kmt_adapter_luid( &gpu.luid );
+    if (!kmt) NtAllocateLocallyUniqueId( &gpu.luid );
     snprintf( gpu.path, sizeof(gpu.path), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_00000000&REV_00\\%08X",
               pci.vendor, pci.device, gpu.index );
-    if (!write_gpu_to_registry( &gpu, &pci, (ULONGLONG)4096 * 1024 * 1024 ))
+    if (!write_gpu_to_registry( &gpu, &pci, kmt ? madeira_kmt_dedicated_bytes() : (ULONGLONG)4096 * 1024 * 1024 ))
     {
         dprintf( 2, "[vgpu] could not write the virtual GPU to the registry\n" );
         return;
+    }
+    if (kmt)
+    {
+        /* write_gpu_to_registry's DirectX\{guid} DriverVersion is "some
+         * version in the future" (35.0.15.8180); make it the QWORD of the
+         * DriverVersion string, which is also the KMT / DXGI UMD version. */
+        UINT64 ver = madeira_kmt_driver_version_qword( driver_vendor_to_version( pci.vendor ) );
+        snprintf( buffer, sizeof(buffer), "%s\\%s", directx_keyA, gpu.guid );
+        if ((hkey = reg_create_ascii_key( NULL, buffer, REG_OPTION_VOLATILE, NULL )))
+        {
+            asciiz_to_unicode( bufferW, "DriverVersion" );
+            set_reg_value( hkey, bufferW, REG_QWORD, &ver, sizeof(ver) );
+            NtClose( hkey );
+        }
     }
 
     /* The DeviceKey EnumDisplayDevices returns for the adapter. On Windows it
@@ -3060,8 +3083,26 @@ static void ios_register_virtual_gpu(void)
         set_reg_value( hkey, bufferW, REG_SZ, gpu.name, (wcslen( gpu.name ) + 1) * sizeof(WCHAR) );
         NtClose( hkey );
     }
-    dprintf( 2, "[vgpu] registered %s (%04x:%04x) driver %s\n", gpu.path, pci.vendor, pci.device,
-             driver_vendor_to_version( pci.vendor ) );
+    dprintf( 2, "[vgpu] registered %s (%04x:%04x) driver %s%s\n", gpu.path, pci.vendor, pci.device,
+             driver_vendor_to_version( pci.vendor ),
+             kmt ? " (MADEIRA_KMT_ADAPTER: the D3DKMT adapter's LUID and dedicated size)" : "" );
+}
+
+/* madeira-bcd: what the D3DKMT adapter (d3dkmt_ios.c, MADEIRA_KMT_ADAPTER=1)
+ * reports -- the registry GPU ios_register_virtual_gpu writes. */
+void madeira_kmt_identity( struct madeira_kmt_identity *id )
+{
+    struct pci_id pci = {0};
+
+    memset( id, 0, sizeof(*id) );
+    ios_virtual_gpu_ids( &pci.vendor, &pci.device );
+    id->vendor = pci.vendor;
+    id->device = pci.device;
+    snprintf( id->name, sizeof(id->name), "%s", gpu_device_name( pci.vendor, pci.device, "Madeira Display" ) );
+    snprintf( id->driver_version, sizeof(id->driver_version), "%s", driver_vendor_to_version( pci.vendor ) );
+    snprintf( id->path, sizeof(id->path), "PCI\\VEN_%04X&DEV_%04X&SUBSYS_00000000&REV_00\\%08X",
+              pci.vendor, pci.device, 0 );
+    id->dedicated = madeira_kmt_dedicated_bytes();
 }
 #endif
 
@@ -4459,7 +4500,11 @@ static NTSTATUS d3dkmt_open_adapter_from_gdi_display_name( D3DKMT_OPENADAPTERFRO
         if (!virtual_luid_ready)
         {
             struct gpu *first = LIST_ENTRY( list_head( &gpus ), struct gpu, entry );
-            if (!list_empty( &gpus ) && first)
+            if (madeira_kmt_adapter_enabled() && madeira_kmt_adapter_luid( &virtual_luid ))
+                dprintf( 2, "[vmode] ml1006 virtual adapter uses the MADEIRA_KMT_ADAPTER luid %08x%08x "
+                         "(the DXGI / D3D12 adapter)\n", (unsigned)virtual_luid.HighPart,
+                         (unsigned)virtual_luid.LowPart );
+            else if (!list_empty( &gpus ) && first)
             {
                 virtual_luid = first->luid;
                 dprintf( 2, "[vmode] ml1006 virtual adapter adopts the registered GPU luid "
@@ -8831,6 +8876,11 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
     D3DKMT_CLOSEADAPTER close_adapter;
     NTSTATUS status = STATUS_SUCCESS;
     UINT idx = 0, count = 0;
+#ifdef WINE_IOS
+    static int logged;   /* madeira-bcd: [vkmt] trace, first 8 calls */
+    LUID kmt_luid;
+    BOOL kmt = FALSE;
+#endif
 
     TRACE( "(%p)\n", desc );
 
@@ -8839,6 +8889,11 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
     if (!desc->pAdapters)
     {
         desc->NumAdapters = ARRAY_SIZE(current_gpus);
+#ifdef WINE_IOS
+        if (logged++ < 8)
+            dprintf( 2, "[vkmt] tid=%04x D3DKMTEnumAdapters2(NULL) -> 0, room for %u adapters (size query)\n",
+                     (unsigned)GetCurrentThreadId(), (unsigned)desc->NumAdapters );
+#endif
         return STATUS_SUCCESS;
     }
 
@@ -8854,6 +8909,30 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
         current_gpus[count++] = gpu_acquire( gpu );
     }
     unlock_display_devices();
+
+#ifdef WINE_IOS
+    /* madeira-bcd, MADEIRA_KMT_ADAPTER=1: the virtual-monitor regime has no
+     * GPU in `gpus`; list the one DXGI / madeira_d3d12 / NVAPI report, by
+     * their LUID, driving the virtual monitor's one source. */
+    if (!count && madeira_kmt_adapter_enabled() && madeira_kmt_adapter_luid( &kmt_luid ))
+    {
+        kmt = TRUE;
+        if (!desc->NumAdapters) status = STATUS_BUFFER_TOO_SMALL;
+        else
+        {
+            open_adapter_from_luid.AdapterLuid = kmt_luid;
+            if (!(status = NtGdiDdDDIOpenAdapterFromLuid( &open_adapter_from_luid )))
+            {
+                desc->pAdapters[0].hAdapter = open_adapter_from_luid.hAdapter;
+                desc->pAdapters[0].AdapterLuid = kmt_luid;
+                desc->pAdapters[0].NumOfSources = 1;
+                desc->pAdapters[0].bPrecisePresentRegionsPreferred = FALSE;
+                desc->NumAdapters = 1;
+            }
+        }
+        goto done;
+    }
+#endif
 
     if (count > desc->NumAdapters)
     {
@@ -8899,11 +8978,17 @@ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
 
 done:
 #ifdef WINE_IOS
+    if (logged++ < 8)
     {
-        static int logged;   /* madeira-bcd: the virtual-monitor regime lists no GPU here */
-        if (logged++ < 4)
-            dprintf( 2, "[vkmt] D3DKMTEnumAdapters2 -> %#x, %u adapters (registered GPU is not in the list)\n",
-                     (unsigned)status, (unsigned)count );
+        if (kmt)
+            dprintf( 2, "[vkmt] tid=%04x D3DKMTEnumAdapters2 -> %#x, %u adapters (MADEIRA_KMT_ADAPTER: the "
+                     "DXGI/D3D12 adapter, luid %08x:%08x, hAdapter %#x)\n", (unsigned)GetCurrentThreadId(),
+                     (unsigned)status, status ? 0u : 1u, (unsigned)kmt_luid.HighPart, (unsigned)kmt_luid.LowPart,
+                     status ? 0u : (unsigned)desc->pAdapters[0].hAdapter );
+        else   /* the virtual-monitor regime lists no GPU here */
+            dprintf( 2, "[vkmt] tid=%04x D3DKMTEnumAdapters2 -> %#x, %u adapters (registered GPU is not in the "
+                     "list%s)\n", (unsigned)GetCurrentThreadId(), (unsigned)status, (unsigned)count,
+                     madeira_kmt_adapter_enabled() ? "" : "; env.MADEIRA_KMT_ADAPTER = 1 lists it" );
     }
 #endif
     while (count) gpu_release( current_gpus[--count] );
@@ -8981,6 +9066,16 @@ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVIC
         break;
     }
     unlock_display_devices();
+#ifdef WINE_IOS
+    /* madeira-bcd, MADEIRA_KMT_ADAPTER=1: the registry GPU's display-device
+     * interface (SetupAPI lists it) opens the DXGI / D3D12 adapter. */
+    if (!found && madeira_kmt_adapter_enabled())
+    {
+        struct madeira_kmt_identity kmt_id;
+        madeira_kmt_identity( &kmt_id );
+        if (!strcmp( name + 4, kmt_id.path ) && madeira_kmt_adapter_luid( &desc_luid.AdapterLuid )) found = TRUE;
+    }
+#endif
 
     if (found && !(status = NtGdiDdDDIOpenAdapterFromLuid( &desc_luid )))
     {
@@ -8989,6 +9084,15 @@ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVIC
     }
 
 done:
+#ifdef WINE_IOS
+    {
+        static int logged;   /* madeira-bcd: [vkmt] trace */
+        if (logged++ < 8)
+            dprintf( 2, "[vkmt] tid=%04x OpenAdapterFromDeviceName %s -> %#x hAdapter=%#x\n",
+                     (unsigned)GetCurrentThreadId(), debugstr_w(desc->pDeviceName), status,
+                     status ? 0u : (unsigned)desc->hAdapter );
+    }
+#endif
     free( name );
     TRACE( "%s -> %#x.\n", debugstr_w(desc->pDeviceName), status );
     return status;
