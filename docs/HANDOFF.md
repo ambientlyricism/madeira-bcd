@@ -2437,6 +2437,14 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     -fsyntax-only`; only the 4 known WMTGeometryEmulationInfo errors of the
     unpatched winemetal.h remain). Lesson: run that syntax check on
     madeira_d3d12.c before every push that touches it.
+  - **Build 325 green** (run 36982360222, head b78b15e): native sampler
+    reduction (sampler-reduction = 3), DualSense plain haptic player, WMI
+    for 64-bit sessions ("built 93 extra Wine DLLs for arm64ec (failed:
+    wbemdisp)" -- wbemprox + wmiutils built; wbemdisp is the scripting
+    front end, not needed for WbemLocator; open: why it fails). main
+    fast-forwarded to b78b15e; push run 326 cancelled. Waiting on device:
+    GoT (sampler-reduction = 3 + DualSense), GTA (SYSREQ box gone?). The
+    GTA post-intro NoExec agent is still running.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
