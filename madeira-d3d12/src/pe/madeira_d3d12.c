@@ -1606,6 +1606,7 @@ struct mad_exec {
      * parameter, cbv-snapshot's copies already made in this replay */
     UINT64 dg_va[MAD_ROOT_PARAM_MAX]; UINT dg_n[MAD_ROOT_PARAM_MAX];
     UINT64 sn_src[8], sn_dst[8]; unsigned sn_chunk[8], sn_n;
+    UINT64 ug_va[MAD_ROOT_PARAM_MAX];   /* upload-guard: tables noted in this replay */
 };
 static void mad_capture_pass(struct mad_exec *e, struct mad_resource **rt, unsigned nrt, const struct mad_rtvp *rtp,
                              struct mad_resource *depth, const struct mad_rtvp *dp, unsigned seq, unsigned draws);
@@ -3431,6 +3432,12 @@ static int exec_ring_take(struct mad_exec *e, obj_handle_t *buf, UINT64 *off, vo
  *                     written: "GPU SAW DIFFERENT BYTES" with an unchanged CPU
  *                     side means the GPU read memory the CPU's writes had not
  *                     reached (stale pages: ml1154 storage on the swap tier).
+ *                     Descriptor tables too (round 2: GoT's root CBVs were ~10
+ *                     ranges a frame): the table's descriptors themselves
+ *                     ("DESCRIPTORS CHANGED") and every CBV / buffer-SRV
+ *                     descriptor in it that points into CPU-written memory.
+ *   queue-trace = N   logs the first N (1 = 400) ExecuteCommandLists / Signal /
+ *                     Wait calls: thread, queue type, fence state.
  *   desc-guard = 1    remembers which batch last referenced each descriptor of
  *                     the shader-visible heaps (bounded table ranges, at most
  *                     256 per table) and logs a CPU write (Create*View,
@@ -3443,29 +3450,32 @@ static int exec_ring_take(struct mad_exec *e, obj_handle_t *buf, UINT64 *off, vo
  *                     constant buffers only; a cbuffer larger than N reads ring
  *                     bytes past the copy. */
 static int g_sd_state = -1;   /* -1 = not read yet, 0 = everything off, 1 = something on */
-static int g_fence_strict, g_upload_guard, g_desc_guard;
+static int g_fence_strict, g_upload_guard, g_desc_guard, g_qtrace;
 static UINT g_ug_bytes = 256, g_cbv_snap;
 static volatile LONG g_sd_strict_waits, g_sd_ug_noted, g_sd_ug_checked, g_sd_ug_changed, g_sd_ug_changed_approx, g_sd_ug_dropped,
-                     g_sd_ug_gpu_copied, g_sd_ug_gpu_diff, g_sd_dg_checked, g_sd_dg_inflight, g_sd_snaps;
+                     g_sd_ug_gpu_copied, g_sd_ug_gpu_diff, g_sd_ug_tables, g_sd_ug_desc_changed, g_sd_dg_checked, g_sd_dg_inflight, g_sd_snaps,
+                     g_sd_qtrace_lines;
 static volatile LONG64 g_sd_snap_bytes;
 static void mad_sync_diag_load(void) {
-    long long fs, ug, ub, dg, cs;
+    long long fs, ug, ub, dg, cs, qt;
     if (g_sd_state >= 0) return;
     fs = mad_cfg_int_pe("fence-strict", 0);           /* diagnostic: 1 = Queue::Wait waits for the commit and batches finish in serial order; 2 = also synchronous Signal and Present waits for its frame (slow) */
     ug = mad_cfg_int_pe("upload-guard", 0);           /* diagnostic: 1 = log UPLOAD-heap data the game rewrites while the GPU still uses it; 2 = also compare with what the GPU read */
     ub = mad_cfg_int_pe("upload-guard-bytes", 256);   /* bytes upload-guard hashes per range (16..4096) */
     dg = mad_cfg_int_pe("desc-guard", 0);             /* diagnostic: log descriptor writes into shader-visible slots a running batch still uses */
     cs = mad_cfg_int_pe("cbv-snapshot", 0);           /* fix attempt: copy N bytes (1 = 4096) of every UPLOAD-heap root CBV at replay and bind the copy */
+    qt = mad_cfg_int_pe("queue-trace", 0);            /* diagnostic: log the first N ExecuteCommandLists / Signal / Wait calls (1 = 400) with thread, queue type and fence state */
     g_fence_strict = fs >= 2 ? 2 : fs == 1 ? 1 : 0;
     g_upload_guard = ug >= 2 ? 2 : ug ? 1 : 0;
     g_ug_bytes = ub < 16 ? 16u : ub > 4096 ? 4096u : (UINT)ub;
     g_desc_guard = dg ? 1 : 0;
     g_cbv_snap = cs <= 0 ? 0u : cs == 1 ? 4096u : cs > 16384 ? 16384u : (UINT)((cs + 255) & ~255LL);
-    if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap)
-        d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=%d upload-guard=%d (%u bytes a range) desc-guard=%d cbv-snapshot=%u bytes\n",
-                  g_fence_strict, g_upload_guard, g_ug_bytes, g_desc_guard, g_cbv_snap);
+    g_qtrace = qt <= 0 ? 0 : qt == 1 ? 400 : qt > 100000 ? 100000 : (int)qt;
+    if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace)
+        d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=%d upload-guard=%d (%u bytes a range) desc-guard=%d cbv-snapshot=%u bytes queue-trace=%d\n",
+                  g_fence_strict, g_upload_guard, g_ug_bytes, g_desc_guard, g_cbv_snap, g_qtrace);
     MemoryBarrier();
-    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap) ? 1 : 0;
+    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace) ? 1 : 0;
 }
 
 /* Tickets name a batch before it has a serial: the replay knows its open
@@ -3488,6 +3498,24 @@ static int mad_ticket_state(UINT64 t, UINT64 *serial) {
     if (k == t) { *serial = g_tk_serial[t % MAD_TK_RING]; return 1; }
     return k > t ? 2 : 0;
 }
+/* queue-trace: who submits what, on which thread, and the fence's state when
+ * a Wait decides (fence value, asked-to-signal, committed) -- the cross-queue
+ * pattern of a game (async compute, copy queue) in the first N calls. */
+static void mad_qtrace(const char *what, const struct mad_queue *q, const struct mad_fence *f, UINT64 value, UINT count) {
+    LONG k;
+    if (!g_qtrace || !q) return;
+    k = InterlockedIncrement(&g_sd_qtrace_lines);
+    if (k > g_qtrace) return;
+    if (f)
+        d3d12_log("[queue-trace] #%ld tid %04lx queue %p (type %u) %s fence %p value %llu: fence at %llu, asked %lld, committed %lld; "
+                  "GPU serial %llu of %lld committed\n", (long)k, GetCurrentThreadId(), (const void *)q, (unsigned)q->type, what,
+                  (const void *)f, (unsigned long long)value, (unsigned long long)f->value, (long long)f->submitted, (long long)f->committed,
+                  (unsigned long long)mad_gpu_completed(q->device), (long long)q->device->gpu_serial_committed);
+    else
+        d3d12_log("[queue-trace] #%ld tid %04lx queue %p (type %u) %s %u list(s)\n", (long)k, GetCurrentThreadId(), (const void *)q,
+                  (unsigned)q->type, what, count);
+    if (k == g_qtrace) d3d12_log("[queue-trace] limit of %d lines reached\n", g_qtrace);
+}
 static int mad_ticket_done(struct mad_device *d, UINT64 t) {
     UINT64 s = 0; int st;
     if (!t) return 1;
@@ -3499,12 +3527,12 @@ static int mad_ticket_done(struct mad_device *d, UINT64 t) {
 /* upload-guard: one hashed range per (resource, offset, batch). The record
  * holds a reference so the bytes can be read again after the GPU is done. */
 struct mad_ug_gv { obj_handle_t buf; const unsigned char *cpu; LONG refs; };   /* upload-guard 2: one batch's GPU copies */
-struct mad_ug_rec { struct mad_resource *r; UINT64 off, hash, ticket; UINT32 len; UINT16 kind, idx, exact; unsigned list; char who[40];
-                    struct mad_ug_gv *gv; UINT32 gv_off; };
+struct mad_ug_rec { struct mad_resource *r; const unsigned char *mem; UINT64 off, hash, ticket; UINT32 len; UINT16 kind, idx, exact; unsigned list;
+                    char who[40]; struct mad_ug_gv *gv; UINT32 gv_off, slot; };   /* r NULL: descriptors of a shader-visible heap (slot) */
 static struct mad_ug_rec *g_ug; static unsigned g_ug_n, g_ug_cap;
 static SRWLOCK g_ug_lock = SRWLOCK_INIT;
 #define MAD_UG_MAX 65536u
-enum { MAD_UG_CBV = 0, MAD_UG_SRV, MAD_UG_VB, MAD_UG_IB };
+enum { MAD_UG_CBV = 0, MAD_UG_SRV, MAD_UG_VB, MAD_UG_IB, MAD_UG_TCBV, MAD_UG_TSRV, MAD_UG_TABLE, MAD_UG_COPY };
 static UINT64 mad_fnv64(const void *p, size_t n) {
     const unsigned char *b = p; UINT64 h = 1469598103934665603ull;
     while (n--) { h ^= *b++; h *= 1099511628211ull; }
@@ -3529,7 +3557,8 @@ static void mad_ug_note(struct mad_exec *e, struct mad_resource *r, UINT64 off, 
         if (g_ug_n >= MAD_UG_MAX || !mad_grow((void **)&g_ug, &g_ug_cap, g_ug_n + 1, sizeof *g_ug)) InterlockedIncrement(&g_sd_ug_dropped);
         else {
             struct mad_ug_rec *u = &g_ug[g_ug_n++];
-            u->r = r; u->off = off; u->hash = h; u->ticket = t; u->len = (UINT32)len; u->kind = (UINT16)kind; u->idx = (UINT16)idx; u->exact = exact ? 1 : 0;
+            u->r = r; u->mem = (const unsigned char *)r->cpu + off; u->off = off; u->hash = h; u->ticket = t; u->len = (UINT32)len;
+            u->kind = (UINT16)kind; u->idx = (UINT16)idx; u->exact = exact ? 1 : 0; u->slot = 0;
             u->list = g_list_seq; snprintf(u->who, sizeof u->who, "%s", who ? who : "?"); u->gv = NULL; u->gv_off = 0;
             ID3D12Resource_AddRef((ID3D12Resource *)r);
             InterlockedIncrement(&g_sd_ug_noted);
@@ -3541,24 +3570,30 @@ static void mad_ug_note(struct mad_exec *e, struct mad_resource *r, UINT64 off, 
  * again, report a difference, drop the record. Runs before the fence the game
  * waits on advances, and before Present returns. */
 static void mad_ug_verify(struct mad_device *d, UINT64 upto) {
-    static const char *const kn[] = { "root CBV", "root SRV", "vertex buffer", "index buffer" };
-    static LONG said, said_approx, said_gpu;
+    static const char *const kn[] = { "root CBV", "root SRV", "vertex buffer", "index buffer", "table CBV", "table SRV", "descriptor table", "copy source" };
+    static LONG said, said_approx, said_gpu, said_desc;
     struct mad_resource *rel[256]; obj_handle_t gvrel[256]; unsigned nrel, ngv, k; int more;
     if (!g_upload_guard || !d) return;
     do {
         nrel = 0; ngv = 0;
         AcquireSRWLockExclusive(&g_ug_lock);
-        for (k = 0; k < g_ug_n && nrel < 256; ) {
+        for (k = 0; k < g_ug_n && nrel < 256 && ngv < 256; ) {
             struct mad_ug_rec *u = &g_ug[k]; UINT64 s = 0, now; int st = mad_ticket_state(u->ticket, &s);
             if (st == 0 || (st == 1 && s && s > upto)) { k++; continue; }
             InterlockedIncrement(&g_sd_ug_checked);
-            now = mad_fnv64((const unsigned char *)u->r->cpu + u->off, u->len);
-            if (now != u->hash) {
+            now = mad_fnv64(u->mem, u->len);
+            if (now != u->hash && !u->r) {   /* the descriptors a table points at */
+                InterlockedIncrement(&g_sd_ug_desc_changed);
+                if (InterlockedIncrement(&said_desc) <= 48)
+                    d3d12_log("[upload-guard] DESCRIPTORS CHANGED while the GPU used them: %s %u of '%s' (list#%u) -> descriptors %u..%u of the "
+                              "shader-visible heap; batch serial %llu, GPU at %llu\n", kn[MAD_UG_TABLE], u->idx, u->who, u->list, u->slot,
+                              u->slot + u->len / 24u - 1u, (unsigned long long)s, (unsigned long long)mad_gpu_completed(d));
+            } else if (now != u->hash) {
                 InterlockedIncrement(u->exact ? &g_sd_ug_changed : &g_sd_ug_changed_approx);
                 if (InterlockedIncrement(u->exact ? &said : &said_approx) <= (u->exact ? 48 : 16))
                     d3d12_log("[upload-guard] CHANGED while the GPU used it%s: %s %u of '%s' (list#%u) -> r#%u (%s heap, %llu KB%s) +%llu, %u bytes; "
                               "batch serial %llu, GPU at %llu\n", u->exact ? "" : " (approximate window: may be data placed after it)",
-                              kn[u->kind & 3], u->idx, u->who, u->list, u->r->serial,
+                              kn[u->kind < 8 ? u->kind : 0], u->idx, u->who, u->list, u->r->serial,
                               u->r->heap == D3D12_HEAP_TYPE_UPLOAD ? "UPLOAD" : "CUSTOM", (unsigned long long)(u->r->size >> 10),
                               u->r->own_mem ? ", ml1154 storage" : "", (unsigned long long)u->off, u->len,
                               (unsigned long long)s, (unsigned long long)mad_gpu_completed(d));
@@ -3567,18 +3602,18 @@ static void mad_ug_verify(struct mad_device *d, UINT64 upto) {
                 InterlockedIncrement(&g_sd_ug_gpu_diff);
                 if (InterlockedIncrement(&said_gpu) <= 48) {
                     unsigned j = 0;
-                    while (j + 4 <= u->len && !memcmp(u->gv->cpu + u->gv_off + j, (const unsigned char *)u->r->cpu + u->off + j, 4)) j += 4;
+                    while (j + 4 <= u->len && !memcmp(u->gv->cpu + u->gv_off + j, u->mem + j, 4)) j += 4;
                     d3d12_log("[upload-guard] GPU SAW DIFFERENT BYTES than the CPU wrote: %s %u of '%s' (list#%u) -> r#%u (%s heap, %llu KB%s) +%llu, "
-                              "%u bytes, first difference at +%u; batch serial %llu\n", kn[u->kind & 3], u->idx, u->who, u->list, u->r->serial,
+                              "%u bytes, first difference at +%u; batch serial %llu\n", kn[u->kind < 8 ? u->kind : 0], u->idx, u->who, u->list, u->r->serial,
                               u->r->heap == D3D12_HEAP_TYPE_UPLOAD ? "UPLOAD" : "CUSTOM", (unsigned long long)(u->r->size >> 10),
                               u->r->own_mem ? ", ml1154 storage" : "", (unsigned long long)u->off, u->len, j, (unsigned long long)s);
                 }
             }
             if (u->gv && !--u->gv->refs) { gvrel[ngv++] = u->gv->buf; free(u->gv); }
-            rel[nrel++] = u->r;
+            if (u->r) rel[nrel++] = u->r;
             *u = g_ug[--g_ug_n];
         }
-        more = k < g_ug_n && nrel == 256;
+        more = k < g_ug_n && (nrel == 256 || ngv == 256);
         ReleaseSRWLockExclusive(&g_ug_lock);
         for (k = 0; k < nrel; k++) ID3D12Resource_Release((ID3D12Resource *)rel[k]);
         for (k = 0; k < ngv; k++) NSObject_release(gvrel[k]);
@@ -3593,7 +3628,7 @@ static void mad_ug_gpu_copy(struct mad_queue *q) {
     if (!t || !q->open_cb) return;
     AcquireSRWLockExclusive(&g_ug_lock);
     for (k = 0; k < g_ug_n; k++)
-        if (g_ug[k].ticket == t && !g_ug[k].gv && g_ug[k].r->buffer && !(g_ug[k].off & 3) && !(g_ug[k].len & 3)) { total += g_ug[k].len; n++; }
+        if (g_ug[k].ticket == t && !g_ug[k].gv && g_ug[k].r && g_ug[k].r->buffer && !(g_ug[k].off & 3) && !(g_ug[k].len & 3)) { total += g_ug[k].len; n++; }
     if (!n) { ReleaseSRWLockExclusive(&g_ug_lock); return; }
     gv = calloc(1, sizeof *gv); cp = calloc(n, sizeof *cp);
     memset(&bi, 0, sizeof bi); bi.length = total; bi.options = WMTResourceStorageModeShared;
@@ -3605,7 +3640,7 @@ static void mad_ug_gpu_copy(struct mad_queue *q) {
     }
     for (k = 0; k < g_ug_n; k++) {
         struct mad_ug_rec *u = &g_ug[k];
-        if (u->ticket != t || u->gv || !u->r->buffer || (u->off & 3) || (u->len & 3)) continue;
+        if (u->ticket != t || u->gv || !u->r || !u->r->buffer || (u->off & 3) || (u->len & 3)) continue;
         cp[i].type = WMTBlitCommandCopyFromBufferToBuffer;
         cp[i].src = u->r->buffer; cp[i].src_offset = u->off; cp[i].dst = gv->buf; cp[i].dst_offset = at; cp[i].copy_length = u->len;
         if (i) cp[i - 1].next.ptr = &cp[i];
@@ -3626,6 +3661,70 @@ static void mad_ug_note_draw(struct mad_exec *e, const struct mad_cmd *c) {
     if (e->ib && c->kind == MC_DRAW_INDEXED) {
         UINT64 isz = e->ib_type == WMTIndexTypeUInt32 ? 4u : 2u, n = (UINT64)c->u.drawi.icount * isz;
         mad_ug_note(e, e->ib, e->ib_off + (UINT64)c->u.drawi.start * isz, n < g_ug_bytes ? n : g_ug_bytes, MAD_UG_IB, 0, 1, who);
+    }
+}
+static unsigned mad_dg_extent(const struct mad_rootsig *rs, unsigned i);
+/* A record of raw memory that is not a resource: the descriptors a table
+ * points at (a shader-visible heap's storage is never freed, heap_Release). */
+static void mad_ug_note_mem(struct mad_exec *e, const unsigned char *mem, UINT32 len, unsigned idx, UINT32 slot, const char *who) {
+    UINT64 t = e->q->open_ticket, h; unsigned k, lo;
+    if (!t || !mem || !len) return;
+    h = mad_fnv64(mem, len);
+    AcquireSRWLockExclusive(&g_ug_lock);
+    lo = g_ug_n > 32 ? g_ug_n - 32 : 0;
+    for (k = lo; k < g_ug_n; k++) if (!g_ug[k].r && g_ug[k].mem == mem && g_ug[k].len == len && g_ug[k].ticket == t) break;
+    if (k == g_ug_n) {
+        if (g_ug_n >= MAD_UG_MAX || !mad_grow((void **)&g_ug, &g_ug_cap, g_ug_n + 1, sizeof *g_ug)) InterlockedIncrement(&g_sd_ug_dropped);
+        else {
+            struct mad_ug_rec *u = &g_ug[g_ug_n++];
+            memset(u, 0, sizeof *u);
+            u->mem = mem; u->hash = h; u->ticket = t; u->len = len; u->kind = MAD_UG_TABLE; u->idx = (UINT16)idx; u->slot = slot; u->exact = 0;
+            u->list = g_list_seq; snprintf(u->who, sizeof u->who, "%s", who ? who : "?");
+            InterlockedIncrement(&g_sd_ug_tables);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_ug_lock);
+}
+/* upload-guard: a descriptor table. Its descriptors themselves (bounded
+ * ranges, as desc-guard), and every CBV / buffer-SRV descriptor in it that
+ * points into CPU-written memory, over the view's own range (exact: the
+ * descriptor carries its byte size). Descriptor-table constant buffers are
+ * how most engines bind per-draw data; root CBVs alone saw ~10 ranges a frame
+ * in Ghost of Tsushima. UAV ranges are left out (the GPU writes those). */
+static void mad_ug_note_table(struct mad_exec *e, const struct mad_rootsig *rs, unsigned i, UINT64 va, const char *who) {
+    const struct mad_heap *hp = e->srv;
+    unsigned slot, k, pos = 0, ext;
+    if (!hp || !hp->cpu || !hp->gpu_address || va < hp->gpu_address) return;
+    slot = (unsigned)((va - hp->gpu_address) / sizeof(struct mad_descriptor));
+    if (slot >= hp->count) return;
+    if (e->ug_va[i] == va) return;   /* this replay noted that table already */
+    e->ug_va[i] = va;
+    ext = mad_dg_extent(rs, i);
+    if (ext && slot + ext <= hp->count)
+        mad_ug_note_mem(e, (const unsigned char *)&hp->cpu[slot], ext * (UINT32)sizeof(struct mad_descriptor), i, slot, who);
+    for (k = 0; k < rs->params[i].num_ranges; k++) {
+        unsigned ri = rs->params[i].first_range + k, start, nd, j;
+        if (ri >= rs->nranges) break;
+        nd = rs->ranges[ri].num_descriptors;
+        start = rs->ranges[ri].table_offset == 0xffffffffu ? pos : rs->ranges[ri].table_offset;
+        if (nd == 0xffffffffu || nd > 4096) break;   /* bindless: not walked */
+        pos = start + nd;
+        if (rs->ranges[ri].range_type != MADEIRA_IR_RANGE_CBV && rs->ranges[ri].range_type != MADEIRA_IR_RANGE_SRV) continue;
+        for (j = 0; j < nd && j < 64; j++) {
+            const struct mad_descriptor *dsc;
+            UINT64 off = 0, size; struct mad_resource *r;
+            if (slot + start + j >= hp->count) break;
+            dsc = &hp->cpu[slot + start + j];
+            if (!dsc->gpu_va) continue;   /* a texture, or empty */
+            r = mad_resolve_address(e->q->device, dsc->gpu_va, &off);
+            if (!mad_ug_cpu_written(r)) continue;
+            size = dsc->metadata & 0xffffffffull;
+            if (!size) size = 256;
+            if (rs->ranges[ri].range_type == MADEIRA_IR_RANGE_CBV)
+                mad_ug_note(e, r, off, size < 256 ? size : 256, MAD_UG_TCBV, i, 1, who);
+            else
+                mad_ug_note(e, r, off, size < g_ug_bytes ? size : g_ug_bytes, MAD_UG_TSRV, i, 1, who);
+        }
     }
 }
 
@@ -3752,6 +3851,8 @@ static const UINT64 *mad_sd_root(struct mad_exec *e, const struct mad_rootsig *r
                             pso ? (pso->ps_name[0] ? pso->ps_name : pso->vs_name) : "?");
         }
         if (g_desc_guard && type == MADEIRA_IR_PARAM_TABLE) mad_dg_mark(e, rs, i, root[i]);
+        if (g_upload_guard && type == MADEIRA_IR_PARAM_TABLE)
+            mad_ug_note_table(e, rs, i, root[i], pso ? (pso->ps_name[0] ? pso->ps_name : pso->vs_name) : "?");
     }
     if (!g_cbv_snap) return root;
     memcpy(tmp, root, MAD_ROOT_PARAM_MAX * sizeof *tmp);
@@ -3760,11 +3861,12 @@ static const UINT64 *mad_sd_root(struct mad_exec *e, const struct mad_rootsig *r
 }
 static void mad_sd_report(UINT64 presents) {
     d3d12_log("[sync-diag] present #%llu: upload-guard %ld ranges noted, %ld checked, %ld CHANGED while in flight (+%ld in approximate windows; "
-              "%ld not noted: table full), %ld copied by the GPU, %ld of them DIFFERENT from the CPU's bytes; "
+              "%ld not noted: table full), %ld copied by the GPU, %ld of them DIFFERENT from the CPU's bytes, %ld descriptor tables "
+              "watched, %ld CHANGED; "
               "desc-guard %ld descriptor writes checked, %ld into slots in flight; fence-strict: %ld Queue::Wait calls found the Signal asked for "
               "but not yet committed; cbv-snapshot %ld copies (%lld MB)\n", (unsigned long long)presents,
               (long)g_sd_ug_noted, (long)g_sd_ug_checked, (long)g_sd_ug_changed, (long)g_sd_ug_changed_approx, (long)g_sd_ug_dropped,
-              (long)g_sd_ug_gpu_copied, (long)g_sd_ug_gpu_diff,
+              (long)g_sd_ug_gpu_copied, (long)g_sd_ug_gpu_diff, (long)g_sd_ug_tables, (long)g_sd_ug_desc_changed,
               (long)g_sd_dg_checked, (long)g_sd_dg_inflight, (long)g_sd_strict_waits, (long)g_sd_snaps, (long long)(g_sd_snap_bytes >> 20));
 }
 /* fence-strict >= 1: a new batch command buffer (or the present's) starts
@@ -5892,6 +5994,8 @@ static void exec_copy(struct mad_exec *e, const struct mad_cmd *c) {
     case MC_COPY_BB: {
         struct wmtcmd_blit_copy_from_buffer_to_buffer k;
         if (!c->u.bb.dst->buffer || !c->u.bb.src->buffer) { MAD_SKIP(e); return; }
+        if (g_sd_state > 0 && g_upload_guard)   /* madeira-bcd: an upload copy's source is read when the GPU runs it */
+            mad_ug_note(e, c->u.bb.src, c->u.bb.soff, c->u.bb.len < g_ug_bytes ? c->u.bb.len : g_ug_bytes, MAD_UG_COPY, 0, 1, "CopyBufferRegion");
         memset(&k, 0, sizeof k);
         k.type = WMTBlitCommandCopyFromBufferToBuffer;
         k.src = c->u.bb.src->buffer; k.src_offset = c->u.bb.soff;
@@ -5903,6 +6007,8 @@ static void exec_copy(struct mad_exec *e, const struct mad_cmd *c) {
     case MC_COPY_B2T: {
         struct wmtcmd_blit_copy_from_buffer_to_texture k;
         if (!c->u.bt.tex->texture || !c->u.bt.buf->buffer) { MAD_SKIP(e); return; }
+        if (g_sd_state > 0 && g_upload_guard)   /* madeira-bcd: as above, the first rows of a texture upload */
+            mad_ug_note(e, c->u.bt.buf, c->u.bt.off, g_ug_bytes, MAD_UG_COPY, 1, 0, "CopyTextureRegion");
         memset(&k, 0, sizeof k);
         k.type = WMTBlitCommandCopyFromBufferToTexture;
         k.src = c->u.bt.buf->buffer; k.src_offset = c->u.bt.off;
@@ -6493,6 +6599,7 @@ static void STDMETHODCALLTYPE queue_ExecuteCommandLists(ID3D12CommandQueue *This
     QueryPerformanceCounter(&t0);   /* ml1119: caller-thread time in here */
     InterlockedIncrement(&g_perf_ecl);   /* ml1109 */
     mad_xp_role('E'); InterlockedIncrement64(&g_xp.ecl_calls);   /* ml1128 */
+    if (g_sd_state > 0 && g_qtrace) mad_qtrace("ExecuteCommandLists", q, NULL, 0, count);   /* madeira-bcd */
     if (q && q->sub_thread) {   /* ml1120: validate here, replay on the worker */
         struct mad_subjob *j = calloc(1, sizeof *j + (count ? count : 1) * sizeof(struct mad_list *));
         if (j) {
@@ -6903,6 +7010,7 @@ static HRESULT STDMETHODCALLTYPE queue_Wait(ID3D12CommandQueue *This, ID3D12Fenc
      * been COMMITTED anything submitted afterwards already runs behind it. Only a
      * signal that has not been submitted yet still needs the CPU-side wait. */
     if (g_sd_state < 0) mad_sync_diag_load();   /* madeira-bcd */
+    if (g_sd_state > 0 && g_qtrace) mad_qtrace("Wait", (struct mad_queue *)This, f, value, 0);
     if ((UINT64)f->submitted >= value) {
         /* madeira-bcd: fence-strict. "submitted" is set by queue_Signal BEFORE
          * its batch is committed (mad_signal_run flushes after), so a Wait on
@@ -6938,6 +7046,7 @@ static HRESULT mad_signal_run(struct mad_queue *q, ID3D12Fence *fence, UINT64 va
 static HRESULT STDMETHODCALLTYPE queue_Signal(ID3D12CommandQueue *This, ID3D12Fence *fence, UINT64 value) {
     struct mad_queue *q = (struct mad_queue *)This;
     if (!fence) return E_INVALIDARG;
+    if (g_sd_state > 0 && g_qtrace) mad_qtrace("Signal", q, (const struct mad_fence *)fence, value, 0);   /* madeira-bcd */
     {   /* ml1061 */
         struct mad_fence *sf = (struct mad_fence *)fence; LONG64 cur;
         do { cur = sf->submitted; } while ((UINT64)cur < value && InterlockedCompareExchange64(&sf->submitted, (LONG64)value, cur) != cur);
@@ -8043,6 +8152,24 @@ static void mad_view_census(const char *kind, struct mad_resource *r, unsigned n
                   r->name, (unsigned long long)r->size, n, kind);
 }
 
+/* madeira-bcd: typed-uav-atomic = 1 (opt-in). An R32_UINT / R32_SINT UAV of a
+ * buffer is a Metal texture buffer, and that is where D3D12 shaders do their
+ * InterlockedAdd on RWBuffer<uint> and the hidden append/consume counter
+ * (CreateUnorderedAccessView's counter resource) does its atomics. Metal
+ * defines texture atomics only on textures created with ShaderAtomic usage
+ * (ml1149 added it for R32 / RG32 textures); texture-buffer views never had
+ * it. If GPU-driven culling appends instances through such a counter, lost
+ * or duplicated slots would hand a draw another object's data. Default off:
+ * views are created exactly as before. */
+static volatile LONG g_typed_atomic_views;
+static int mad_typed_uav_atomic(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = mad_cfg_int_pe("typed-uav-atomic", 0) ? 1 : 0;   /* fix attempt: R32 UAV texture-buffer views (RWBuffer<uint>, UAV counters) get ShaderAtomic usage */
+        if (on) d3d12_log("[madeira-d3d12] madeira-bcd typed-uav-atomic = 1: R32 UAV texture-buffer views (RWBuffer<uint>, UAV counters) get ShaderAtomic usage\n");
+    }
+    return on;
+}
 static int mad_typed_buffer_view(struct mad_device *d, struct mad_resource *r, DXGI_FORMAT fmt,
                                  UINT64 first, UINT64 num, int uav, struct mad_descriptor *e) {
     enum WMTPixelFormat pf; int is_depth = 0; UINT bytes, block; unsigned k;
@@ -8069,7 +8196,16 @@ static int mad_typed_buffer_view(struct mad_device *d, struct mad_resource *r, D
         ti.type = WMTTextureTypeTextureBuffer; ti.mipmap_level_count = 1; ti.sample_count = 1;
         ti.usage = uav ? (WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite) : WMTTextureUsageShaderRead;
         ti.options = r->cpu ? WMTResourceStorageModeShared : WMTResourceStorageModePrivate;
+        if (uav && (pf == WMTPixelFormatR32Uint || pf == WMTPixelFormatR32Sint) && mad_typed_uav_atomic())   /* madeira-bcd, opt-in */
+            ti.usage = (enum WMTTextureUsage)(ti.usage | WMTTextureUsageShaderAtomic);
         tex = MTLBuffer_newTexture(r->buffer, &ti, aligned, bpr);
+        if ((ti.usage & WMTTextureUsageShaderAtomic) && (!tex || !ti.gpu_resource_id)) {   /* refused with it: as before */
+            static unsigned said_atomic;
+            if (said_atomic++ < 4) d3d12_log("[madeira-d3d12] typed-uav-atomic: Metal refused ShaderAtomic on an R32 texture buffer; created without it\n");
+            if (tex) NSObject_release(tex);
+            ti.usage = (enum WMTTextureUsage)(ti.usage & ~WMTTextureUsageShaderAtomic); ti.gpu_resource_id = 0;
+            tex = MTLBuffer_newTexture(r->buffer, &ti, aligned, bpr);
+        } else if (ti.usage & WMTTextureUsageShaderAtomic) InterlockedIncrement(&g_typed_atomic_views);
         if (!tex || !ti.gpu_resource_id) {
             if (said_fail++ < 8)
                 d3d12_log("[madeira-d3d12] typed buffer view FAILED: fmt %u first %llu num %llu (buffer %llu bytes)\n",
