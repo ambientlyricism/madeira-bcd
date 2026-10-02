@@ -2136,6 +2136,47 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     diagnostics (wider upload-guard, queue-trace, typed-uav-atomic). main
     fast-forwarded to 98618c4. Owner to run K1 / K2 (/ K3) in the GoT main
     menu. KMT-adapter agent for GTA still running.
+  - **GTA V Enhanced: opt-in D3DKMT adapter + [vkmt] trace (agent, 2026-10-02;
+    docs/gta5-d3d12-caps.md section 5).** Log PlayGTAV.exe 09:02:54 (build
+    314; same in 08:33:51): thread 0034 calls `D3DKMTEnumAdapters2` three
+    times (l.7310 / 7392 / 7431) and gets 0 adapters (the iOS virtual-monitor
+    regime lists no GPU); each call follows a Streamline plugin load
+    (sl.common, sl.dlss/nvngx_dlss, sl.dlss_g), and GTA's own device check and
+    its retry after the box (l.8228-8248) do not enumerate, so the callers are
+    most likely Streamline's (hardware-scheduling check for DLSS-G), not GTA's
+    driver check: a lead, not a proof. Build 314 logged nothing else of
+    D3DKMT. **Added:** `build/win32u-unix/d3dkmt_ios.c` wraps upstream
+    `d3dkmt.c` (13 entry points renamed `upstream_*`): an always-on, bounded
+    `[vkmt] tid=` trace of every adapter-level D3DKMT entry point
+    (QueryAdapterInfo with type name, first 64 calls + first of each type).
+    **OFF by default, `env.MADEIRA_KMT_ADAPTER = 1`:** EnumAdapters2 lists one
+    adapter with the DXGI / madeira_d3d12 / NVAPI LUID (bswap64 of the Metal
+    registryID, via dlsym), OpenAdapterFromHdc / FromDeviceName /
+    FromGdiDisplayName open it, the registry GPU and its DirectX key carry that
+    LUID and the DriverVersion QWORD, QueryAdapterInfo answers WDDM 3.1
+    (DRIVERVERSION 3100, UMD/KMD version 35.0.15.6094 = 0x00230000000F17CE,
+    ADAPTERTYPE render+display, 10de:2544 ids, WDDM 1.2-3.1 caps with HAGS on,
+    DRIVER_DESCRIPTION / ADAPTERREGISTRYINFO "NVIDIA GeForce RTX 3060",
+    NODEMETADATA, segment sizes = vram-mb or 4096 MB), other types upstream +
+    logged; QueryVideoMemoryInfo's LOCAL budget = the same size;
+    `tools/patch-dxgi-umd-version.py` (dxgi-src.dll) makes
+    CheckInterfaceSupport return that version from D3DKMT instead of ~0. Off:
+    answers unchanged (GoW / GoT untouched), only `[vkmt]` lines. Host test
+    `tests/host/check-kmt-adapter.py` (new, 79 checks) PASS; -Wall clean;
+    dxgi-src.dll links for arm64ec; factory7 / vmon / got-diagnostics /
+    zero-bits PASS; catalog regenerated (IPA). **Device test** (next IPA): GTA
+    game file `env.MADEIRA_DXGI_SRC = 1`, `env.MADEIRA_GUEST_LOG = all`,
+    `env.MADEIRA_KMT_ADAPTER = 1`, `vram-mb = 4096`, `d3d12-typed-uav-load = 1`,
+    `d3d12-tiled-resources = 1`, `d3d12-tile-based = 0`, `d3d12-caps-log = 2`,
+    `d3d12-msaa8 = 1`, `d3d12-raytracing-tier = 11`; expect
+    `EnumAdapters2 -> 0, 1 adapters (MADEIRA_KMT_ADAPTER ...)` and the
+    `[vkmt] QueryAdapterInfo` lines after it. If the box stays: the
+    upstream-answered types in the trace, QueryStatistics, the driver version
+    (560.94 may be under GTA's minimum; NVAPI says 999.99), whether
+    CheckInterfaceSupport is called at all, then the earlier caps list.
+    Merged as 26bf9d0 (agent commit ed8948f); host checks after the merge:
+    kmt-adapter, dxgi-factory7, vmon-identity, got-diagnostics, catalog
+    PASS. Not yet compiled for iOS (next CI).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
