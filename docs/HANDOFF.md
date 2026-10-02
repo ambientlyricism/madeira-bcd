@@ -2108,6 +2108,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     alone.
     Merged as 0face04 (agent commit fa97e33); got-diagnostics, tiled,
     catalog PASS.
+  - **GTA V on build 314 with `d3d12-raytracing-tier = 11` (log PlayGTAV.exe
+    2026-10-02 09:02:54): same box with EVERY answer positive** -- OPTIONS5
+    now `...0b000000` (DXR 1.1), NVAPI AllClockFrequencies -> 0, MSAA x8 1;
+    no "unimplemented" stub call. So the gate is not a CheckFeatureSupport
+    answer (the DXR key stays an experiment; leave it off otherwise). New
+    lead: right before the real device the game thread calls
+    D3DKMTEnumAdapters2 three times and gets **0 adapters** (`[vkmt]`,
+    7310 / 7392 / 7431): the virtual-monitor regime lists no KMT GPU,
+    while the error text points at WDDM / driver version ("Windows supports
+    DirectX 12 Agility SDK / update your graphics driver"); DXGI's
+    CheckInterfaceSupport also returns UMD version ~0. An agent was started
+    (worktree) on an opt-in KMT adapter with the DXGI LUID and
+    QueryAdapterInfo answers (WDDM 3.1, UMD version, adapter type, caps),
+    plus a D3DKMT trace and a matching DXGI UMD version.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
