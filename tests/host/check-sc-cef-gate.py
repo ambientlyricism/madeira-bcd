@@ -54,6 +54,11 @@ assert 'params->CommandLine.Buffer = nbuf;' in gate
 assert create.index('task #34 single-process CEF') < create.index("Social Club's Chromium -- see sc_helper_kind") \
     < create.index('create_startup_info( attr.ObjectName')
 print('PASS: NtCreateUserProcess refuses a helper --type= child and rewrites the browser before the startup info')
+assert 'ec_conhost_refuse( is_arm64ec(), getenv( "MADEIRA_EC_CONHOST" ), params->ImagePathName.Buffer,' in create
+conhost = create[create.index('if (ec_conhost_refuse('):][:900]
+assert 'return STATUS_ACCESS_DENIED;' in conhost
+assert create.index('if (ec_conhost_refuse(') < create.index('create_startup_info( attr.ObjectName')
+print('PASS: NtCreateUserProcess refuses conhost.exe in an ARM64EC session before the startup info')
 
 mprot = function(native, 'static inline int mprotect_exec( void *base, size_t size, int unix_prot )')
 refuse = mprot[mprot.index("/* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes"):]
@@ -88,6 +93,8 @@ enums = proc[proc.index('enum { SC_NOT_HELPER = 0'):]
 enums = enums[:enums.index('\n\n')] + '\n'
 proc_helpers = enums + ''.join(function(proc, sig) for sig in (
     'static int sc_switch_end(',
+    'static int sc_image_is(',
+    'static int ec_conhost_refuse(',
     'static int sc_helper_kind(',
     'static int sc_browser_cmdline(',
 ))
@@ -246,6 +253,17 @@ static void gate_and_cmdline( void )
     if (kind( "C:\\Program Files (x86)\\Steam\\bin\\cef\\cef.win7x64\\steamwebhelper.exe", "a --type=renderer" ) != SC_NOT_HELPER)
         FAIL("steamwebhelper\n");
     printf("PASS: only SocialClubHelper.exe is matched; --type= makes it a child\n");
+    {
+        int l1, l2, l3, l4;
+        WCHAR *ch = w( "C:\\windows\\system32\\conhost.exe", &l1 ), *ch2 = w( "\\??\\C:\\Windows\\System32\\CONHOST.EXE", &l2 );
+        WCHAR *nc = w( "C:\\x\\notconhost.exe", &l3 ), *nc2 = w( "C:\\x\\conhost.exe.bak", &l4 );
+        if (!ec_conhost_refuse( 1, NULL, ch, l1 ) || !ec_conhost_refuse( 1, "0", ch2, l2 )) FAIL("EC conhost allowed\n");
+        if (ec_conhost_refuse( 0, NULL, ch, l1 )) FAIL("aarch64 session conhost refused\n");
+        if (ec_conhost_refuse( 1, "1", ch, l1 )) FAIL("MADEIRA_EC_CONHOST=1 refused\n");
+        if (ec_conhost_refuse( 1, NULL, nc, l3 ) || ec_conhost_refuse( 1, NULL, nc2, l4 ) ||
+            ec_conhost_refuse( 1, NULL, NULL, 0 )) FAIL("look-alike conhost refused\n");
+    }
+    printf("PASS: conhost.exe is refused only in an ARM64EC session, unless MADEIRA_EC_CONHOST=1\n");
 
     expect( rewrite( cl, 1, NULL, &how ),
             "\"C:\\Program Files\\Rockstar Games\\Social Club\\SocialClubHelper.exe\"  --allow-file-access-from-files "

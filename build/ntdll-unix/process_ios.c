@@ -1037,22 +1037,44 @@ static int sc_switch_end( const WCHAR *cl, int cl_len, const char *sw )
     return last;
 }
 
-/* What kind of Social Club process `image` with command line `cl` is. */
-static int sc_helper_kind( const WCHAR *image, int image_len, const WCHAR *cl, int cl_len )
+/* Is the file name of `image` (any directory) `name`, a lower-case ASCII name? */
+static int sc_image_is( const WCHAR *image, int image_len, const char *name )
 {
-    static const char helper[] = "socialclubhelper.exe";
-    int n = sizeof(helper) - 1, base = 0, k;
+    int n = (int)strlen( name ), base = 0, k;
 
-    if (!image || image_len <= 0) return SC_NOT_HELPER;
+    if (!image || image_len <= 0) return 0;
     for (k = 0; k < image_len; k++) if (image[k] == '\\' || image[k] == '/') base = k + 1;
-    if (image_len - base != n) return SC_NOT_HELPER;
+    if (image_len - base != n) return 0;
     for (k = 0; k < n; k++)
     {
         WCHAR c = image[base + k];
         if (c >= 'A' && c <= 'Z') c += 32;
-        if (c != (WCHAR)helper[k]) return SC_NOT_HELPER;
+        if (c != (WCHAR)name[k]) return 0;
     }
+    return 1;
+}
+
+/* What kind of Social Club process `image` with command line `cl` is. */
+static int sc_helper_kind( const WCHAR *image, int image_len, const WCHAR *cl, int cl_len )
+{
+    if (!sc_image_is( image, image_len, "socialclubhelper.exe" )) return SC_NOT_HELPER;
     return sc_switch_end( cl, cl_len, "--type=" ) >= 0 ? SC_CHILD : SC_BROWSER;
+}
+
+/* madeira-bcd: conhost.exe in an ARM64EC session. Wine's conhost.exe is a
+ * native aarch64 image, but the session's ARM64EC ntdll loads the emulator
+ * into it all the same, while its threads get no CHPE CPU area (thread_ios.c
+ * init_thread_stack: "NOT setting cpu_area"). The emulator's memory
+ * notifications read through that area, so conhost's first executable
+ * allocation faults at 0x38, and its exception path faults again forever --
+ * GTA log 2026-10-02 21:54: SocialClubHelper.exe's AllocConsole (Chromium's
+ * --enable-logging routes stdio to a console) took the whole app down 33 s in.
+ * Refused, AllocConsole just fails and the caller goes on without a console.
+ * aarch64 sessions (Crysis' conhost) are not affected. env.MADEIRA_EC_CONHOST=1
+ * starts it anyway. */
+static int ec_conhost_refuse( int arm64ec_session, const char *env, const WCHAR *image, int image_len )
+{
+    return arm64ec_session && !(env && env[0] == '1') && sc_image_is( image, image_len, "conhost.exe" );
 }
 
 /* The browser's new command line, written to `out` (`cap` WCHARs with the
@@ -1629,6 +1651,19 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                 }
             }
         }
+    }
+
+    /* madeira-bcd: no conhost.exe in an ARM64EC session -- see ec_conhost_refuse. */
+    if (ec_conhost_refuse( is_arm64ec(), getenv( "MADEIRA_EC_CONHOST" ), params->ImagePathName.Buffer,
+                           params->ImagePathName.Length / sizeof(WCHAR) ))
+    {
+        static int ec_conhost_n;
+        if (ec_conhost_n++ < 8)
+            dprintf( 2, "[ec-conhost] REFUSING conhost.exe in an ARM64EC session: it is aarch64 and its "
+                        "threads have no CPU area for the emulator loaded into it, so it would fault on its "
+                        "first executable allocation and take the app down; the caller gets no console "
+                        "(env.MADEIRA_EC_CONHOST=1 starts it)\n" );
+        return STATUS_ACCESS_DENIED;
     }
 
     /* madeira-bcd: Social Club's Chromium -- see sc_helper_kind. */
