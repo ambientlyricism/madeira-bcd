@@ -2060,6 +2060,20 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     lines + `d3d12-raytracing-tier = 11`; if the box goes, look for
     "unimplemented: ID3D12Device...::CreateStateObject" etc. -- then real DXR
     on Metal (MSC can convert DXIL ray tracing) becomes the work item.
+  - **GoT one-frame shapes, owner's G1/G2/H runs (build 313, all with
+    `dxil-tess = 0`; logs GhostOfTsushima.exe 2026-10-02 08:42:13 G1
+    `upload-swap = 0`, 08:45:48 G2 `ind-probe = 0`, 08:47:52 + 08:48:49 H
+    `upload-guard = 2` / `-bytes = 4096`): "none of them helped".** H at
+    present #1800: 18424 ranges noted, 0 CHANGED while in flight (+100 in
+    approximate windows, all `vertex buffer 0 of 'vs_VertexStream'` -> r#15
+    UPLOAD 1 MB), 18424 copied by the GPU, 0 DIFFERENT from the CPU's bytes.
+    So stale swap pages and premature CPU rewrites of the guarded ranges are
+    ruled out, and so are the indirect-probe splits. Only ~10 ranges/frame
+    were guarded (coverage of the GPU-driven instance streams unclear). The
+    GoT agent was resumed with this: next suspects GPU-produced
+    ExecuteIndirect data / barrier ordering in the replay, cross-queue
+    COMPUTE->DIRECT ordering, descriptor tables (desc-guard was off), motion
+    vectors, heap aliasing.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
