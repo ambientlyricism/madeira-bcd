@@ -1470,6 +1470,7 @@ jobs:
       # Does nothing until the secrets listed in tools/sign-and-publish-ota.sh
       # exist; never fails the build.
       - name: Sign for OTA install (private bucket)
+        id: ota
         continue-on-error: true
         env:
           B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
@@ -1497,12 +1498,16 @@ jobs:
           python3 tools/pack-index.py add-app ${{ github.run_number }} "$(bash tools/native-abi.sh)" \
             "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: madeira-0.1.${{ github.run_number }}-unsigned-ipa
-          path: build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa
-          if-no-files-found: ignore
+      # Owner's decision (2026-10-02): no IPA artifact on GitHub at all. The
+      # repository and its Actions are public, so an artifact is downloadable by
+      # anyone; the only copy of a build is the signed IPA in the owner's
+      # private R2 bucket (the OTA step above). If that step did not succeed,
+      # the build fails here instead of keeping the IPA somewhere public.
+      - name: Check the IPA reached the private bucket
+        if: steps.ota.outcome != 'success'
+        run: |
+          echo "::error::OTA signing/upload did not succeed: this build's IPA was not kept anywhere (no GitHub artifact by design)"
+          exit 1
 
       # Full logs as an artifact -- the annotations above are truncated, and
       # digging them out of the raw job log is painful.

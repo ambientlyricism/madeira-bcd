@@ -1,7 +1,8 @@
 name: Delete old IPA artifacts
 
 # Owner's request (2026-10-01): the unsigned IPA artifacts of old builds are
-# not needed. Deletes every `madeira-0.1.<N>-unsigned-ipa` artifact whose build
+# not needed. Since 2026-10-02 build-ipa.yml uploads no IPA artifact at all;
+# run this with a high number (e.g. 100000) to remove every one that is left. Deletes every `madeira-0.1.<N>-unsigned-ipa` artifact whose build
 # number N is below the input, and every `madeira-unsigned-ipa` (the older,
 # unnumbered name); other artifacts (build logs) are kept. Prints
 # only artifact names.

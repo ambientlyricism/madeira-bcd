@@ -2010,6 +2010,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     XInput rumble compiled against the iOS SDK. main fast-forwarded to
     c7646de. Device tests pending (GoW `env.MADEIRA_PAD_MODE = dualsense`;
     GTA with `d3d12-msaa8 = 1`; GoT G1/G2/H).
+  - **Owner (2026-10-02): no IPA on GitHub any more -- "nobody else should be
+    able to download it".** Reverses the earlier decision that the unsigned
+    Actions artifacts may stay downloadable. (1) `build-ipa.yml` no longer
+    uploads the `madeira-0.1.<N>-unsigned-ipa` artifact at all; the only
+    copy is the signed IPA in the owner's private R2 bucket (OTA step, now
+    `id: ota`). A new step "Check the IPA reached the private bucket" fails
+    the build with `::error::` when the OTA step did not succeed, so a build
+    never keeps its IPA somewhere public. Build logs stay an artifact.
+    (2) Every existing IPA artifact is deleted with `cleanup-artifacts.yml`
+    dispatched with `below = 100000` (all numbered ones + the old unnumbered
+    `madeira-unsigned-ipa`). Consequences: builds older than the 10 the R2
+    bucket keeps are gone for good; `inspect-ipa.yml` (compares the draft
+    with "our newest IPA artifact") has nothing to compare against now.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
