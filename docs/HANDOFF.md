@@ -2288,6 +2288,19 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     GTA fix was user32 GetDpiAwarenessContextForProcess -- our wine already
     has it. (4) Minimum OS Windows 10 1909; our PEB says build 19045, fine.
     Owner told to test both changes together on build 321.
+  - **GoT public-report research (2026-10-02, no code change; new rule).**
+    (1) Grass flickering on real Windows PCs is a known game issue caused by
+    Screen Space Shadows; turning that setting off fixes it at once, no
+    restart (Steam discussions / ResetEra performance thread). (2) On Mac
+    (CrossOver + D3DMetal) users report artifacts on distant elements that go
+    away with Volumetric Fog quality High / Very High. (3) vkd3d-proton GoT
+    issues: #2232 (black spots, clothes misplaced; RX 480, no fix recorded),
+    #3244 (sun not occluded by geometry), #2837 (map flickers white), #2587 /
+    #2908 (GPU stops / hangs). Owner asked to try, before any new build: in
+    GoT's graphics settings Screen Space Shadows OFF (grass flicker), then
+    Volumetric Fog High/Very High (smoke squares), with the usual
+    `dxil-tess = 0`. If SSS off fixes it, our bug may still be real (the
+    flicker is worse here) but the pass to look at is SSS.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
@@ -2497,6 +2510,14 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   willfaust/Madeira), merge, keep this fork's additions, build, fast-forward
   main. Since build 222 upstream's side (and its submodule pins) wins where it
   replaced something we carried.
+* **Research before reasoning (owner's order, 2026-10-02):** when a game
+  refuses to start, crashes or renders wrong, do not only reason from our own
+  logs and code -- search the web as well, early: the game's published
+  requirements (driver, OS, VRAM, Agility SDK, shader model), and how
+  Proton / vkd3d-proton / DXVK / CrossOver (D3DMetal) / Winlator users got it
+  running (issue trackers, ProtonDB, forums, release notes). Diff what they
+  needed against what we report. (Missed once: GTA V Enhanced's 572.60
+  driver minimum vs our 560.94.)
 
 ## 2b. Over-the-air install (owner's decision 2026-09-30)
 
