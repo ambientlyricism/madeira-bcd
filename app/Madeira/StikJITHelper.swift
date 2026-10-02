@@ -94,6 +94,49 @@ enum StikJITHelper {
     /// never hands it out. nil for a pool of one region.
     private(set) static var poolHole: (off: Int, end: Int)?
 
+    /// madeira-bcd Social Club layout 2 (`env.MADEIRA_SC_PA_POOLS = 2` in the game's
+    /// file or madeira.cfg; virtual_ios.c, ios_sc2_boot_holds): the RW alias goes to
+    /// 0x7900000000 and [0x7000000000, +4 GB) is held PROT_NONE before anything can
+    /// land there, for libcef.dll's PartitionAlloc pools; ntdll takes the hold over.
+    /// The alias holds no guest pointers, so its address is free (ml1037).
+    static let scLayout2Alias: vm_address_t = 0x7900000000
+    private static let scLayout2Hold: vm_address_t = 0x7000000000
+    private static let scLayout2HoldSize: vm_size_t = 0x100000000
+    private static var scHoldTaken = false
+
+    /// The RW alias hint: 0x7900000000 with the hold taken for layout 2, else the
+    /// usual 0x7000000000.
+    private static func rwAliasHint() -> vm_address_t {
+        if scHoldTaken { return scLayout2Alias }
+        let v = (MadeiraConfig.gameValue("env.MADEIRA_SC_PA_POOLS") ?? MadeiraConfig.get("env.MADEIRA_SC_PA_POOLS") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard v.hasPrefix("2") else { return 0x7000000000 }
+        var a = scLayout2Hold
+        let kr = vm_allocate(mach_task_self_, &a, scLayout2HoldSize, 0 /* VM_FLAGS_FIXED */)
+        guard kr == KERN_SUCCESS, a == scLayout2Hold else {
+            if kr == KERN_SUCCESS { vm_deallocate(mach_task_self_, a, scLayout2HoldSize) }
+            LogStore.shared.log(String(format: "[sc-cef] layout 2: [0x%lx,+4GB) is not free (kr=%d) -- usual RW alias placement",
+                                       Int(scLayout2Hold), kr), level: .error)
+            return 0x7000000000
+        }
+        _ = vm_protect(mach_task_self_, a, scLayout2HoldSize, 0, VM_PROT_NONE)
+        scHoldTaken = true
+        LogStore.shared.log(String(format: "[sc-cef] layout 2: [0x%lx,+4GB) held for libcef.dll's pools; RW alias hint 0x%lx",
+                                   Int(scLayout2Hold), Int(scLayout2Alias)))
+        return scLayout2Alias
+    }
+
+    /// Layout 2 only if the alias landed exactly at 0x7900000000; otherwise the hold
+    /// goes back and the caller maps the alias the usual way (ntdll then uses layout 1).
+    private static func rwAliasKeep(_ rw: vm_address_t) -> Bool {
+        guard scHoldTaken, rw != scLayout2Alias else { return true }
+        vm_deallocate(mach_task_self_, scLayout2Hold, scLayout2HoldSize)
+        scHoldTaken = false
+        LogStore.shared.log(String(format: "[sc-cef] layout 2: the RW alias landed at 0x%lx, not 0x%lx -- hold released, usual placement",
+                                   Int(rw), Int(scLayout2Alias)), level: .error)
+        return false
+    }
+
     // 0 treats JIT as ready whenever CS_DEBUGGED is set, as before, without asking whether a debugger is attached.
     private static let attachCheck = MadeiraConfig.flag("MADEIRA_JIT_ATTACH_CHECK")
 
@@ -636,7 +679,7 @@ enum StikJITHelper {
         // now needs. The alias has no placement requirement of its own (FEX
         // derives WriteOffset from the real distance), so send it high, where it
         // lived in every run before ml977, and keep the scarce low gap for RX.
-        rwAddr = 0x7000000000
+        rwAddr = rwAliasHint()   // 0x7000000000, or 0x7900000000 for Social Club layout 2
         var kr1 = vm_remap(
             mach_task_self_,
             &rwAddr,
@@ -650,6 +693,12 @@ enum StikJITHelper {
             &maxProt,
             VM_INHERIT_NONE
         )
+        if kr1 == KERN_SUCCESS && !rwAliasKeep(rwAddr) {
+            vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
+            rwAddr = 0x7000000000
+            kr1 = vm_remap(mach_task_self_, &rwAddr, vm_size_t(poolSize), 0, VM_FLAGS_ANYWHERE,
+                           mach_task_self_, vm_address_t(bitPattern: rxPtr), 0, &curProt, &maxProt, VM_INHERIT_NONE)
+        }
 
         // Lets the kernel place the JIT pool's RW alias when the 0x7000000000 hint is
         // past the end of the address map (63 GB maps); 0 fails at the hint as before.
@@ -821,9 +870,15 @@ enum StikJITHelper {
     private static func mapSplitAlias(rxA: vm_address_t, sizeA: vm_address_t,
                                       rxB: vm_address_t, sizeB: vm_address_t) -> vm_address_t? {
         let span = rxB + sizeB - rxA
-        // ml1037: the alias goes high, where it always lived (0x7000000000).
-        var rw: vm_address_t = 0x7000000000
+        // ml1037: the alias goes high, where it always lived (0x7000000000);
+        // 0x7900000000 for Social Club layout 2 (rwAliasHint).
+        var rw: vm_address_t = rwAliasHint()
         var kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
+        if kr == KERN_SUCCESS && !rwAliasKeep(rw) {
+            vm_deallocate(mach_task_self_, rw, vm_size_t(span))
+            rw = 0x7000000000
+            kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
+        }
         if kr == KERN_NO_SPACE && MadeiraConfig.flag("MADEIRA_RW_ALIAS_RETRY") {
             rw = 0
             kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)

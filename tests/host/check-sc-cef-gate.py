@@ -28,6 +28,7 @@ Needs python3 and a C compiler (AddressSanitizer/UBSan).
 """
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 
@@ -69,7 +70,8 @@ print('PASS: a refused pool copy (exhausted, or a client\'s libcef.dll) fails th
 hinted = native[native.index('/* task#29 CEF plan C: a HINTED jumbo reserve that fails placement'):][:6000]
 glue = hinted[hinted.index('ios_sc_glued_pools( &pick, &sz, type, protect )') - 200:]
 assert '*size_ptr == 0x800000000ULL && !((ULONG_PTR)hint & (0x800000000ULL - 1))' in glue
-assert 'ios_sc_cef_enabled() && ios_sc_current_is_helper()' in glue
+assert '!sc2 && sc_helper && *size_ptr == 0x800000000ULL' in glue, 'layout 2 routes instead (check-sc-layout)'
+assert 'int sc_helper = ios_sc_cef_enabled() && ios_sc_current_is_helper();' in hinted
 assert 'if (st2 && off)' in hinted and 'else if (st2) for (slot = 0x7C00000000ULL;' in hinted
 arena = function(native, 'void ios_reserve_fex_arena(void)')
 assert 'if (i == 0 && ios_sc_pa_hold_arena( &addr, &size )) goto sc_arena_placed;' in arena
@@ -94,6 +96,11 @@ virt_helpers = ''.join(function(native, sig) for sig in (
 ))
 sc_decl = native[native.index('#define IOS_SC_GLUED_BASE'):]
 sc_decl = sc_decl[:sc_decl.index('static int ios_sc_brp_layout;')] + 'static int ios_sc_brp_layout;\n'
+sc_decl += ''.join(m.group(0) + '\n' for m in re.finditer(r'^#define IOS_SC2_\w+\s+\S+', native, re.M))
+sc_decl += 'enum { IOS_SC_K_V1 = 8 };\nstatic int ios_sc_layout_mode = -1, grants;\n'
+sc_decl += 'static void *ios_jit_current_peb( void ) { return (void *)1; }\n'
+sc_decl += 'static void ios_sc_grant_add( uint64_t v, uint64_t r, int k, void *p ) { (void)v; (void)r; (void)k; (void)p; grants++; }\n'
+sc_decl += function(native, 'static int ios_sc_layout_pick(') + function(native, 'static int ios_sc_layout(void)')
 glued = function(native, 'static int ios_sc_pa_hold_arena(') + \
     function(native, 'static void ios_sc_pa_drop_hold(void)') + \
     function(native, 'static NTSTATUS ios_sc_glued_pools(')
@@ -334,6 +341,20 @@ static void opted_in( void )
            "helper gets it again\n");
 }
 
+static void layout2( void )   /* the Oilpan 4 GB is held by ios_sc2_boot_holds, not here */
+{
+    mach_vm_address_t addr = 0x7c00000000ull;
+    SIZE_T size = 0x400000000ull;
+
+    if (!ios_sc_pa_hold_arena( &addr, &size ) || addr != 0x7d00000000ull || size != 0x300000000ull)
+        FAIL("layout 2: arena not moved\n");
+    if (ios_sc_brp_held || !ios_sc_brp_layout || nvm != 1) FAIL("layout 2: held the 4 GB here\n");
+    ios_sc_pa_drop_hold();
+    if (nvm != 1) FAIL("layout 2: drop_hold released a hold it does not own\n");
+    printf("PASS: env.MADEIRA_SC_PA_POOLS=2 with the alias at 0x7900000000: the arena moves, the 4 GB is left to "
+           "layout 2; with the alias elsewhere it is layout 1\n");
+}
+
 int main( int argc, char **argv )
 {
     const char *mode = argc > 1 ? argv[1] : "";
@@ -341,6 +362,7 @@ int main( int argc, char **argv )
     else if (!strcmp( mode, "off" )) not_opted_in();
     else if (!strcmp( mode, "move-fails" )) move_fails();
     else if (!strcmp( mode, "on" )) opted_in();
+    else if (!strcmp( mode, "on2" )) layout2();
     else FAIL("mode?\n");
     return 0;
 }
@@ -353,8 +375,16 @@ with tempfile.TemporaryDirectory() as t:
     subprocess.run(['cc', '-std=gnu11', '-O1', '-Wall', '-Wno-unused-function', '-fsanitize=address,undefined',
                     '-fno-sanitize-recover=all', str(c), '-o', str(exe)], check=True)
     base_env = {k: v for k, v in os.environ.items() if not k.startswith('MADEIRA_')}
-    for mode, pools in (('gate', None), ('off', None), ('off', '0'), ('move-fails', '1'), ('on', '1')):
-        env = dict(base_env)
+    for mode, pools in (('gate', None), ('off', None), ('off', '0'), ('move-fails', '1'), ('on', '1'),
+                        ('on2', '2'), ('on', '2-alias-elsewhere')):
+        env = {k: v for k, v in base_env.items() if not k.startswith('WINE_IOS_JIT_')}
+        if pools == '2':
+            env['WINE_IOS_JIT_RW'] = '7900000000'
+            env['WINE_IOS_JIT_SIZE'] = '38000000'
+        if pools == '2-alias-elsewhere':
+            pools = '2'
+            env['WINE_IOS_JIT_RW'] = '7000000000'
+            env['WINE_IOS_JIT_SIZE'] = '38000000'
         if pools is not None:
             env['MADEIRA_SC_PA_POOLS'] = pools
         out = subprocess.run([str(exe), mode], capture_output=True, text=True, env=env)

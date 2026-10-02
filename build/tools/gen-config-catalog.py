@@ -125,11 +125,13 @@ OVERLAY = {
                 "note": "Appended verbatim to SocialClubHelper.exe's command line while env.MADEIRA_SC_CEF is on, "
                         "e.g. --disable-gpu or --enable-logging=file --v=1."},
     "env.MADEIRA_SC_PA_POOLS": {"category": "Memory & JIT pool", "title": "Room for Social Club's PartitionAlloc pools",
-                "kind": "bool", "default": "0",
+                "kind": "choice", "default": "",
+                "choices": [("", "Off"), ("1", "Layout 1 (chrome_elf.dll only)"), ("2", "Layout 2 (chrome_elf, libcef, Oilpan)")],
                 "note": "1: Wine boots with the emulator's arena at 0x7d00000000 (12 GB instead of 16 GB) and keeps "
                         "0x7c00000000 +4 GB free, so SocialClubHelper.exe's 32 GB PartitionAlloc reservation, which "
-                        "must start on a 32 GB boundary, gets 0x7800000000 (20 GB of it really reserved). Off by "
-                        "default; set it in the game's own file; read at session start."},
+                        "must start on a 32 GB boundary, gets 0x7800000000 (20 GB of it really reserved). 2: also "
+                        "libcef.dll's (0x7000000000) and Oilpan's; the JIT pool's RW alias moves to 0x7900000000. "
+                        "Off by default; set it in the game's own file; read at session start."},
     # madeira-bcd: the opt-in source build of DXMT's 64-bit dxgi.dll (tools/build-dxgi-dll.sh).
     "env.MADEIRA_DXGI_SRC": {"category": "Direct3D 9/10/11 (DXMT)", "title": "DXGI built from DXMT source (IDXGIFactory7)",
                 "kind": "bool", "default": "0",
