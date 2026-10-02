@@ -12462,18 +12462,29 @@ static int ios_sc_brp_layout;      /* the arena was moved for it at boot */
  *     soft grant 0x7400000000, STATUS_FREE_VM_NOT_AT_BASE in R10),
  *   - Oilpan's caged heap (V8 13: CPPGC_POINTER_COMPRESSION + larger cage
  *     reserve 2 x 16 GB aligned to 32 GB and use only [base+16 GB, +4 GB)).
+ * Each PartitionAlloc copy then asks for 16 GB more, page-aligned at a random
+ * hint (build 340: chrome_elf.dll jumbo#2, libcef.dll jumbo#4-8): its metadata
+ * region (PartitionAddressSpace::InitMetadataRegionAndOffsets, Chromium 142+,
+ * every client from 143). The metadata of the super page at pool offset X is
+ * the 4 KB page at region + X + 4 KB (regular pool), + 12 KB (BRP pool),
+ * + 20 KB (configurable pool), committed when the super page is first used.
  * What each really touches:
  *   - PartitionAlloc hands out super pages first-fit from the bottom of a pool
  *     (AddressPoolManager::Pool::FindChunk), and with BackupRefPtr off nothing
  *     goes to the BRP half; raw_ptr checks the BRP half of ITS OWN instance's
  *     block only. So a PartitionAlloc block needs its bottom free and its BRP
  *     half free of anything that instance's code points to.
+ *   - A metadata region is used as far as the highest super page offset of
+ *     its pools: < 4 GB for the regular pools here, < 8 GB for libcef's
+ *     configurable pool (inside the V8 cage).
  *   - Oilpan never touches the lower 16 GB of its reservation.
  * Layout 2 (64 GB):
  *   [0x7000000000, 0x7100000000)  libcef.dll's regular pool, 4 GB really reserved
  *   [0x7100000000, 0x73ffff0000)  furniture window (floor 0x7100000000; 12 GB)
- *   [0x7400000000, 0x7800000000)  chrome_elf.dll's 16 GB reserve (jumbo#2) --
- *                                 libcef's BRP half: chrome_elf memory only
+ *   [0x7400000000, 0x7600000000)  chrome_elf.dll's metadata region, 8 GB of 16
+ *   [0x7600000000, 0x7800000000)  libcef.dll's metadata region, 8 GB of 16 --
+ *                                 both in libcef's BRP half: PartitionAlloc's
+ *                                 own memory only
  *   [0x7800000000, 0x7900000000)  chrome_elf.dll's regular pool, 4 GB
  *   [0x7900000000, +pool)         JIT pool RW alias (host-only, never a guest pointer)
  *   [0x7a00000000, 0x7c00000000)  V8 sandbox / cage holdback, 8 GB
@@ -12484,12 +12495,17 @@ static int ios_sc_brp_layout;      /* the arena was moved for it at boot */
  * imports it, so it initialises first), the second libcef.dll's; the next one
  * is Oilpan's, served only after the helper got the V8 cage (V8 initialises
  * before Blink), so a 32 GB step of V8's sandbox search is never mistaken for
- * it. Every slot is held natively (PROT_NONE, no view) until its ask. */
+ * it. A metadata region is asked for right after its pools, before the V8
+ * cage, at a hint that is not 4 GB-aligned (V8's sandbox search steps are).
+ * Every slot is held natively (PROT_NONE, no view) until its ask. */
 #define IOS_SC2_POOL_REAL   0x100000000ULL     /* 4 GB really reserved per PartitionAlloc block */
 #define IOS_SC2_L_BASE      0x7000000000ULL
 #define IOS_SC2_FLOOR       0x7100000000ULL
-#define IOS_SC2_J2_BASE     0x7400000000ULL
-#define IOS_SC2_J2_SIZE     0x400000000ULL     /* 16 GB */
+#define IOS_SC2_J2_BASE     0x7400000000ULL    /* chrome_elf.dll's metadata region */
+#define IOS_SC2_J2L_BASE    0x7600000000ULL    /* libcef.dll's metadata region */
+#define IOS_SC2_MD_ASK      0x400000000ULL     /* 16 GB asked per metadata region */
+#define IOS_SC2_MD_REAL     0x200000000ULL     /* 8 GB really reserved */
+#define IOS_SC2_SUPER_PAGE  0x200000ULL        /* PartitionAlloc's super page */
 #define IOS_SC2_E_BASE      0x7800000000ULL
 #define IOS_SC2_RW_ALIAS    0x7900000000ULL
 #define IOS_SC2_RW_MAX      0x100000000ULL     /* the alias must end below the cage */
@@ -12497,7 +12513,7 @@ static int ios_sc_brp_layout;      /* the arena was moved for it at boot */
 #define IOS_SC2_OILPAN_BASE 0x7c00000000ULL
 #define IOS_SC2_OILPAN_SIZE 0x100000000ULL
 
-enum { IOS_SC2_NONE, IOS_SC2_E, IOS_SC2_L, IOS_SC2_J2, IOS_SC2_OILPAN, IOS_SC2_REFUSE };
+enum { IOS_SC2_NONE, IOS_SC2_E, IOS_SC2_L, IOS_SC2_J2, IOS_SC2_J2L, IOS_SC2_OILPAN, IOS_SC2_REFUSE };
 /* grant kinds beyond the slots */
 enum { IOS_SC_K_V1 = 8, IOS_SC_K_CAGE, IOS_SC_K_OTHER };
 
@@ -12505,7 +12521,8 @@ static const struct { uint64_t base, size; const char *what; } ios_sc2_slots[] =
 {
     [IOS_SC2_E]      = { IOS_SC2_E_BASE,      IOS_SC2_POOL_REAL,   "chrome_elf.dll's PartitionAlloc pools" },
     [IOS_SC2_L]      = { IOS_SC2_L_BASE,      IOS_SC2_POOL_REAL,   "libcef.dll's PartitionAlloc pools" },
-    [IOS_SC2_J2]     = { IOS_SC2_J2_BASE,     IOS_SC2_J2_SIZE,     "chrome_elf.dll's 16 GB reserve" },
+    [IOS_SC2_J2]     = { IOS_SC2_J2_BASE,     IOS_SC2_MD_REAL,     "chrome_elf.dll's PartitionAlloc metadata" },
+    [IOS_SC2_J2L]    = { IOS_SC2_J2L_BASE,    IOS_SC2_MD_REAL,     "libcef.dll's PartitionAlloc metadata" },
     [IOS_SC2_OILPAN] = { IOS_SC2_OILPAN_BASE, IOS_SC2_OILPAN_SIZE, "Oilpan's caged heap" },
 };
 static unsigned ios_sc2_held;      /* bit k: slot k held natively right now */
@@ -12549,8 +12566,14 @@ static int ios_sc2_classify( uint64_t size, uint64_t hint, unsigned held, int e_
         if (e_mine && cage_mine && (held & (1u << IOS_SC2_OILPAN))) return IOS_SC2_OILPAN;
         return IOS_SC2_REFUSE;
     }
-    if (size == IOS_SC2_J2_SIZE && (held & (1u << IOS_SC2_J2)) && !(held & (1u << IOS_SC2_E)))
-        return IOS_SC2_J2;
+    /* a metadata region: right after its pools, before the cage, hint not 4 GB-aligned */
+    if (size == IOS_SC2_MD_ASK && (hint & 0xffffffffULL) && !cage_mine)
+    {
+        if ((held & (1u << IOS_SC2_J2)) && !(held & (1u << IOS_SC2_E)) && (held & (1u << IOS_SC2_L)))
+            return IOS_SC2_J2;
+        if ((held & (1u << IOS_SC2_J2L)) && !(held & (1u << IOS_SC2_L)))
+            return IOS_SC2_J2L;
+    }
     return IOS_SC2_NONE;
 }
 
@@ -12619,30 +12642,33 @@ static void ios_sc2_boot_holds(void)
         ios_sc_layout_mode = 0;
         return;
     }
-    dprintf( 2, "[sc-cef] layout 2: held libcef.dll's pools [0x%llx,+4 GB), chrome_elf.dll's 16 GB reserve "
-                "[0x%llx,+16 GB), chrome_elf.dll's pools [0x%llx,+4 GB), Oilpan [0x%llx,+4 GB); RW alias 0x%llx, "
-                "V8 cage 0x%llx, furniture floor 0x%llx\n",
-             IOS_SC2_L_BASE, IOS_SC2_J2_BASE, IOS_SC2_E_BASE, IOS_SC2_OILPAN_BASE, IOS_SC2_RW_ALIAS,
-             IOS_SC2_CAGE_BASE, IOS_SC2_FLOOR );
+    dprintf( 2, "[sc-cef] layout 2: held libcef.dll's pools [0x%llx,+4 GB), PartitionAlloc metadata of chrome_elf.dll "
+                "[0x%llx,+8 GB) and libcef.dll [0x%llx,+8 GB), chrome_elf.dll's pools [0x%llx,+4 GB), Oilpan "
+                "[0x%llx,+4 GB); RW alias 0x%llx, V8 cage 0x%llx, furniture floor 0x%llx\n",
+             IOS_SC2_L_BASE, IOS_SC2_J2_BASE, IOS_SC2_J2L_BASE, IOS_SC2_E_BASE, IOS_SC2_OILPAN_BASE,
+             IOS_SC2_RW_ALIAS, IOS_SC2_CAGE_BASE, IOS_SC2_FLOOR );
 }
 
 /* Reservations SocialClubHelper.exe got through the jumbo path, by owner, so a
  * dead helper's are released when the next helper asks (ios_sc_reap_dead): a
  * pseudo-process's views are not unmapped when it dies, and every restarted
  * helper found [0x7800000000, 0x7d00000000) still taken. `view` is the real
- * view, `report` the address the guest was given. */
+ * view ([view, view + real) is reserved), `report` the address the guest was
+ * given (and `asked` its size). */
 #define IOS_SC_GRANT_MAX 32
-static struct { uint64_t view, report; void *peb; int kind, dead; } ios_sc_grants[IOS_SC_GRANT_MAX];
+static struct { uint64_t view, report, real, asked; void *peb; int kind, dead; } ios_sc_grants[IOS_SC_GRANT_MAX];
 static int ios_sc_grant_n, ios_sc_grant_dead_n;
 static pthread_mutex_t ios_sc_grant_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void ios_sc_grant_add( uint64_t view, uint64_t report, int kind, void *peb )
+static void ios_sc_grant_add( uint64_t view, uint64_t report, uint64_t real, uint64_t asked, int kind, void *peb )
 {
     pthread_mutex_lock( &ios_sc_grant_lock );
     if (ios_sc_grant_n < IOS_SC_GRANT_MAX)
     {
         ios_sc_grants[ios_sc_grant_n].view = view;
         ios_sc_grants[ios_sc_grant_n].report = report;
+        ios_sc_grants[ios_sc_grant_n].real = real;
+        ios_sc_grants[ios_sc_grant_n].asked = asked;
         ios_sc_grants[ios_sc_grant_n].peb = peb;
         ios_sc_grants[ios_sc_grant_n].kind = kind;
         ios_sc_grants[ios_sc_grant_n].dead = 0;
@@ -22523,7 +22549,7 @@ static void ios_sc_reap_dead( void )
 
 /* Record a jumbo grant of the calling helper that no layout code recorded
  * (the V8 cage, a kernel pick): only a real view starting at `ret`. */
-static void ios_sc_grant_note( void *ret )
+static void ios_sc_grant_note( void *ret, SIZE_T size )
 {
     uint64_t r = (uint64_t)(ULONG_PTR)ret;
     MEMORY_BASIC_INFORMATION mbi;
@@ -22536,7 +22562,8 @@ static void ios_sc_grant_note( void *ret )
     if (known) return;
     if (NtQueryVirtualMemory( NtCurrentProcess(), ret, MemoryBasicInformation, &mbi, sizeof(mbi), NULL )
         || mbi.AllocationBase != ret || mbi.State == MEM_FREE) return;
-    ios_sc_grant_add( r, r, r == (uint64_t)IOS_CAGE_BASE ? IOS_SC_K_CAGE : IOS_SC_K_OTHER, ios_jit_current_peb() );
+    ios_sc_grant_add( r, r, size, size, r == (uint64_t)IOS_CAGE_BASE ? IOS_SC_K_CAGE : IOS_SC_K_OTHER,
+                      ios_jit_current_peb() );
 }
 
 /* NtFreeVirtualMemory(MEM_RELEASE) of `base` by the calling process. Returns
@@ -22623,7 +22650,7 @@ static int ios_sc2_route( void *hint, SIZE_T size, ULONG type, ULONG protect, vo
         return 1;
     }
     report = (k == IOS_SC2_OILPAN) ? IOS_SC2_E_BASE : base;
-    ios_sc_grant_add( base, report, k, peb );
+    ios_sc_grant_add( base, report, s, size, k, peb );
     *pick = (void *)(ULONG_PTR)report;
     *sz = size;
     dprintf( 2, "[sc-cef] layout 2: %s for SocialClubHelper.exe: 0x%llx (0x%lx asked), [0x%llx,0x%llx) reserved\n",
@@ -22632,32 +22659,109 @@ static int ios_sc2_route( void *hint, SIZE_T size, ULONG type, ULONG protect, vo
     return 1;
 }
 
-/* Layout 2: a commit near the end of a PartitionAlloc block's real 4 GB.
- * Beyond it lie other mappings (furniture above libcef's, the RW alias above
- * chrome_elf's), so say so before it happens. */
+/* Layout 2: what a SocialClubHelper.exe commit [a, a + size) says about the
+ * helper's grants g[0..n). *gi is the grant it concerns; *off the super
+ * page's pool offset (metadata page commits), else the commit's end or offset
+ * in the grant. Separated from the lookups for the host test. */
+enum { IOS_SC2_C_OK, IOS_SC2_C_NEAR, IOS_SC2_C_PAST, IOS_SC2_C_BRP, IOS_SC2_C_BEYOND, IOS_SC2_C_N };
+struct ios_sc2_gv { uint64_t view, real, report, asked; int kind; };
+
+static int ios_sc2_commit_class( uint64_t a, uint64_t size, const struct ios_sc2_gv *g, int n, int *gi, uint64_t *off )
+{
+    int i, best = -1;
+
+    for (i = 0; i < n; i++)
+    {
+        uint64_t rel = a - g[i].view, in;
+        if (a < g[i].view || rel >= g[i].real) continue;
+        *gi = i;
+        if (g[i].kind == IOS_SC2_E || g[i].kind == IOS_SC2_L)
+        {
+            *off = a + size;
+            return a + size > g[i].view + g[i].real - 0x20000000ULL ? IOS_SC2_C_NEAR : IOS_SC2_C_OK;
+        }
+        if (g[i].kind != IOS_SC2_J2 && g[i].kind != IOS_SC2_J2L) return IOS_SC2_C_OK;
+        /* a metadata page: one 4 KB commit per new super page */
+        in = rel & (IOS_SC2_SUPER_PAGE - 1);
+        *off = rel - in;
+        if (size != 0x1000) return IOS_SC2_C_OK;
+        if (in == 0x3000) return IOS_SC2_C_BRP;
+        if (in != 0x1000) return IOS_SC2_C_OK;
+        if (*off >= IOS_SC2_POOL_REAL) return IOS_SC2_C_PAST;
+        return *off >= IOS_SC2_POOL_REAL - 0x20000000ULL ? IOS_SC2_C_NEAR : IOS_SC2_C_OK;
+    }
+    /* in no grant's real view: the furniture window and the FEX arena have
+     * their own users; elsewhere, the reported-but-unreserved part of a grant */
+    if ((a >= IOS_SC2_FLOOR && a < IOS_SC2_J2_BASE) || a >= IOS_SC_ARENA_BASE) return IOS_SC2_C_OK;
+    for (i = 0; i < n; i++)
+        if (g[i].view == g[i].report && a >= g[i].view + g[i].real && a < g[i].report + g[i].asked
+            && (best < 0 || g[i].report > g[best].report)) best = i;
+    if (best < 0) return IOS_SC2_C_OK;
+    *gi = best;
+    *off = a - g[best].report;
+    return IOS_SC2_C_BEYOND;
+}
+
+static const char *ios_sc_kind_what( int kind )
+{
+    if (kind >= IOS_SC2_E && kind <= IOS_SC2_OILPAN) return ios_sc2_slots[kind].what;
+    return kind == IOS_SC_K_CAGE ? "the V8 cage" : kind == IOS_SC_K_V1 ? "the layout 1 pools" : "a large reservation";
+}
+
+/* Layout 2: warn once per kind of trouble and grant when a helper's commit
+ * shows a PartitionAlloc block running out of its real 4 GB, a BRP super page,
+ * or a commit in the given-but-unreserved part of a grant. */
 static void ios_sc2_note_commit( void *addr, SIZE_T size )
 {
-    static int warned[IOS_SC2_L + 1];
-    uint64_t a = (uint64_t)(ULONG_PTR)addr;
-    int k;
+    static unsigned char warned[IOS_SC2_C_N][IOS_SC_K_OTHER + 1];
+    struct ios_sc2_gv g[IOS_SC_GRANT_MAX];
+    uint64_t a = (uint64_t)(ULONG_PTR)addr, off = 0;
+    int i, n = 0, gi = 0, c, owner;
+    void *peb;
 
-    for (k = IOS_SC2_E; k <= IOS_SC2_L; k++)
+    if (a < IOS_SC2_L_BASE || !ios_sc_grant_n || !ios_sc_current_is_helper()) return;
+    peb = ios_jit_current_peb();
+    pthread_mutex_lock( &ios_sc_grant_lock );
+    for (i = 0; i < ios_sc_grant_n; i++)
     {
-        uint64_t b = ios_sc2_slots[k].base, end = b + ios_sc2_slots[k].size;
-        if (a < b || a >= b + 0x400000000ULL || warned[k] > 1) continue;
-        if (a + size > end && warned[k] < 2)
-        {
-            warned[k] = 2;
-            dprintf( 2, "[sc-cef] layout 2: %s commit 0x%llx+0x%lx PAST its 4 GB [0x%llx,0x%llx) -- it lands on "
-                        "other mappings\n", ios_sc2_slots[k].what, (unsigned long long)a, (unsigned long)size,
-                     (unsigned long long)b, (unsigned long long)end );
-        }
-        else if (a + size > end - 0x20000000ULL && !warned[k])
-        {
-            warned[k] = 1;
-            dprintf( 2, "[sc-cef] layout 2: %s reached 0x%llx, within 512 MB of the end of its 4 GB\n",
-                     ios_sc2_slots[k].what, (unsigned long long)(a + size) );
-        }
+        if (ios_sc_grants[i].peb != peb || ios_sc_grants[i].dead) continue;
+        g[n].view = ios_sc_grants[i].view;
+        g[n].real = ios_sc_grants[i].real;
+        g[n].report = ios_sc_grants[i].report;
+        g[n].asked = ios_sc_grants[i].asked;
+        g[n].kind = ios_sc_grants[i].kind;
+        n++;
+    }
+    pthread_mutex_unlock( &ios_sc_grant_lock );
+    c = ios_sc2_commit_class( a, size, g, n, &gi, &off );
+    if (c == IOS_SC2_C_OK || g[gi].kind < 0 || g[gi].kind > IOS_SC_K_OTHER || warned[c][g[gi].kind]) return;
+    warned[c][g[gi].kind] = 1;
+    owner = g[gi].kind == IOS_SC2_J2 ? IOS_SC2_E : g[gi].kind == IOS_SC2_J2L ? IOS_SC2_L : g[gi].kind;
+    if (c == IOS_SC2_C_NEAR && owner == g[gi].kind)
+        dprintf( 2, "[sc-cef] layout 2: %s reached 0x%llx, within 512 MB of the end of its real 4 GB\n",
+                 ios_sc_kind_what( owner ), (unsigned long long)off );
+    else if (c == IOS_SC2_C_NEAR)
+        dprintf( 2, "[sc-cef] layout 2: %s took a super page at pool offset 0x%llx (metadata 0x%llx), within "
+                    "512 MB of the end of its real 4 GB\n", ios_sc_kind_what( owner ), (unsigned long long)off,
+                 (unsigned long long)a );
+    else if (c == IOS_SC2_C_PAST)
+        dprintf( 2, "[sc-cef] layout 2: %s took a super page at pool offset 0x%llx (metadata 0x%llx), PAST its real "
+                    "4 GB -- its pages land on other mappings\n", ios_sc_kind_what( owner ), (unsigned long long)off,
+                 (unsigned long long)a );
+    else if (c == IOS_SC2_C_BRP)
+        dprintf( 2, "[sc-cef] layout 2: %s took a BackupRefPtr pool super page at offset 0x%llx (metadata 0x%llx) -- "
+                    "that half is not reserved for it\n", ios_sc_kind_what( owner ), (unsigned long long)off,
+                 (unsigned long long)a );
+    else
+    {
+        MEMORY_BASIC_INFORMATION mbi;
+        void *ab = NULL;
+        if (!NtQueryVirtualMemory( NtCurrentProcess(), addr, MemoryBasicInformation, &mbi, sizeof(mbi), NULL ))
+            ab = mbi.AllocationBase;
+        dprintf( 2, "[sc-cef] layout 2: SocialClubHelper.exe commit 0x%llx+0x%lx is in %s's given-but-unreserved "
+                    "[0x%llx,0x%llx) (allocation base %p) -- it lands on another mapping\n",
+                 (unsigned long long)a, (unsigned long)size, ios_sc_kind_what( g[gi].kind ),
+                 (unsigned long long)(g[gi].view + g[gi].real), (unsigned long long)(g[gi].report + g[gi].asked), ab );
     }
 }
 
@@ -22714,7 +22818,7 @@ static NTSTATUS ios_sc_glued_pools( void **pick, SIZE_T *sz, ULONG type, ULONG p
     }
     *pick = lo;
     *sz = IOS_SC_GLUED_SIZE;
-    ios_sc_grant_add( IOS_SC_GLUED_BASE, IOS_SC_GLUED_BASE, IOS_SC_K_V1, ios_jit_current_peb() );
+    ios_sc_grant_add( IOS_SC_GLUED_BASE, IOS_SC_GLUED_BASE, lsz, IOS_SC_GLUED_SIZE, IOS_SC_K_V1, ios_jit_current_peb() );
     dprintf( 2, "[sc-cef] glued PartitionAlloc pools for SocialClubHelper.exe: 32 GB at 0x%llx; [0x%llx,0x%llx) "
                 "reserved (regular pool + the first 4 GB of the BackupRefPtr pool), the rest of it lies over FEX's "
                 "arena and is never reached\n",
@@ -23611,7 +23715,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
 
         if (is_jumbo) ios_jumbo_census( jumbo_hint, jumbo_size, st ? NULL : *ret, (unsigned)st );
         /* madeira-bcd: remember a helper's large reservation for ios_sc_reap_dead */
-        if (is_jumbo && !st && ios_sc_cef_enabled() && ios_sc_current_is_helper()) ios_sc_grant_note( *ret );
+        if (is_jumbo && !st && ios_sc_cef_enabled() && ios_sc_current_is_helper()) ios_sc_grant_note( *ret, *size_ptr );
         if (!st && *size_ptr >= 0x10000000 && *size_ptr < 0x40000000 && (type & MEM_RESERVE))
             ios_bigres_note( *ret, *size_ptr );
         if (!st) ios_span_census( *ret, *size_ptr, 0 );   /* ml435 (#73) */

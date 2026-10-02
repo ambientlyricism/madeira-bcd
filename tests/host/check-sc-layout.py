@@ -16,12 +16,17 @@ and checks:
     one page poisoned in every other small image each time, the old first-fit refuses
     libcef.dll from the second helper on (as on the device) and the new policy serves all 19;
   - env.MADEIRA_SC_PA_POOLS 0/1/2 and the RW alias base pick the layout;
-  - the helper's ask sequence (chrome_elf PA, its 16 GB reserve, libcef PA, V8's sandbox
-    search, the V8 cage, Oilpan) gets E, J2, L, nothing, nothing, Oilpan -- and a 32 GB
-    step of V8's search is refused, never given Oilpan's block;
+  - the helper's ask sequence (chrome_elf PA, its 16 GB metadata region, libcef PA, its
+    metadata region, V8's sandbox search, the V8 cage, Oilpan; build 340 log) gets E, J2, L,
+    J2L, nothing, nothing, Oilpan -- a 32 GB step of V8's search is refused, never given
+    Oilpan's block, and a 16 GB step (4 GB-aligned hint) never takes a metadata slot;
   - the layout 2 address map: both PartitionAlloc blocks on 32 GB boundaries, Oilpan at
-    chrome_elf's block + 16 GB, the 16 GB reserve in libcef's BRP half, alias / cage /
-    Oilpan / FEX arena disjoint up to 0x8000000000;
+    chrome_elf's block + 16 GB, both metadata regions (8 GB real of 16) in libcef's BRP
+    half, alias / cage / Oilpan / FEX arena disjoint up to 0x8000000000;
+  - ios_sc2_commit_class: a furniture commit (the boot false alarm of build 340) says
+    nothing; metadata page commits name a super page near / past a pool's real 4 GB or in
+    the BRP pool; a commit in a grant's given-but-unreserved part outside every real view
+    is reported;
 and textually: the hooks in NtAllocateVirtualMemory / NtFreeVirtualMemory /
 ios_jit_reclaim_process / virtual_init and the app's alias placement.
 Needs python3 and a C compiler (AddressSanitizer/UBSan).
@@ -49,6 +54,8 @@ struct = native[native.index('struct ios_pool_free\n{'):]
 struct = struct[:struct.index('};') + 2] + '\n'
 enum = native[native.index('enum { IOS_SC2_NONE,'):]
 enum = enum[:enum.index(';') + 1] + '\n'
+cclass = native[native.index('enum { IOS_SC2_C_OK,'):]
+cclass = cclass[:cclass.index('};', cclass.index('struct ios_sc2_gv')) + 2] + '\n'
 runs_typedef = native[native.index('typedef int (*ios_pool_region_fn)'):]
 runs_typedef = runs_typedef[:runs_typedef.index(';') + 1] + '\n'
 clean_typedef = native[native.index('typedef int (*ios_pool_clean_fn)'):]
@@ -60,6 +67,7 @@ helpers = runs_typedef + clean_typedef + ''.join(function(native, sig) for sig i
     'static int ios_pool_keep_big(',
     'static int ios_sc_layout_pick(',
     'static int ios_sc2_classify(',
+    'static int ios_sc2_commit_class(',
 ))
 
 # --- call sites ---------------------------------------------------------------
@@ -84,7 +92,13 @@ assert nt.index('goto sc_decided;') < nt.index('sc_decided:') < nt.index('[jumbo
 assert '!sc2 && sc_helper && *size_ptr == 0x800000000ULL' in nt, 'layout 1 keeps ios_sc_glued_pools'
 assert "&& *size_ptr >= 0x400000000ULL && !sc_helper)" in nt, 'no soft grant for the helper'
 assert "*size_ptr == 0x100000000ULL && !sc_helper)" in nt, 'no soft 4 GB cage for the helper'
-assert 'ios_sc_grant_note( *ret );' in nt and 'ios_sc2_note_commit( *ret, *size_ptr );' in nt
+assert 'ios_sc_grant_note( *ret, *size_ptr );' in nt and 'ios_sc2_note_commit( *ret, *size_ptr );' in nt
+note = function(native, 'static void ios_sc2_note_commit(')
+assert 'if (a < IOS_SC2_L_BASE || !ios_sc_grant_n || !ios_sc_current_is_helper()) return;' in note, \
+    'only SocialClubHelper.exe commits are judged'
+assert 'if (ios_sc_grants[i].peb != peb || ios_sc_grants[i].dead) continue;' in note, 'only its own live grants'
+route = function(native, 'static int ios_sc2_route(')
+assert 'ios_sc_grant_add( base, report, s, size, k, peb );' in route
 
 free = function(native, 'NTSTATUS WINAPI NtFreeVirtualMemory(')
 assert 'if (ios_sc_grant_release( base, &served, &sc_rehold ))' in free
@@ -104,7 +118,10 @@ assert init.index('ios_sc2_boot_holds();') < init.index('if (ios_sc_layout_mode 
 floor = function(native, 'static inline ULONG_PTR ios_usable_va_floor_get(void)')
 assert 'if (ios_sc_layout_mode == 2) return (ULONG_PTR)0x7100000000ULL;' in floor
 glued = function(native, 'static NTSTATUS ios_sc_glued_pools(')
-assert 'ios_sc_grant_add( IOS_SC_GLUED_BASE, IOS_SC_GLUED_BASE, IOS_SC_K_V1, ios_jit_current_peb() );' in glued
+assert 'ios_sc_grant_add( IOS_SC_GLUED_BASE, IOS_SC_GLUED_BASE, lsz, IOS_SC_GLUED_SIZE, IOS_SC_K_V1, ios_jit_current_peb() );' in glued
+boot = function(native, 'static void ios_sc2_boot_holds(void)')
+assert boot.count('for (k = IOS_SC2_E; k <= IOS_SC2_OILPAN; k++)') == 2, 'every slot is held at boot'
+assert 'if (kind >= IOS_SC2_E && kind <= IOS_SC2_OILPAN)' in function(native, 'static void ios_sc_rehold( int kind )')
 reap = function(native, 'static void ios_sc_reap_dead( void )')
 assert '(uint64_t)(ULONG_PTR)mbi.AllocationBase == view' in reap, 'only a view that still starts there is freed'
 print('PASS: hooks in the pool allocator, NtAllocateVirtualMemory, NtFreeVirtualMemory, reclaim and virtual_init')
@@ -122,7 +139,7 @@ harness = r'''
 #include <string.h>
 #include <time.h>
 #define IOS_POOL_REUSE_GRACE_SEC 3
-''' + struct + defines('IOS_SC2_') + defines('IOS_SC_') + enum + helpers + r'''
+''' + struct + defines('IOS_SC2_') + defines('IOS_SC_') + enum + cclass + helpers + r'''
 #define MB ((size_t)1 << 20)
 #define GB (1ull << 30)
 #define FAIL(...) do { fprintf(stderr, __VA_ARGS__); exit(1); } while (0)
@@ -300,15 +317,23 @@ int main( void )
 
     /* the helper's asks, in order */
     {
-        unsigned held = (1u << IOS_SC2_E) | (1u << IOS_SC2_L) | (1u << IOS_SC2_J2) | (1u << IOS_SC2_OILPAN);
+        unsigned held = (1u << IOS_SC2_E) | (1u << IOS_SC2_L) | (1u << IOS_SC2_J2) | (1u << IOS_SC2_J2L)
+                        | (1u << IOS_SC2_OILPAN);
         int e = 0, cage = 0;
         uint64_t v8;
         if (ios_sc2_classify( 32 * GB, 0x2d5800000000ull, held, e, cage ) != IOS_SC2_E) FAIL("chrome_elf PA\n");
         held &= ~(1u << IOS_SC2_E); e = 1;
-        if (ios_sc2_classify( 16 * GB, 0x43a3129d0000ull, held, e, cage ) != IOS_SC2_J2) FAIL("16 GB reserve\n");
+        if (ios_sc2_classify( 16 * GB, 0x6ce965050000ull, held, e, cage ) != IOS_SC2_J2) FAIL("chrome_elf metadata\n");
         held &= ~(1u << IOS_SC2_J2);
-        if (ios_sc2_classify( 32 * GB, 0xb800000000ull, held, e, cage ) != IOS_SC2_L) FAIL("libcef PA\n");
+        if (ios_sc2_classify( 32 * GB, 0x67d000000000ull, held, e, cage ) != IOS_SC2_L) FAIL("libcef PA\n");
         held &= ~(1u << IOS_SC2_L);
+        /* build 340, jumbo#4: libcef's metadata region at an unaligned random hint */
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, cage ) != IOS_SC2_J2L) FAIL("libcef metadata\n");
+        if (ios_sc2_classify( 16 * GB, 0, held, e, cage ) != IOS_SC2_NONE) FAIL("hint 0 took a metadata slot\n");
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, 1 ) != IOS_SC2_NONE)
+            FAIL("a metadata slot after the V8 cage\n");
+        held &= ~(1u << IOS_SC2_J2L);
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, cage ) != IOS_SC2_NONE) FAIL("a third metadata region\n");
         for (v8 = 512 * GB; v8 >= 16 * GB; v8 /= 2)   /* V8's partially reserved sandbox, 4 GB-aligned hints */
         {
             int k = ios_sc2_classify( v8, 0x3f00000000ull, held, e, cage );
@@ -326,9 +351,13 @@ int main( void )
             FAIL("Oilpan for a helper without chrome_elf's block\n");
         if (ios_sc2_classify( 16 * GB, 0x1234560000ull, (1u << IOS_SC2_J2) | (1u << IOS_SC2_E), 0, 0 ) != IOS_SC2_NONE)
             FAIL("16 GB before chrome_elf's PA took J2\n");
-        printf("PASS: chrome_elf PA -> 0x%llx, 16 GB -> 0x%llx, libcef PA -> 0x%llx, V8's search refused or left "
-               "alone, Oilpan -> view 0x%llx only after the V8 cage\n",
-               IOS_SC2_E_BASE, IOS_SC2_J2_BASE, IOS_SC2_L_BASE, IOS_SC2_OILPAN_BASE);
+        /* chrome_elf's PartitionAlloc without a metadata region: libcef's still gets J2L */
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, (1u << IOS_SC2_J2) | (1u << IOS_SC2_J2L) | (1u << IOS_SC2_OILPAN),
+                              1, 0 ) != IOS_SC2_J2L)
+            FAIL("libcef's metadata when chrome_elf asked for none\n");
+        printf("PASS: chrome_elf PA -> 0x%llx, its metadata -> 0x%llx, libcef PA -> 0x%llx, its metadata -> 0x%llx, "
+               "V8's search refused or left alone, Oilpan -> view 0x%llx only after the V8 cage\n",
+               IOS_SC2_E_BASE, IOS_SC2_J2_BASE, IOS_SC2_L_BASE, IOS_SC2_J2L_BASE, IOS_SC2_OILPAN_BASE);
     }
 
     /* the address map */
@@ -338,8 +367,12 @@ int main( void )
         if (IOS_SC2_E_BASE != IOS_SC2_L_BASE + B32) FAIL("blocks not adjacent\n");
         if (IOS_SC2_FLOOR != IOS_SC2_L_BASE + IOS_SC2_POOL_REAL) FAIL("floor not above libcef's 4 GB\n");
         if (IOS_SC2_FLOOR >= 0x73ffff0000ull) FAIL("no furniture window\n");
-        if (IOS_SC2_J2_BASE != IOS_SC2_L_BASE + 16 * GB || IOS_SC2_J2_BASE + IOS_SC2_J2_SIZE != IOS_SC2_E_BASE)
-            FAIL("the 16 GB reserve is not libcef's BRP half\n");
+        if (IOS_SC2_J2_BASE != IOS_SC2_L_BASE + 16 * GB || IOS_SC2_J2_BASE + IOS_SC2_MD_REAL != IOS_SC2_J2L_BASE
+            || IOS_SC2_J2L_BASE + IOS_SC2_MD_REAL != IOS_SC2_E_BASE)
+            FAIL("the metadata regions do not split libcef's BRP half\n");
+        if (IOS_SC2_MD_ASK != 16 * GB || IOS_SC2_MD_REAL < IOS_SC2_POOL_REAL || IOS_SC2_MD_REAL < 8 * GB
+            || IOS_SC2_J2_BASE % 0x10000 || IOS_SC2_J2L_BASE % 0x10000)
+            FAIL("a metadata region does not cover its pools' real 4 GB and an 8 GB configurable pool\n");
         if (IOS_SC2_RW_ALIAS < IOS_SC2_E_BASE + IOS_SC2_POOL_REAL) FAIL("alias inside chrome_elf's 4 GB\n");
         if (IOS_SC2_RW_ALIAS + IOS_SC2_RW_MAX > IOS_SC2_CAGE_BASE) FAIL("alias into the cage\n");
         if (IOS_SC2_CAGE_BASE % (4 * GB) || IOS_SC2_CAGE_BASE + 8 * GB > IOS_SC2_OILPAN_BASE) FAIL("cage\n");
@@ -347,10 +380,65 @@ int main( void )
         if (IOS_SC2_OILPAN_BASE != IOS_SC_BRP_HOLD_BASE || IOS_SC2_OILPAN_BASE + IOS_SC2_OILPAN_SIZE != IOS_SC_ARENA_BASE)
             FAIL("Oilpan does not end at the FEX arena\n");
         if (IOS_SC_ARENA_BASE + IOS_SC_ARENA_SIZE != top) FAIL("arena does not end at 0x8000000000\n");
-        printf("PASS: layout 2: 0x%llx libcef PA 4G | floor 0x%llx | 0x%llx 16 GB reserve | 0x%llx chrome_elf PA 4G | "
-               "alias 0x%llx | cage 0x%llx | Oilpan 0x%llx | arena 0x%llx-0x%llx\n",
-               IOS_SC2_L_BASE, IOS_SC2_FLOOR, IOS_SC2_J2_BASE, IOS_SC2_E_BASE, IOS_SC2_RW_ALIAS, IOS_SC2_CAGE_BASE,
-               IOS_SC2_OILPAN_BASE, IOS_SC_ARENA_BASE, top);
+        printf("PASS: layout 2: 0x%llx libcef PA 4G | floor 0x%llx | 0x%llx chrome_elf metadata 8G | 0x%llx libcef "
+               "metadata 8G | 0x%llx chrome_elf PA 4G | alias 0x%llx | cage 0x%llx | Oilpan 0x%llx | arena 0x%llx-0x%llx\n",
+               IOS_SC2_L_BASE, IOS_SC2_FLOOR, IOS_SC2_J2_BASE, IOS_SC2_J2L_BASE, IOS_SC2_E_BASE, IOS_SC2_RW_ALIAS,
+               IOS_SC2_CAGE_BASE, IOS_SC2_OILPAN_BASE, IOS_SC_ARENA_BASE, top);
+    }
+
+    /* commits of the helper, against its build-340 grants (cage: kind 9) */
+    {
+        struct ios_sc2_gv g[] = {
+            { IOS_SC2_E_BASE, IOS_SC2_POOL_REAL, IOS_SC2_E_BASE, 32 * GB, IOS_SC2_E },
+            { IOS_SC2_J2_BASE, IOS_SC2_MD_REAL, IOS_SC2_J2_BASE, 16 * GB, IOS_SC2_J2 },
+            { IOS_SC2_L_BASE, IOS_SC2_POOL_REAL, IOS_SC2_L_BASE, 32 * GB, IOS_SC2_L },
+            { IOS_SC2_J2L_BASE, IOS_SC2_MD_REAL, IOS_SC2_J2L_BASE, 16 * GB, IOS_SC2_J2L },
+            { IOS_SC2_CAGE_BASE, 8 * GB, IOS_SC2_CAGE_BASE, 8 * GB, 9 },
+            { IOS_SC2_OILPAN_BASE, IOS_SC2_OILPAN_SIZE, IOS_SC2_E_BASE, 32 * GB, IOS_SC2_OILPAN },
+        };
+        const int n = sizeof(g) / sizeof(g[0]);
+        static const struct { uint64_t a, size; int c, kind; uint64_t off; const char *what; } cases[] = {
+            { 0x73fffd0000ull, 0x20000, IOS_SC2_C_OK, -1, 0, "boot false alarm: a furniture commit" },
+            { 0x7000004000ull, 0x10000, IOS_SC2_C_OK, -1, 0, "libcef's first slot span" },
+            { 0x70f0000000ull, 0x10000, IOS_SC2_C_NEAR, IOS_SC2_L, 0x70f0010000ull, "libcef's pool near its end" },
+            { 0x78f8000000ull, 0x4000, IOS_SC2_C_NEAR, IOS_SC2_E, 0x78f8004000ull, "chrome_elf's pool near its end" },
+            { 0x7400001000ull, 0x1000, IOS_SC2_C_OK, -1, 0, "chrome_elf's metadata, super page 0 (build 340)" },
+            { 0x7600201000ull, 0x1000, IOS_SC2_C_OK, -1, 0, "libcef's metadata, super page 1" },
+            { 0x7600000000ull + 0xf0000000ull + 0x1000, 0x1000, IOS_SC2_C_NEAR, IOS_SC2_J2L, 0xf0000000ull,
+              "libcef's super page at 3.75 GB" },
+            { 0x7600000000ull + 0x100200000ull + 0x1000, 0x1000, IOS_SC2_C_PAST, IOS_SC2_J2L, 0x100200000ull,
+              "libcef's super page past 4 GB" },
+            { 0x7400000000ull + 0x100000000ull + 0x1000, 0x1000, IOS_SC2_C_PAST, IOS_SC2_J2, 0x100000000ull,
+              "chrome_elf's super page past 4 GB" },
+            { 0x7400403000ull, 0x1000, IOS_SC2_C_BRP, IOS_SC2_J2, 0x400000, "chrome_elf's BRP super page" },
+            { 0x7600000000ull + 0x180000000ull + 0x5000, 0x1000, IOS_SC2_C_OK, -1, 0, "libcef's configurable pool at 6 GB" },
+            { 0x7600004000ull, 0x4000, IOS_SC2_C_OK, -1, 0, "not a metadata page" },
+            { 0x7900100000ull, 0x4000, IOS_SC2_C_BEYOND, IOS_SC2_E, 0x100100000ull, "the RW alias gap" },
+            { 0x7a00010000ull, 0x4000, IOS_SC2_C_OK, -1, 0, "the V8 cage" },
+            { 0x7c00100000ull, 0x4000, IOS_SC2_C_OK, -1, 0, "Oilpan" },
+            { 0x7d00010000ull, 0x4000, IOS_SC2_C_OK, -1, 0, "the FEX arena" },
+        };
+        unsigned i;
+        for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+        {
+            int gi = -1;
+            uint64_t off = 0;
+            int c = ios_sc2_commit_class( cases[i].a, cases[i].size, g, n, &gi, &off );
+            if (c != cases[i].c) FAIL("%s: class %d, not %d\n", cases[i].what, c, cases[i].c);
+            if (c != IOS_SC2_C_OK && (g[gi].kind != cases[i].kind || off != cases[i].off))
+                FAIL("%s: grant kind %d off 0x%llx\n", cases[i].what, g[gi].kind, (unsigned long long)off);
+        }
+        {   /* before libcef's metadata is given, its range is chrome_elf's unreserved half */
+            int gi = -1;
+            uint64_t off = 0;
+            if (ios_sc2_commit_class( 0x7600001000ull, 0x1000, g, 3, &gi, &off ) != IOS_SC2_C_BEYOND
+                || g[gi].kind != IOS_SC2_J2 || off != 0x200001000ull)
+                FAIL("a commit in chrome_elf's unreserved metadata half\n");
+            if (ios_sc2_commit_class( 0x7000004000ull, 0x4000, g, 0, &gi, &off ) != IOS_SC2_C_OK)
+                FAIL("no grants\n");
+        }
+        printf("PASS: commits: furniture / arena / cage / Oilpan quiet; metadata pages flag a super page near or past "
+               "a pool's real 4 GB or in the BRP pool; the unreserved part of a grant is reported\n");
     }
     return 0;
 }
