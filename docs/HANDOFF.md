@@ -3040,6 +3040,15 @@ is re-upstreaming them as `pr/fastsync-opt-in`, `pr/async-apc-requeue`,
   running (issue trackers, ProtonDB, forums, release notes). Diff what they
   needed against what we report. (Missed once: GTA V Enhanced's 572.60
   driver minimum vs our 560.94.)
+* **Say the plain fix out loud (owner, 2026-10-02):** when the evidence
+  shows a game needs a missing OFFICIAL component or environment piece (a
+  runtime installed in Program Files, a registry key, a DLL, a folder a
+  normal install creates), tell the owner immediately and concretely what
+  is missing and where it goes ("copy/install X to Y"). Lesson: GTA V
+  Enhanced needed the real `C:\Program Files\Rockstar Games\Social Club`
+  runtime; the trace showed the exact path, but the answer stayed vague and
+  the owner found "copy the folder from my PC" himself. Only configuring or
+  patching DRM/crack components stays out of scope.
 
 ## 2b. Over-the-air install (owner's decision 2026-09-30)
 
