@@ -13,7 +13,8 @@ With MADEIRA_FILE_TRACE=1 (env, e.g. the game's file: env.MADEIRA_FILE_TRACE
 NtQueryFullAttributesFile log
   [file-trace] #N open|attr status=0x... disp=... access=... name=...
 for up to MADEIRA_FILE_TRACE_LIMIT lines (default 4000), skipping only the
-loader's expected misses (STATUS_OBJECT_NAME_NOT_FOUND on *.dll). Guest
+loader's expected misses (STATUS_OBJECT_NAME_NOT_FOUND on *.dll) and
+Madeira's own shader cache (\\Madeira\\ShaderCache). Guest
 results are never changed. Off: nothing is logged and nothing else runs but
 one getenv per process.
 
@@ -57,6 +58,9 @@ static void madeira_file_trace( const char *what, unsigned int status, const UNI
     { w = attr->ObjectName->Buffer; wl = attr->ObjectName->Length / sizeof(WCHAR); }
     if (w) while (k < wl && k < sizeof(nb) - 1) { nb[k] = (w[k] < 32 || w[k] > 126) ? '?' : (char)w[k]; k++; }
     nb[k] = 0;
+    /* Madeira's own shader cache (madeira_d3d12's .msc files) is not the game's I/O and
+     * used most of the budget in the first GTA trace (log 2026-10-02 13:21:28). */
+    if (strstr( nb, "\\Madeira\\ShaderCache" )) return;
     if (status == 0xc0000034 && k > 4)
     {
         const char *x = nb + k - 4;

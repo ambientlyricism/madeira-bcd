@@ -2622,6 +2622,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     driver version, WMI, child ntdll / stale-heal fixes) carries over to a
     store copy. Improvement left open: [file-trace] should skip Madeira's
     own ShaderCache paths.
+  - **GTA: Madeira-side work continues on the logs (owner, 2026-10-02:
+    "help me see whether it runs before I buy").** Agreed scope: fix every
+    Madeira bug the copy exposes (emulation, I/O, crashes); never debug the
+    Social Club emulator itself. Items: (1) NtGetContextThread on the calling
+    thread returns an all-zero context (`[ec-getctx] ml715 ... rip=0 rsp=0`)
+    and (2) the IAT sync writes a child's ntdll hooks into the parent's ntdll
+    copy -- agent ab89a8c9 started; (3) **dxgi-src fault symbolized**: I
+    rebuilt dxgi-src locally with the Linux llvm-mingw (same size as CI's,
+    1748992): GTA enters dxgi rva 0x6020 =
+    MTLDXGIFactory::EnumAdapterByGpuPreference and faults in libc++
+    unordered_map<string,string>::find (+0x8c, bucket array NULL) = the
+    dxmt::Config singleton's OptionMap (DxgiOptions on CreateAdapter); caught
+    by GTA, right before ERR_SYS_SYSREQ_GPU -- likely the reason its GPU
+    check fails; agent aa87d2aa started on the root cause; (4) this commit:
+    [file-trace] skips Madeira's own `\Madeira\ShaderCache` opens.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
