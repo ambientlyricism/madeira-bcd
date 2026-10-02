@@ -425,3 +425,198 @@ env.DXMT_WSI_MODE_TABLE = 1
 ```
 
 (`[monitor-identity] ml1190 using user32 primary=...` confirms the first).
+
+## 8. Build 321: NoExec at GTA5_Enhanced.exe+0x509a144 after the intro video
+
+> **Türkçe özet:** Oyun artık giriş videosunu geçiyor, sonra çocuk süreçte
+> (GTA5_Enhanced.exe) emülatörün "çalıştırılabilir" bilmediği bir adrese
+> (GTA5_Enhanced.exe+0x509a144) atlıyor ve FEX bilerek erişim ihlali
+> üretiyor. Bu adres, emülatörün tanıdığı iki kod bölümünün arasında kalıyor;
+> kayıtta bu aralığı çalıştırılabilir yapan hiçbir istek görünmüyor. Bunu
+> araştırırken Madeira'nın kendi ntdll.dll'inde gerçek bir hata bulundu: bellek
+> korumasını "çalıştırılabilir" yapan isteklerin kayda alındığı tanılama yolu
+> (`[exec-req]`), çıkışta `InSyscallCallback` bayrağını temizlemeyi unutuyor.
+> Bayrak takılı kaldığı sürece o iş parçacığındaki sonraki bellek değişiklikleri
+> (VirtualProtect, VirtualAlloc, DLL eşleme) emülatöre HİÇ bildirilmiyor ve
+> kayıtta da iz bırakmıyor. Kayıtta kanıtı var (satır 396 → 450-509; aynı
+> DLL'ler çocuk süreçte, öncesinde `[exec-req]` olmadan, normal bildiriliyor:
+> 1722-1755). Arxan
+> gibi korumalar art arda birkaç aralığı çalıştırılabilir yaptığında ilkinden
+> sonrakiler kaybolabilir; GTA'nın çöktüğü aralık tam olarak böyle bir aralık
+> olabilir. Düzeltme (yalnızca Madeira tarafı; çatlak/DRM ile ilgisi yok):
+> ntdll'in havuz kopyasında üç dal talimatı, bayrağı temizleyen bloğa
+> yönlendiriliyor. Diğer oyunları etkilememesi için **isteğe bağlı**:
+> `env.MADEIRA_EXECREQ_LEAVE = 1`. Ayrıca iki yeni tanılama satırı her zaman
+> açık: `[prot-img]` (ana imajdaki büyük koruma değişiklikleri ve bayrağın o
+> anki değeri) ve `[guest-rip-sec]` (NoExec adresinin hangi PE bölümünde
+> olduğu ve Wine'ın o sayfaya verdiği koruma). Sonraki cihaz kaydı, bu hatanın
+> GTA'nın çöküşünün sebebi olup olmadığını kesin olarak gösterecek.
+
+Log: PlayGTAV.exe 2026-10-02 10:51:28, build 321 (PlayGTAV main, tid 0024,
+tracker 0x1488dcb78; GTA5_Enhanced child: boot thread 002c, game thread 0034,
+own xtajit64 copy, tracker 0x1500a4b78). Line numbers are this log's.
+Earlier log for comparison: PlayGTAV 2026-10-01 20:16:49 (same start-up
+sequence, stops at ERR_GFX_D3D_NOD3D12 before reaching this code).
+
+### 8.1 What the child dies on
+
+* 1866-1867: the child's tracker learns GTA5_Enhanced.exe's executable sections
+  from the PE headers (FEX `InvalidationTracker::HandleImageMap`,
+  IMAGE_SCN_MEM_EXECUTE): `0x140001000-0x14247a400` (.text) and
+  `0x145123000-0x145b81000` (the protector's code). Image at its preferred base
+  0x140000000, size 0x5b81000, so no relocation is involved.
+* 3301-3315: the TLS callback (`[tls-life] ... first=000000014241A754`, thread
+  002c, through ntdll's x64 syscall stub) makes four ranges RWX:
+  `[exec-req] #17` header, `#18` 0x140001000+0x2479400, `#19`
+  0x14247B000+0x3EEE00, `#20` 0x14286A000+0x2741428, each followed by FEX's
+  `Add SMC interval` (so these four reached the child's tracker). The protector
+  sets "full access" before decrypting, which matches the public Arxan
+  write-ups. The ranges end at 0x144FAB428; **0x144FAC000-0x145123000 (RVA
+  0x4fac000-0x5123000, 1.5 MB) is never named by any request in the log**.
+* 18946-19151: the protector patches .text (`[smc-atomic] #2..#5`, `ml1001
+  ... store landed`, e.g. 0x140156c83 `48 8d 14 24` -> `90 90 0f 31`), all
+  handled by the SMC path.
+* 19158-19161: `[iOS-xquery] MISS tracker=0x1500a4b78 addr=0x14509a144`,
+  `NoExec instruction in entry block: 14509A144`, then FEX's deliberate load
+  from 0, `[guest-state] rip=0x14509a144`, AV EXEC of 0x14509A144, unhandled,
+  crash report (19226 on), NtTerminateProcess 0xc0000005.
+
+0x14509a144 is RVA 0x509a144, in that 1.5 MB gap. On Windows the loader only
+gives an image page EXECUTE through the section flags, and FEX read the same
+flags, so on Windows either the program makes that range executable at run
+time, or the jump target is wrong.
+
+### 8.2 Correction: the child's tracker does get protect notifications
+
+`[iOS-xrem] via=protect` exists for tracker 0x1500a4b78 too (2622, 8025-8031),
+and the `Add SMC interval` lines after `[exec-req] #17-#20` are the child's.
+Notifications are not routed to the parent's emulator (the earlier bug class).
+FEX logs only REMOVALS by protection; an insert by protection (HasExec) is
+silent, which is why the log cannot show a successful one.
+
+### 8.3 The bug found: `[exec-req]` leaves InSyscallCallback set
+
+The PE ntdll (`app/Madeira/arm64ec-windows/ntdll.dll`, prebuilt from the wine
+fork's `dlls/ntdll/signal_arm64ec.c`) wraps NtProtectVirtualMemory:
+`enter_syscall_callback()` sets `CHPE_V2_CPU_AREA_INFO::InSyscallCallback`, the
+change is made, FEX is notified, `leave_syscall_callback()` clears the flag.
+While the flag is set every memory wrapper (NtProtectVirtualMemory,
+NtAllocateVirtualMemory(Ex), NtFreeVirtualMemory, NtMapViewOfSection(Ex))
+takes its raw path: no FEX notification, no probe line. That is by design for
+calls the emulator itself makes inside a notification.
+
+The ml283 `[exec-req]` probe (first 64 EXECUTE requests per ntdll copy) does
+its own syscall, log line and notification and then `return st;` without
+`leave_syscall_callback()`. Disassembly of the shipped binary (function at VA
+0x1800570f4): the probe's exits at 0x1800573bc (cross-process), 0x1800573c8
+(no NotifyMemoryProtect) and 0x1800573f8 (after the notification) all branch to
+the epilogue 0x180057514; only the non-exec path passes 0x1800574d8
+`ldr x8,[x18,#0x1788]; cbz x8; strb wzr,[x8,#1]`.
+
+The flag is cleared again only when FEX compiles or links a block on that
+thread (FEXCore Dispatcher.cpp `EmitSignalGuardedRegion` sets and clears it) or
+an exception reaches the guest (`ResetToConsistentState`). Already compiled and
+linked code -- a loop calling VirtualProtect -- does neither, so every memory
+change after the first executable protect is lost to the emulator.
+
+Evidence in this log, an A/B inside one run: the main process does `[exec-req]
+#1` on tid 0024 (396, the loader restoring PlayGTAV's .text, before the
+emulator is loaded), and the next four NtMapViewOfSection on that thread --
+libarm64ecfex.dll itself and its three imports -- print `insc_before=1
+entered=0` (450, 460, 474, 509): none of them was registered with the emulator.
+The child loads the same four images with no `[exec-req]` before them and
+prints `insc_before=0 entered=1` (1722, 1732, 1744, 1755). (The
+create_cross_process_work_list map right after pProcessInit shows
+`insc_before=1` in both processes, 696 and 1882: that one is process
+initialisation, not this bug.)
+
+What it can explain here: if the program makes the 1.5 MB range executable
+right after another executable protect on the same thread, from linked code,
+the request is executed by Wine but never reaches FEX and never prints
+`[exec-req]`. The log cannot show this by construction, so it is a candidate,
+not a proof.
+
+Ruled out on the way: the 99 % CPU samples of thread 0034 inside the unix
+NtProtectVirtualMemory (11535-11607, stack values GTA5+0x1000, +0x247a400,
++0x4fac000) are FEX's own SMC trap protects of single pages (made inside its
+compile region, flag legitimately set) paying for the IAT-sync pointer scan on
+every call, not a lost game request.
+
+### 8.4 Could the target itself be wrong?
+
+* Not a pool alias (a JIT-pool address would be 0x14a0xxxxx+), not a lost high
+  half (0x1_4509a144 is a full image address), not a relocation (preferred
+  base).
+* The gap is the size of a .pdata for 36 MB of code; if it is data, executing
+  it is a wrong jump, not a missing permission.
+* Candidates on our side: a self-modifying store landing wrong. `ml1001 ...
+  0x140c0d1e8 (insn=889ffcdf) LEFT THE BYTES UNCHANGED` (19024) is a release
+  store of ZERO (`stlr wzr`); onto bytes that were already zero it looks the
+  same, so it is not proof of a drop. Every other checked store landed.
+* The protector's own reaction (its timing checks, e.g. the inserted `rdtsc`,
+  run very slowly across our SMC round trips) is possible but is not something
+  this project works around.
+
+### 8.5 Fix and diagnostics (build/ntdll-unix, no FEX or ntdll.dll change)
+
+* `ios_patch_execreq_leave` / `_current` (virtual_ios.c), called next to the
+  `[pc2fh]` patch for the session's ntdll, the EC-child ntdll and a
+  pseudo-process child's private copy (loader_ios.c). It finds the probe in the
+  image (17 instructions, exactly one match, the blocks it branches to
+  checked), checks the same words in this process's pool copy, and rewrites:
+  `+0x04 b.eq +0x130` -> `b.eq +0xf4` (0x54000780, the identical cross-process
+  block of the non-exec path, which falls into the clear), `+0x10 cbz x11,+0x15c`
+  -> `cbz x11,+0x120` (0xb400088b), `+0x40 b +0x15c` -> `b +0x120` (0x14000038).
+  Idempotent; any mismatch logs and leaves the copy alone. **Opt-in:
+  `env.MADEIRA_EXECREQ_LEAVE = 1`** (Settings > All settings, Memory & JIT
+  pool). Off: one `[execreq-leave] off` line, nothing written. On:
+  `[execreq-leave] ntdll ... (pool ...): NtProtectVirtualMemory's [exec-req]
+  path now clears InSyscallCallback (rva 0x573b8: 54000780 b400088b 14000038)`
+  once per ntdll copy (session, then the child).
+* `[prot-img]` (always on, first 48 per session): every protect of 64 KB or
+  more on the calling process's own main image, with the section it starts in,
+  status and `insc=` (the thread's InSyscallCallback; insc=1 means the PE
+  wrapper did not tell the emulator).
+* `[guest-rip-sec]` (always on, first 8): at a SEGV in emitted code, the image
+  section of the guest RIP (from the pool copy's headers, which a protector
+  cannot have wiped yet) and Wine's vprot of that page.
+* Host check `tests/host/check-execreq-leave.py`: runs the production patch
+  against the REAL ntdll.dll laid out as an image (probe at VA 0x1800573b8),
+  with an x18-patched pool copy and a child copy; off/0/empty write nothing;
+  =1 patches both copies, idempotent, refuses a differing copy and a missing
+  probe; a control-flow walk shows the unpatched function reaches `ret`
+  without the clear and the patched one never does. PASS (ASan/UBSan).
+* The real fix belongs in the wine fork (`leave_syscall_callback();` before
+  `return st;` in the `[exec-req]` block of signal_arm64ec.c) the next time
+  ntdll.dll is rebuilt; the pool patch then finds no probe layout and says so.
+
+Risk: off by default, so God of War and Ghost of Tsushima only gain the
+`[execreq-leave] off` line, at most 48 `[prot-img]` lines (large protects of
+their main exe) and 8 `[guest-rip-sec]` lines on a crash. On, the emulator
+receives the notifications upstream Wine always sends after an executable
+protect; nothing new is called.
+
+### 8.6 Next device log
+
+GTA V Enhanced game file, in addition to the current lines:
+
+```
+env.MADEIRA_EXECREQ_LEAVE = 1
+```
+
+Read, in order:
+
+1. `[execreq-leave] ... now clears` twice (session ntdll, then the
+   GTA5_Enhanced child). `not found exactly once` means a different ntdll.dll.
+2. If it still dies with NoExec: `[guest-rip-sec] rip=0x14509a144 = image
+   0x140000000+0x509a144, section #N 'name' ... chars ... vprot=0x..`.
+   - The section has X: FEX's image registration missed it (FEX side).
+   - No X but vprot has EXEC (0x04 bit, e.g. 0x25/0x27/0x2d): Wine made it
+     executable and the emulator was not told; find the `[prot-img]` line that
+     covers it (`insc=1` = a path still bypassing the wrapper).
+   - No X and no EXEC in vprot: nothing made it executable; the target is
+     wrong (8.4), and the next step is the jump that leads there, not memory
+     protection.
+3. If it no longer dies there: run once more WITHOUT the line; a return of the
+   NoExec proves the cause, and the `[prot-img]` line for 0x144fac000.. (or
+   nearby) will show `insc=1`.
