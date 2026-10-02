@@ -199,3 +199,304 @@ feature the box names), shader model above 6.6, and the
   the box stays: remaining format failures (B4G4R4A4, R8G8_B8G8),
   ResourceBindingTier 3, OPTIONS12, SM > 6.6, NVAPI clock query. Later:
   real residency via Metal sparse textures / Metal 4 placement sparse.
+
+## 5. D3DKMT adapter (2026-10-02, build 314 log)
+
+### Özet (sahibi için, Türkçe)
+
+* Son logda (09:02:54, build 314) oyun cihazı oluşturmadan hemen önce üç kez
+  `D3DKMTEnumAdapters2` çağırıyor ve **0 adaptör** alıyor: iOS'taki sanal
+  monitör düzeninde Wine'ın GPU listesi boş. Windows'ta DXGI'nin ekran kartı
+  burada da (aynı LUID ile) görünür ve sürücü sürümü, WDDM sürümü, donanım
+  zamanlaması gibi bilgiler buradan okunur ("sürücünüzü güncelleyin"
+  uyarısının klasik kaynağı).
+* Üç çağrının her biri bir NVIDIA Streamline eklentisi yüklendikten hemen
+  sonra geliyor (sl.common, sl.dlss/nvngx_dlss, sl.dlss_g); oyunun kendi
+  cihaz denemesinde ve kutudan sonraki ikinci denemede hiç D3DKMT
+  numaralandırması yok. Yani bu büyük olasılıkla Streamline'ın kontrolü,
+  GTA'nın kendisi değil. Kesin olmak için artık **her D3DKMT çağrısı
+  loglanıyor** (ör. `[vkmt] tid=... QueryAdapterInfo type=70 (WDDM_2_7_CAPS)`).
+* **Yeni anahtar (varsayılan KAPALI):** `env.MADEIRA_KMT_ADAPTER = 1`.
+  Açıkken ekran kartı D3DKMT'de tek adaptör olarak listeleniyor (DXGI,
+  D3D12 ve NVAPI ile aynı LUID), sorulara WDDM 3.1 masaüstü sürücüsü gibi
+  cevap veriyor (sürücü 35.0.15.6094, "NVIDIA GeForce RTX 3060", 10de:2544,
+  donanım zamanlaması açık, bellek = `vram-mb`); DXGI'nin
+  `CheckInterfaceSupport` sürücü sürümü de artık ~0 değil, aynı sürüm
+  (dxgi-src.dll ile). Kapalıyken hiçbir cevap değişmiyor (God of War, Ghost
+  of Tsushima etkilenmez); yalnız birkaç `[vkmt]` log satırı eklendi.
+* **Test (yeni IPA gerekir: win32u ve katalog değişti):** GTA'nın oyun
+  dosyası aşağıda (5.4). Kutu yine çıkarsa logu gönder: `[vkmt]` ve
+  `[dxgi-src] CheckInterfaceSupport` satırları kimin neyi sorduğunu gösterecek.
+
+### 5.1 Evidence
+
+`3105a993-PlayGTAV.exe-2026-10-02_09-02-54.txt` (build 314; the same pattern
+in `dfcc59b8-...08-33-51.txt`, lines 7305 / 7386 / 7425), all on the game's
+main thread 0034:
+
+| line | event |
+|---|---|
+| 5962 | `sl.interposer.dll` loaded (Streamline) |
+| 7176, 7186 | `sl.common.dll`, then `d3d12.dll` (madeira_d3d12) loaded |
+| 7308-7309 | first display-device touch of the process: `[display] virtual monitor`, `[vgpu] registered ...10DE&DEV_2544... driver 35.0.15.6094` |
+| **7310** | `[vkmt] D3DKMTEnumAdapters2 -> 0, 0 adapters` |
+| 7311-7330 | DXGI factory (IDXGIFactory, 7b7166ec); NVAPI init, driver/branch, logical GPU |
+| 7371-7392 | `sl.dlss.dll`, then **7392** EnumAdapters2 -> 0 adapters, then `nvngx_dlss.dll` mapped |
+| 7418-7431 | `sl.dlss_g.dll` (DLSS Frame Generation), then **7431** EnumAdapters2 -> 0 adapters |
+| 7446, 7471 | `sl.pcl.dll`, `sl.reflex.dll` |
+| 7494-7535 | RegisterAdaptersChangedEvent, the real `D3D12CreateDevice`, NVAPI (display handle, GPUs, name, cores, clocks, frame buffer 4 GB), ARCHITECTURE, OPTIONS5 (DXR 1.1), MSAA x1..x8, `destroyed Device` |
+| 7672-7708 | `ERR_GFX_D3D_NOD3D12` box |
+| 8186-8248 | int3 at GTA5_Enhanced.exe+0x100798 (its retry path), a second real device: the same NVAPI + caps sequence, `destroyed Device`, **no D3DKMT enumeration** (the old line allowed 4, only 3 were printed) |
+
+So the enumerations line up one-to-one with Streamline plugin loads (each
+plugin checks the system when it loads; DLSS Frame Generation needs hardware
+GPU scheduling, which Windows reports only through
+`D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS)` on an enumerated adapter),
+and GTA's own adapter check -- the part that repeats on retry -- does not
+enumerate. With 0 adapters a caller has nothing to query, so the
+"conversation" in build 314 ends at the enumeration; whether GTA (or DXGI on
+its behalf) opens an adapter by LUID and queries it was invisible, because
+build 314 logged only EnumAdapters2. The box text ("ensure your Windows
+installation supports DirectX 12 Agility SDK, or update your graphics
+driver") is GTA's generic adapter-init failure text, so the D3DKMT gap is a
+lead, not a proof.
+
+Upstream Wine (pin 4f5b197) answers, for comparison:
+
+| entry point | upstream |
+|---|---|
+| EnumAdapters2 / EnumAdapters | the GPUs in `gpus` (Vulkan / OpenGL / display driver); none in the iOS virtual-monitor regime |
+| OpenAdapterFromLuid | any LUID, a new handle (Vulkan device by LUID: none here) |
+| OpenAdapterFromHdc | stub, STATUS_NO_MEMORY |
+| OpenAdapterFromDeviceName | a `gpus` path, else STATUS_INVALID_PARAMETER |
+| OpenAdapterFromGdiDisplayName | (ours, ml1006) `\\.\DISPLAY1` -> the first GPU's LUID or a software LUID |
+| QueryAdapterInfo | CHECKDRIVERUPDATESTATUS = FALSE, DRIVERVERSION = WDDM **1.3**; everything else STATUS_NOT_IMPLEMENTED |
+| QueryVideoMemoryInfo | Vulkan budget; zeros here |
+| QueryStatistics | stub, success, nothing filled |
+| CheckVidPnExclusiveOwnership | success unless an exclusive owner exists |
+| CheckOcclusion | stub, STATUS_PROCEDURE_NOT_FOUND |
+
+(gdi32's `D3DKMT*` exports forward to these win32u syscalls.) DXGI's own
+adapter opens a KMT handle from its LUID in its constructor
+(`dxgi_adapter.cpp`, `D3DKMTOpenAdapterFromLuid`), and its
+`CheckInterfaceSupport` returned UMD version `~0`.
+
+### 5.2 What changed (code)
+
+* `build/win32u-unix/d3dkmt_ios.c` (new; `build.sh` compiles it instead of
+  upstream `d3dkmt.c`, which it includes with 13 entry points renamed
+  `upstream_*`, the pattern of `syscall_ios.c`):
+  * **Trace, always on, bounded** (`[vkmt] tid=XXXX ...`): OpenAdapterFromLuid
+    (LUID, handle and, with the key, whether it is the madeira adapter),
+    OpenAdapterFromHdc, CloseAdapter, CreateDevice, DestroyDevice,
+    QueryAdapterInfo (handle, type number and name, size, status, the first
+    8 bytes of small answers, `madeira adapter` / `upstream`),
+    QueryVideoMemoryInfo, QueryStatistics (type, LUID), SetQueuedLimit,
+    SetVidPnSourceOwner, CheckOcclusion, CheckVidPnExclusiveOwnership, Escape.
+    First 16 calls of each, failures up to the 64th; QueryAdapterInfo the
+    first 64 calls and the first call of every type after that.
+  * **`env.MADEIRA_KMT_ADAPTER = 1`** (also on/true/yes; read once with
+    getenv; one line `[vkmt] madeira-bcd kmt-adapter=1 ...`):
+    * LUID = bswap64(`MTLCreateSystemDefaultDevice().registryID`), the value
+      DXMT's `GetAdapterLuid` (DXGI desc, EnumAdapterByLuid), NVAPI and
+      madeira_d3d12's `GetAdapterLuid` use. Resolved with dlsym(RTLD_DEFAULT)
+      (`MTLCreateSystemDefaultDevice`, `sel_registerName`, `objc_msgSend`), so
+      win32u needs no Objective-C and no link change; computed once
+      (`[vkmt] adapter LUID hi:lo (bswap64 of Metal registryID 0x...)`). No
+      Metal device -> logged, no adapter.
+    * QueryAdapterInfo for any open adapter handle (there is one GPU):
+      DRIVERVERSION(_RENDER) = KMT_DRIVERVERSION_WDDM_3_1; UMD_DRIVER_VERSION /
+      KMD_DRIVER_VERSION = the registry DriverVersion as Windows encodes it,
+      35.0.15.6094 -> 0x00230000000F17CE (NVAPI keeps its own 999.99);
+      ADAPTERTYPE(_RENDER) = RenderSupported | DisplaySupported (not
+      software); PHYSICALADAPTERCOUNT = 1; PHYSICALADAPTERDEVICEIDS = 10de:2544,
+      subsystem / revision 0 (as the registry path), BusType PCI, adapter
+      index > 0 invalid; ADAPTERADDRESS(_RENDER) = bus 0 (the registry's bus
+      number), device 0, function 0; WDDM_1_2_CAPS = DMA-buffer preemption
+      (as DXGI's desc) + NonVGA / SmoothRotation / PerEngineTDR / CCD /
+      GammaRamp / HWCursor / HWVSync; WDDM_1_3_CAPS = 0; WDDM_2_0_CAPS =
+      64-bit atomics + GPU MMU; **WDDM_2_7_CAPS = HwSchSupported | HwSchEnabled
+      | HwSchEnabledByDefault**; WDDM_2_9_CAPS = HwSch support state STABLE +
+      enabled; WDDM_3_0 / 3_1 caps = 0; DRIVER_DESCRIPTION(_RENDER) = "NVIDIA
+      GeForce RTX 3060"; ADAPTERREGISTRYINFO(_RENDER) = name / name /
+      "Integrated RAMDAC" / name (what `write_gpu_to_registry` stores);
+      NODEMETADATA node 0 = 3D "3D", node 1 = copy "Copy" (GPU MMU), others
+      invalid; GETSEGMENTSIZE = dedicated only, GETSEGMENTGROUPSIZE = legacy +
+      local = dedicated, nothing non-local (DXGI's desc says shared 0). A
+      buffer smaller than the type's structure gets STATUS_INVALID_PARAMETER.
+      Every other type (UMDRIVERNAME -- there is no UMD DLL to name --,
+      ADAPTERGUID, CHECKDRIVERUPDATESTATUS, perf data, ...) keeps upstream's
+      answer and is logged.
+    * Dedicated size = `vram-mb` (madeira.cfg / game file, >= 256) else
+      4096 MB: the fixed part of DXGI's budget (winemetal ml1042) and the
+      registry's memory size.
+    * OpenAdapterFromHdc opens the adapter (VidPnSourceId 1, as the GDI
+      display name path); QueryVideoMemoryInfo's LOCAL budget = dedicated,
+      AvailableForReservation half of it (upstream leaves 0 without Vulkan).
+* `build/win32u-unix/sysparams_ios.c`, all behind the same key:
+  * `NtGdiDdDDIEnumAdapters2` (and so EnumAdapters): when `gpus` is empty
+    (the virtual-monitor regime), one adapter: a handle opened from the LUID,
+    the LUID, NumOfSources 1. The log line now carries the thread id and also
+    logs the size query `EnumAdapters2(NULL)` (8 lines).
+  * `NtGdiDdDDIOpenAdapterFromDeviceName`: the registry GPU's interface path
+    (`\\?\PCI#VEN_10DE&DEV_2544&SUBSYS_00000000&REV_00#00000000#{1CA05180-...}`,
+    which SetupAPI lists) opens it; traced (8 lines).
+  * OpenAdapterFromGdiDisplayName's virtual adapter (ml1006) uses the LUID.
+  * `ios_register_virtual_gpu`: the registry GPU gets the LUID
+    (`DEVPROPKEY_GPU_LUID`, `DirectX\{guid}\AdapterLuid`), the dedicated size
+    and `DirectX\{guid}\DriverVersion` = the DriverVersion QWORD (was
+    0x230000000f1ff4 = 35.0.15.8180, "some version in the future"); log
+    `[vgpu] registered ... (MADEIRA_KMT_ADAPTER: ...)`.
+  * `madeira_kmt_identity()`: vendor / device / name / DriverVersion / path
+    of the registry GPU, for d3dkmt_ios.c (`build/win32u-unix/madeira_kmt.h`).
+* `tools/patch-dxgi-umd-version.py` (new; `tools/build-dxgi-dll.sh` applies
+  it to a copy of `dxgi_adapter.cpp` for dxgi-src.dll, the plain recipe link
+  keeps the pristine file, and the build checks the patch string is in the
+  DLL): `CheckInterfaceSupport` asks
+  `D3DKMTQueryAdapterInfo(KMTQAITYPE_UMD_DRIVER_VERSION)` on the adapter's
+  own KMT handle when `MADEIRA_KMT_ADAPTER=1`, as Windows' DXGI does; without
+  the key or on failure `~0` as upstream. Logs the first 4 calls
+  (`[dxgi-src] CheckInterfaceSupport <guid> -> S_OK` and `[dxgi-src]
+  CheckInterfaceSupport: UMD version 35.0.15.6094 from D3DKMT (...)`).
+  The name is outside the i386 farm's `tools/patch-dxmt-*.py` cache key.
+* Catalog: `env.MADEIRA_KMT_ADAPTER` (bool, default 0, "Windows, display &
+  input"); `vram-mb` keeps its DXMT category and note (overlay), with
+  d3dkmt_ios.c added to its sources.
+
+Without the key every answer, the registry and DXGI's `~0` are as before;
+only `[vkmt]` lines are added (bounded), and upstream's FIXME/TRACE messages
+of the wrapped functions now name `upstream_NtGdiDdDDI...`. God of War
+(D3D11) does not enumerate KMT adapters; DXMT's dxgi opens one handle per
+adapter.
+
+**Limits:** in remote-Metal mode (winemetal `wmtr`) DXGI's LUID is the host's
+registryID and this one the phone's; the trace then says "not the madeira
+adapter's LUID". QueryStatistics stays upstream's empty stub (its segment /
+node counts are the next thing to fill if the trace shows a caller). The
+non-local budget is 0.
+
+### 5.3 Verified
+
+* `tests/host/check-kmt-adapter.py` PASS (79 checks, with `WINE_SRC=` /
+  `DXMT_SRC=` pointing at the main checkout's submodules and `MINGW=` at
+  llvm-mingw 20260421): wiring of both files; the kmt-test region compiled
+  on the host (ASan/UBSan) against the KMTQAITYPE values of the wine pin's
+  `d3dkmthk.h` -- every answer, structure size (QUERY_DEVICE_IDS 28,
+  ADAPTERADDRESS 12, ADAPTERREGISTRYINFO 2080, DRIVER_DESCRIPTION 8192,
+  SEGMENTSIZEINFO 24, SEGMENTGROUPSIZEINFO 56, NODEMETADATA 80, WDDM_1_2_CAPS
+  12), short buffers, bad indices, types left to upstream, the version QWORD,
+  the LUID against DXMT's formula; the switch, the dlsym Metal lookup (fake
+  `MTLCreateSystemDefaultDevice` / `objc_msgSend`: one lookup, device
+  released; none -> no adapter) and the dedicated size from madeira.cfg /
+  the game file; the DXGI patch (once, gated, `~0` fallback, moved anchor
+  refused) compiled for arm64ec.
+* `sysparams_ios.c` and `d3dkmt_ios.c` pass `clang -fsyntax-only -Wall`
+  (WINE_IOS, host-configured wine headers) with no warning; `d3dkmt_ios.c`
+  compiles to an object exporting the 13 wrappers and the `upstream_*`
+  functions.
+* `tools/build-dxgi-dll.sh` with llvm-mingw 20260421 (Linux host): the patched
+  dxgi-src.dll links, its exports equal the committed dxgi.dll's, it imports
+  `gdi32.D3DKMTQueryAdapterInfo`; the plain (recipe) link is symbol-identical
+  to the one before this change (on this host both match 9236 of 9663
+  symbols of the committed binary, a host-toolchain difference that predates
+  this change; CI on macOS reproduces it fully).
+* `check-dxgi-factory7.py`, `check-vmon-identity.py`,
+  `check-got-diagnostics.py`, `check-win32u-zero-bits.py` PASS; the catalog
+  is current (generator run against the main checkout's submodules).
+* Not verified: an iOS build of win32u (no Xcode here) and the device run.
+
+### 5.4 Device test
+
+Next IPA (win32u is native code; the catalog changed). GTA V Enhanced's game
+file, one launch:
+
+```
+env.MADEIRA_DXGI_SRC = 1
+env.MADEIRA_GUEST_LOG = all
+env.MADEIRA_KMT_ADAPTER = 1
+vram-mb = 4096
+d3d12-typed-uav-load = 1
+d3d12-tiled-resources = 1
+d3d12-tile-based = 0
+d3d12-caps-log = 2
+d3d12-msaa8 = 1
+d3d12-raytracing-tier = 11
+```
+
+Expected in the log:
+
+* `[vkmt] madeira-bcd kmt-adapter=1 (MADEIRA_KMT_ADAPTER): ...` and
+  `[vkmt] adapter LUID hi:lo (bswap64 of Metal registryID 0x...)`;
+* `[vgpu] registered ... driver 35.0.15.6094 (MADEIRA_KMT_ADAPTER: ...)`;
+* `[vkmt] tid=0034 D3DKMTEnumAdapters2 -> 0, 1 adapters (MADEIRA_KMT_ADAPTER:
+  the DXGI/D3D12 adapter, luid ..., hAdapter ...)` three times, each followed
+  by what the caller asks, e.g. `[vkmt] tid=0034 QueryAdapterInfo
+  hAdapter=... type=70 (WDDM_2_7_CAPS) size=4 -> 0 value=0x7 (madeira adapter)`;
+* `[vkmt] ... OpenAdapterFromLuid luid=... (the madeira adapter)` from DXGI's
+  adapters (the LUID must equal the EnumAdapters2 one);
+* `[dxgi-src] CheckInterfaceSupport {...} -> S_OK` and `UMD version
+  35.0.15.6094 from D3DKMT` if anything asks.
+
+The same build without `env.MADEIRA_KMT_ADAPTER` shows the whole D3DKMT
+conversation with upstream's answers (0 adapters): a useful A/B.
+
+### 5.5 Next candidates if the box stays
+
+1. Whatever the new `[vkmt]` lines show answered by `upstream` with
+   STATUS_NOT_IMPLEMENTED (0xc0000002) or an invalid parameter right before
+   the real device: answer that type next. QueryStatistics (adapter /
+   segment / node counts) is the most likely gap if a caller uses it.
+2. Driver version policy: the registry / KMT say 35.0.15.6094 (= NVIDIA
+   560.94), NVAPI says 999.99 (branch r57218). If GTA's minimum NVIDIA driver
+   is newer than 560.94 (the Enhanced edition shipped in March 2025 with
+   57x drivers; not verified), the registry DriverVersion
+   (`driver_vendor_to_version` in sysparams_ios.c) should become a 57x one
+   (e.g. 32.0.15.7xxx). The identity mismatch NVAPI RTX 4090 vs DXGI /
+   registry RTX 3060 is also still open.
+3. If no `[dxgi-src] CheckInterfaceSupport` line appears and the trace shows
+   no D3DKMT query from GTA's own path, the decision is in data it already
+   has (NVAPI answers, the survey's caps): compare with a Windows run's
+   NVAPI / CheckFeatureSupport answers.
+4. Earlier list: remaining FORMAT_SUPPORT failures (B4G4R4A4, R8G8_B8G8),
+   ResourceBindingTier 3, OPTIONS12, shader model above 6.6.
+
+### 5.6 Paragraph for HANDOFF (ready to paste)
+
+* **GTA V Enhanced: opt-in D3DKMT adapter + [vkmt] trace (agent, 2026-10-02;
+  docs/gta5-d3d12-caps.md section 5).** Log PlayGTAV.exe 09:02:54 (build
+  314; same in 08:33:51): thread 0034 calls `D3DKMTEnumAdapters2` three
+  times (l.7310 / 7392 / 7431) and gets 0 adapters (the iOS virtual-monitor
+  regime lists no GPU); each call follows a Streamline plugin load
+  (sl.common, sl.dlss/nvngx_dlss, sl.dlss_g), and GTA's own device check and
+  its retry after the box (l.8228-8248) do not enumerate, so the callers are
+  most likely Streamline's (hardware-scheduling check for DLSS-G), not GTA's
+  driver check: a lead, not a proof. Build 314 logged nothing else of
+  D3DKMT. **Added:** `build/win32u-unix/d3dkmt_ios.c` wraps upstream
+  `d3dkmt.c` (13 entry points renamed `upstream_*`): an always-on, bounded
+  `[vkmt] tid=` trace of every adapter-level D3DKMT entry point
+  (QueryAdapterInfo with type name, first 64 calls + first of each type).
+  **OFF by default, `env.MADEIRA_KMT_ADAPTER = 1`:** EnumAdapters2 lists one
+  adapter with the DXGI / madeira_d3d12 / NVAPI LUID (bswap64 of the Metal
+  registryID, via dlsym), OpenAdapterFromHdc / FromDeviceName /
+  FromGdiDisplayName open it, the registry GPU and its DirectX key carry that
+  LUID and the DriverVersion QWORD, QueryAdapterInfo answers WDDM 3.1
+  (DRIVERVERSION 3100, UMD/KMD version 35.0.15.6094 = 0x00230000000F17CE,
+  ADAPTERTYPE render+display, 10de:2544 ids, WDDM 1.2-3.1 caps with HAGS on,
+  DRIVER_DESCRIPTION / ADAPTERREGISTRYINFO "NVIDIA GeForce RTX 3060",
+  NODEMETADATA, segment sizes = vram-mb or 4096 MB), other types upstream +
+  logged; QueryVideoMemoryInfo's LOCAL budget = the same size;
+  `tools/patch-dxgi-umd-version.py` (dxgi-src.dll) makes
+  CheckInterfaceSupport return that version from D3DKMT instead of ~0. Off:
+  answers unchanged (GoW / GoT untouched), only `[vkmt]` lines. Host test
+  `tests/host/check-kmt-adapter.py` (new, 79 checks) PASS; -Wall clean;
+  dxgi-src.dll links for arm64ec; factory7 / vmon / got-diagnostics /
+  zero-bits PASS; catalog regenerated (IPA). **Device test** (next IPA): GTA
+  game file `env.MADEIRA_DXGI_SRC = 1`, `env.MADEIRA_GUEST_LOG = all`,
+  `env.MADEIRA_KMT_ADAPTER = 1`, `vram-mb = 4096`, `d3d12-typed-uav-load = 1`,
+  `d3d12-tiled-resources = 1`, `d3d12-tile-based = 0`, `d3d12-caps-log = 2`,
+  `d3d12-msaa8 = 1`, `d3d12-raytracing-tier = 11`; expect
+  `EnumAdapters2 -> 0, 1 adapters (MADEIRA_KMT_ADAPTER ...)` and the
+  `[vkmt] QueryAdapterInfo` lines after it. If the box stays: the
+  upstream-answered types in the trace, QueryStatistics, the driver version
+  (560.94 may be under GTA's minimum; NVAPI says 999.99), whether
+  CheckInterfaceSupport is called at all, then the earlier caps list.
