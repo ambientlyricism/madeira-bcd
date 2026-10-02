@@ -2601,6 +2601,11 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     outside the hard rules (Madeira-side bugs only). No change; the
     `[file-trace]` diagnostic (build 330) stays the route for real file I/O
     bugs on our side.
+  - **Build 330 green** (run 36993002764, head b80ff39): guest file trace
+    (`env.MADEIRA_FILE_TRACE = 1`). main fast-forwarded to b80ff39; push run
+    331 cancelled. Waiting on device: GTA with the file trace; GoT R1/R2.
+    Owner on the Steam copy: not buying for now (Rockstar Games Launcher /
+    Social Club would be much more work); the file trace comes first.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
