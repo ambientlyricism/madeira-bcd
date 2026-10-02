@@ -137,6 +137,15 @@ enum StikJITHelper {
         return false
     }
 
+    /// Layout 2's FIXED alias mapping failed: give the hold back (ntdll then uses layout 1).
+    private static func rwAliasDrop(_ kr: kern_return_t) {
+        guard scHoldTaken else { return }
+        vm_deallocate(mach_task_self_, scLayout2Hold, scLayout2HoldSize)
+        scHoldTaken = false
+        LogStore.shared.log(String(format: "[sc-cef] layout 2: the RW alias could not be mapped at 0x%lx (kr=%d) -- hold released, usual placement",
+                                   Int(scLayout2Alias), kr), level: .error)
+    }
+
     // 0 treats JIT as ready whenever CS_DEBUGGED is set, as before, without asking whether a debugger is attached.
     private static let attachCheck = MadeiraConfig.flag("MADEIRA_JIT_ATTACH_CHECK")
 
@@ -680,12 +689,15 @@ enum StikJITHelper {
         // derives WriteOffset from the real distance), so send it high, where it
         // lived in every run before ml977, and keep the scarce low gap for RX.
         rwAddr = rwAliasHint()   // 0x7000000000, or 0x7900000000 for Social Club layout 2
+        // Layout 2 maps the alias FIXED: an ANYWHERE hint at 0x7900000000 is not
+        // honoured (build 338, 2026-10-02 19:33: it landed at 0x7100000000).
+        let rwFixed = rwAddr == scLayout2Alias
         var kr1 = vm_remap(
             mach_task_self_,
             &rwAddr,
             vm_size_t(poolSize),
             0,
-            VM_FLAGS_ANYWHERE,
+            rwFixed ? 0 /* VM_FLAGS_FIXED */ : VM_FLAGS_ANYWHERE,
             mach_task_self_,
             vm_address_t(bitPattern: rxPtr),
             0, // copy = false
@@ -693,7 +705,12 @@ enum StikJITHelper {
             &maxProt,
             VM_INHERIT_NONE
         )
-        if kr1 == KERN_SUCCESS && !rwAliasKeep(rwAddr) {
+        if rwFixed && kr1 != KERN_SUCCESS {
+            rwAliasDrop(kr1)
+            rwAddr = 0x7000000000
+            kr1 = vm_remap(mach_task_self_, &rwAddr, vm_size_t(poolSize), 0, VM_FLAGS_ANYWHERE,
+                           mach_task_self_, vm_address_t(bitPattern: rxPtr), 0, &curProt, &maxProt, VM_INHERIT_NONE)
+        } else if kr1 == KERN_SUCCESS && !rwAliasKeep(rwAddr) {
             vm_deallocate(mach_task_self_, rwAddr, vm_size_t(poolSize))
             rwAddr = 0x7000000000
             kr1 = vm_remap(mach_task_self_, &rwAddr, vm_size_t(poolSize), 0, VM_FLAGS_ANYWHERE,
@@ -873,8 +890,14 @@ enum StikJITHelper {
         // ml1037: the alias goes high, where it always lived (0x7000000000);
         // 0x7900000000 for Social Club layout 2 (rwAliasHint).
         var rw: vm_address_t = rwAliasHint()
-        var kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
-        if kr == KERN_SUCCESS && !rwAliasKeep(rw) {
+        // Layout 2: FIXED at 0x7900000000 (an ANYWHERE hint there is not honoured).
+        let rwFixed = rw == scLayout2Alias
+        var kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), rwFixed ? 0 /* VM_FLAGS_FIXED */ : VM_FLAGS_ANYWHERE)
+        if rwFixed && kr != KERN_SUCCESS {
+            rwAliasDrop(kr)
+            rw = 0x7000000000
+            kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
+        } else if kr == KERN_SUCCESS && !rwAliasKeep(rw) {
             vm_deallocate(mach_task_self_, rw, vm_size_t(span))
             rw = 0x7000000000
             kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
