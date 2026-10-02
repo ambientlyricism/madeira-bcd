@@ -305,10 +305,12 @@ static void d3d12_log(const char *fmt, ...) {
     va_list ap; size_t n; va_start(ap, fmt); g_logs++; vsnprintf(g_last_log, sizeof g_last_log, fmt, ap); va_end(ap); fputs(g_last_log, stdout);
     n = strlen(g_last_log); if (g_logbuf_n + n < sizeof g_logbuf) { memcpy(g_logbuf + g_logbuf_n, g_last_log, n + 1); g_logbuf_n += n; }
 }
-static long long g_cfg[8]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot, queue-trace, ind-count, ind-count-from */
+static long long g_cfg[11]; /* fence-strict, upload-guard, upload-guard-bytes (0 = unset), desc-guard, cbv-snapshot, queue-trace, ind-count, ind-count-from,
+                               gpu-sync, pso-first-use, present-min-ms */
 static long long mad_cfg_int_pe(const char *key, long long dflt) {
-    static const char *const k[8] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot", "queue-trace", "ind-count", "ind-count-from" };
-    int i; for (i = 0; i < 8; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
+    static const char *const k[11] = { "fence-strict", "upload-guard", "upload-guard-bytes", "desc-guard", "cbv-snapshot", "queue-trace", "ind-count", "ind-count-from",
+                                       "gpu-sync", "pso-first-use", "present-min-ms" };
+    int i; for (i = 0; i < 11; i++) if (!strcmp(key, k[i])) return g_cfg[i] ? g_cfg[i] : dflt;
     return dflt;
 }
 struct mad_device { obj_handle_t gpu_event, mtl_device; volatile LONG64 gpu_serial_committed, gpu_serial_failed; };
@@ -605,6 +607,21 @@ int main(void) {
         g_cfg[6] = g_cfg[7] = 0; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 0 && g_ic_frames == 0);
     }
 
+    /* 5e. round 4: gpu-sync, pso-first-use, present-min-ms -- each alone turns the family on, clamps, one log line */
+    {
+        memset(g_cfg, 0, sizeof g_cfg);
+        g_sd_state = -1; g_logs = 0; mad_sync_diag_load(); T(g_sd_state == 0 && !g_gpu_sync && !g_pso_first && !g_present_min_ms && g_logs == 0);
+        g_cfg[8] = 1; g_sd_state = -1; g_logs = 0; mad_sync_diag_load();
+        T(g_sd_state == 1 && g_gpu_sync == 1 && g_logs == 1 && strstr(g_last_log, "gpu-sync=1 pso-first-use=0 present-min-ms=0"));
+        g_cfg[8] = 0; g_cfg[9] = 7; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 1 && g_pso_first == 1 && !g_gpu_sync);
+        g_cfg[9] = 0; g_cfg[10] = 200; g_sd_state = -1; mad_sync_diag_load(); T(g_sd_state == 1 && g_present_min_ms == 200);
+        g_cfg[10] = 99999; g_sd_state = -1; mad_sync_diag_load(); T(g_present_min_ms == 2000);
+        g_cfg[10] = -5; g_sd_state = -1; mad_sync_diag_load(); T(g_present_min_ms == 0 && g_sd_state == 0);
+        g_cfg[8] = 1; g_sd_state = -1; mad_sync_diag_load(); g_logs = 0; mad_sd_report(300);
+        T(g_logs == 2 && strstr(g_last_log, "[sync-diag] present #300: gpu-sync 0 ExecuteCommandLists waited for the GPU"));
+        memset(g_cfg, 0, sizeof g_cfg); g_sd_state = -1; mad_sync_diag_load(); g_logs = 0; mad_sd_report(600); T(g_logs == 1);
+    }
+
     /* 6. fence-strict helpers */
     load(1, 0, 0, 0, 0); g_waits = 0;
     dev.gpu_serial_committed = 0; mad_strict_cb_wait(&dev, 0x77); T(g_waits == 0);
@@ -656,6 +673,20 @@ check("capture-cs: a plain name matches as before, name/hash picks one kernel",
       "mad_cs_match(e->cpso, g_capture_cs)" in SRC and "if (!slash) return !strcmp(p->vs_name, want);" in SRC)
 check("sampler-reduction / sampler-census default to 0",
       'v = mad_cfg_int_pe("sampler-reduction", 0);' in SRC and 'g_smp_census = mad_cfg_int_pe("sampler-census", 0) ? 1 : 0;' in SRC)
+check("gpu-sync / pso-first-use / present-min-ms default to 0",
+      'gs = mad_cfg_int_pe("gpu-sync", 0);' in SRC and 'pf = mad_cfg_int_pe("pso-first-use", 0);' in SRC and
+      'pm = mad_cfg_int_pe("present-min-ms", 0);' in SRC)
+ecl = cut("static void mad_ecl_run(ID3D12CommandQueue *This, UINT count, ID3D12CommandList *const *lists) {")
+check("gpu-sync: after the replay leaves the queue lock, commit and wait for the GPU",
+      ecl.index("if (ml1021_q) LeaveCriticalSection(&ml1021_q->submit_lock);") <
+      ecl.index("if (g_sd_state > 0 && g_gpu_sync && q) {") < ecl.index("mad_strict_drain(q->device);"))
+check("pso-first-use: the replay hook is behind g_sd_state and the key, once per pipeline",
+      "if (g_sd_state > 0 && g_pso_first && c->u.pso && !c->u.pso->first_used) mad_pso_first(c->u.pso);" in SRC and
+      "if (InterlockedExchange(&p->first_used, 1)) return;" in SRC and
+      SRC.count("p->born_present = g_presents_now; p->born_tick = GetTickCount();") == 2)
+check("present-min-ms: the sleep is inside Present's sync-diagnostics block",
+      pr.index("if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics") < pr.index("if (g_present_min_ms) {") <
+      pr.index("drawable = MetalLayer_nextDrawable(s->layer);"))
 check("both sampler paths (static and CreateSampler) go through mad_sampler_info",
       SRC.count("mad_sampler_info(&si, ") == 3)
 

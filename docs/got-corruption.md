@@ -42,6 +42,10 @@
   elendi. Bölüm 10: titreyen çimen = GPU elemesi kareden kareye farklı karar
   veriyor; bulunan gerçek hata (MIN/MAX örnekleyiciler), yeni `ind-count`
   tanısı ve 2 açılışlık ana menü planı.
+* **Güncelleme 4 (10-02, build 327):** `sampler-reduction = 3` de
+  değiştirmedi; DIP'ler oyunun 116 karelik kendi döngüsü. "Yavaşken temiz"
+  gözlemine göre bölüm 11: üç olası sebep ve bunları iki açılışta ayıran
+  yeni anahtarlar (`present-min-ms`, `gpu-sync`, `pso-first-use`).
 
 ## 1. Evidence used
 
@@ -1173,3 +1177,190 @@ before making it a default after a GoW / GTA check).
   `sampler-reduction = 1`, `ind-count = 6000`. Open: if ind-count stays flat
   while the grass flickers, the TAA / stipple resolve
   (`ps_SetMaterialMoving_techStipple`) is next.
+
+## 11. Round 4: clean while the menu is slow, flickering once it is fast (builds 321 / 327, 2026-10-02 10:47-11:52)
+
+### 11.0 Özet (sahibi için, Türkçe)
+
+* `sampler-reduction = 3` (Metal'in gerçek MIN indirgemesi, build 327'de
+  çalıştığı logda görülüyor) hiçbir şeyi değiştirmedi. Yani MIN örnekleyici
+  gerçek bir eşleme hatasıydı ama çimen titremesinin sebebi değil.
+* M1/build 327 loglarındaki `DIP` satırlarına baktım: iki compute geçişi
+  (`3edb3d28...` ve `cef43c95...`) **tam 116 karede bir aynı sırayla**
+  sallanıyor (26->3->29, 66->29->37, 72->37->70, ...). Kare hızından bağımsız:
+  6,7 FPS'lik yavaş bölümde de aynı. Bu, oyunun kendi döngüsel güncellemesi
+  (her karede dünyanın bir dilimini yenilemesi gibi). Senin "yavaşken bozulma
+  yok" gözleminle birlikte düşününce **bu sallanma bozulmanın sebebi değil**.
+  Çimen çizimlerinin örnek sayılarında 888. kareden sonra hiç DIP yok.
+  (Not: tek tek birkaç çimen öbeği binlerce örnek içinde %20 eşiğini
+  aşmayacağı için bu ölçüm onu göremez.)
+* Yeni gözlemin çok değerli. Logda o yavaş saniyeler tam olarak şu: oyun ana
+  menü için **~5000 yeni grafik boru hattını (pipeline) arka planda
+  oluşturuyor** (`ps_SetMaterialMoving_techStipple` 926 kez,
+  `ps_SetMaterial_techDefault` 729 kez, vs.). Bu sırada çizim iş parçacığı
+  kare başına 138 ms bekliyor. Yavaş bölüm ile hızlı bölüm arasında üç fark
+  var ve her biri ayrı bir sebep olabilir:
+  1. **CPU ile GPU'nun üst üste çalışması (overlap):** yavaşken GPU her işi
+     bir sonraki gelmeden bitiriyor. K2 (`fence-strict = 2`) kareler
+     arasındaki örtüşmeyi kaldırmıştı ama **kare içindeki** örtüşmeyi
+     kaldırmamıştı (oyun bir sonraki listeyi hazırlarken GPU bir öncekini
+     çalıştırıyor).
+  2. **Oyunun zamana bağlı davranışı:** 4-5 FPS'te oyun mantığı başka yol
+     izleyebilir (ör. TAA geçmişini sıfırlamak, hareket vektörlerini zamanla
+     ölçeklemek). Bu durumda bozulma bizim TAA/stipple tarafındaki bir hatanın
+     görünür hâli olur.
+  3. **Bazı geçişlerin ancak boru hatları bitince başlaması:** oyun hazır
+     olmayan boru hattının çizimini atlıyor olabilir. Bozan geçiş ancak
+     sonradan devreye giriyor olabilir.
+* Bu üçünü **iki açılışta** ayırabilen yeni anahtarlar ekledim (varsayılanda
+  hepsi kapalı):
+  - `gpu-sync = 1`: her ExecuteCommandLists, GPU o işi bitirene kadar
+    bekliyor. Hiç örtüşme kalmıyor; FPS düşer ama 4-5'e inmez.
+  - `present-min-ms = 200`: kareler arasına bekleme koyup oyunu yapay olarak
+    5 FPS'e indiriyor (derleme yükü olmadan).
+  - `pso-first-use = 1`: her boru hattının ilk kullanıldığı kareyi loga
+    yazıyor. Hız toparlandığında hangi geçişlerin ilk kez başladığını
+    gösterir.
+* Plan (11.4): **R1** `present-min-ms = 200`, **R2** `gpu-sync = 1`;
+  ikisinde de `pso-first-use = 1`. (K2'de oyun neredeyse her gönderimden
+  sonra Signal çağırdığı için örtüşme zaten büyük ölçüde kapalıydı; R2 bunu
+  tamamen kapatıp kesinleştiriyor.) Her biri ana menüde, kamera sabit, **en az 60 sn
+  ekran kaydıyla** (son kayıt yalnız 3,4 sn'ydi). Kayda ilk saniyeler de
+  girsin, yavaş bölüm dahil.
+
+### 11.1 What the M1 / sampler-reduction=3 logs say
+
+* got1047.log (build 321, M1) and got1151.log (build 327, `sampler-reduction =
+  3`, `ind-count = 6000`): the two swinging dispatches follow a fixed cycle
+  with a **period of exactly 116 frames**, whatever the frame rate. In
+  got1151, `26 -> 3 -> 29` falls at frames 899, 1015, 1131, 1247, 1363,
+  1479, 1595, and the other steps (`66 -> 29 -> 37`, `72 -> 37 -> 70`,
+  `70 -> 37 -> 72`, `37 -> 29 -> 66`, `29 -> 3 -> 26`) repeat with the same
+  phase. The cycle runs through the 6.7 fps window (frames ~1006-1040: DIPs
+  at 1015, 1029). The owner sees no corruption there, so this is the game's
+  own time-sliced update (complementary counts: the two sum to ~72
+  threadgroups), not the bug. The one big event, frame 887 (`0 -> 7400 -> 3`
+  plus one-frame spikes of `vs_LowLod|ps_Deferred`, `vs_HighLod|ps_Deferred`,
+  `vs_Main|ps_DrawFromClipmapNoPomTriplanar`), is the menu scene's first
+  frame. No draw pipeline dips after it. Caveat: a few missing grass clumps
+  among thousands of instances stay under the 20 % threshold, so ind-count
+  cannot rule out a small per-frame culling difference.
+* The slow phase is PSO creation. From `pso time` lines: graphics pipelines go
+  6000 -> 10000 between ~frames 999 and 1050, and compute pipelines 241 -> 5067
+  between ~1050 and 1375. 926 `ps_SetMaterialMoving_techStipple`, 729
+  `ps_SetMaterial_techDefault` and 278 `ps_SetMaterialMoving_techMoving`
+  conversions fall inside the 6.7 fps window. The render thread spends 138 ms
+  per frame in ExecuteCommandLists there (CPU contention with the game's PSO
+  threads; nothing is skipped by us: lazy pipelines build synchronously,
+  `pso-parallel` builds before replay).
+* Other checks: occlusion queries are unused (`0 begun`); timestamp queries
+  (heap type 1, 4 queries) resolve to zero as always; no `unimplemented`
+  line; `async-submit = 0` (replay on the calling thread).
+* Web: native PC reports exist of distant white long grass flickering /
+  popping since release (Steam forums), and vkd3d-proton #3244 (GoT DC,
+  sunlight through tree trunks, flickering, suspected barrier race). Neither
+  matches "missing in one frame, present in the next at a static camera",
+  and nothing frame-rate-dependent is reported there.
+
+### 11.2 Ranked (with this evidence)
+
+1. **(c) Game-time-dependent path + our temporal (TAA / stipple) bug.** The
+   most plausible reading of "clean only at 4-5 fps": the game skips or resets
+   its history at long frame times (common: TAA reset on hitches / large dt),
+   and what goes wrong is in the passes that read the previous frame (TAA
+   history, motion vectors of wind-animated grass, stipple resolve).
+2. **(a) CPU/GPU overlap**, now unlikely. K1's queue-trace shows the render
+   thread calling Signal after almost every ExecuteCommandLists (110 ECL, 110
+   Signal on the direct queue; the copy thread does the same). So K2's
+   fence-strict 2 (synchronous Signal with a full GPU drain) already drained
+   the GPU after nearly every submission, and the grass still flickered. What
+   K2 left open: lists submitted without a Signal after them, batches flushed
+   at 48 lists, and the present's own command buffer. `gpu-sync = 1` closes
+   all of it. upload-guard does not cover bindless data (the
+   999000-descriptor heap's unbounded ranges are not tracked) or anything
+   outside UPLOAD heaps, so it cannot rule this out by itself.
+3. **(b) A pass that starts only once its pipelines exist.** pso-first-use
+   names what starts when the frame rate recovers.
+
+### 11.3 What changed (code)
+
+`madeira-d3d12/src/pe/madeira_d3d12.c`, SYNC DIAGNOSTICS family. All off
+unless set; each one alone sets `g_sd_state`. Log line at start:
+`[sync-diag] madeira-bcd DIAGNOSTIC: gpu-sync=G pso-first-use=P
+present-min-ms=M`. Every 300 presents:
+`[sync-diag] present #N: gpu-sync X ExecuteCommandLists waited for the GPU;
+pso-first-use Y pipelines first bound; present-min-ms Z presents slept`.
+
+* `gpu-sync = 1`: at the end of every ExecuteCommandLists replay (after the
+  queue lock is released), the open batch is committed and the CPU waits until
+  the GPU has finished everything committed (`mad_queue_flush` +
+  `mad_strict_drain`). No CPU/GPU overlap at all, on any queue.
+* `present-min-ms = N` (0..2000): Present (in its sync-diagnostics block, after
+  the frame-latency wait) sleeps until N ms have passed since the previous
+  present.
+* `pso-first-use = 1`: pipelines remember the present they were created at;
+  the first time a replayed list binds one, log
+  `[pso-first] present #N: graphics vs 'X' ps 'Y' first bound (created at
+  present #M, T ms ago)` or `compute cs_main/<hash> ...` (30000 lines max).
+
+Host test `tests/host/check-got-diagnostics.py` (PASS, ASan/UBSan clean):
+defaults, hook positions (gpu-sync after the queue lock, the sleep before
+nextDrawable, the replay hook behind the key and once per pipeline), and the
+harness checks each key alone, clamps and the report line. Catalog
+regenerated (3 keys: IPA). arm64ec syntax check and link OK. God of War
+(D3D11/DXMT) never reaches this file.
+
+### 11.4 Device plan (next IPA) -- main menu, at least 60 s recording
+
+Each block is one launch. Start the screen recording **before** the menu
+appears so the slow first seconds are in it. Keep the camera still for 60 s
+after the frame rate recovers. Send the log and the recording; then delete the
+block's lines (keep `dxil-tess = 0`).
+
+**Blok R1 -- yapay 5 FPS (örtüşme var, derleme yok):**
+```
+dxil-tess = 0
+present-min-ms = 200
+pso-first-use = 1
+```
+**Blok R2 -- hiç örtüşme yok:**
+```
+dxil-tess = 0
+gpu-sync = 1
+pso-first-use = 1
+```
+Read (the Metal HUD FPS tells whether the key took effect; R1 runs at ~5 fps,
+R2 lower than normal):
+
+| R2 (gpu-sync) | R1 (5 fps) | meaning | next |
+|---|---|---|---|
+| clean | flickers | (a) a CPU/GPU overlap hazard inside a frame | split gpu-sync (per queue / per Signal) and look at bindless / non-UPLOAD data |
+| flickers | clean | (c) the game behaves differently at long frame times; our bug is in the temporal path | CAP + `capture-ps` on the TAA / stipple pixel shaders; skip-ps-cycle over them |
+| clean | clean | ambiguous (R2 also slows the game): look at R2's FPS | if R2 ran > 15 fps, (a) |
+| flickers | flickers | (b) slow-phase specific: a pass that starts after the PSO burst | the `[pso-first]` lines at the present where the fps recovers name it; then skip-ps on them |
+
+### 11.5 Paragraph for HANDOFF (ready to paste)
+
+* **GoT grass flicker, round 4 (agent, 2026-10-02; docs/got-corruption.md
+  section 11).** `sampler-reduction = 3` (real Metal MIN reduction, active in
+  build 327) changed nothing. In got1047/got1151 the two swinging dispatches
+  (`cs_main/3edb3d28...`, `cef43c95...`) follow a fixed **116-frame cycle**
+  (frames 899, 1015, 1131, ... `26 -> 3 -> 29`), even at 6.7 fps where the
+  owner sees no corruption. That is the game's time-sliced update, not the bug.
+  No draw-pipeline dips after the menu's first frame (887). The owner's
+  slow-and-clean phase is the game creating ~5000 menu PSOs (graphics 6000 ->
+  10000, then compute 241 -> 5067; ECL 138 ms/frame). Three explanations
+  remain: (a) within-frame CPU/GPU overlap (fence-strict 2 only drained at
+  Signal/Present), (c) the game resets/skips its temporal path at long frame
+  times and the bug is in our TAA/stipple path, (b) a pass that starts only
+  after the PSO burst. **Added, OFF by default:** `gpu-sync = 1` (every ECL
+  commits and waits for the GPU), `present-min-ms = N` (Present sleeps to N ms
+  per frame), `pso-first-use = 1` (`[pso-first]` per pipeline at first bind,
+  with its creation present). Host tests PASS (ASan clean), arm64ec links,
+  catalog regenerated (IPA). **Device plan** (main menu, recording from before
+  the menu for 60 s+, `dxil-tess = 0` in each): R1 `present-min-ms = 200` +
+  `pso-first-use = 1`; R2 `gpu-sync = 1` + `pso-first-use = 1`. R2 clean =
+  overlap (a) (unlikely: K1's queue-trace shows a Signal after almost every
+  ECL, so K2 already drained nearly everything); R1 clean but R2 not =
+  game-time path (c); both flickering = (b), read the `[pso-first]` lines at
+  the recovery present.

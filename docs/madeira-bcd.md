@@ -524,7 +524,12 @@ the update pack, the game's options and starts the per-game session log.
   `DIP` / `SPIKE` lines when a pipeline's instances (draws) or threadgroups
   (dispatches) fall or jump for one frame against both neighbours;
   `capture-cs` also takes `name/hash-prefix` (one kernel when every kernel is
-  `cs_main`).
+  `cs_main`). Round 4 (section 11, clean while the menu runs at 4-5 fps):
+  `gpu-sync = 1` commits every ExecuteCommandLists' batch and waits for the
+  GPU (no CPU/GPU overlap at all); `present-min-ms = N` makes Present sleep
+  so frames are at least N ms apart; `pso-first-use = 1` logs each pipeline
+  the first time a list binds it, with the present it was created at
+  (`[pso-first]`).
 - D3D12 sampler reduction (`madeira_d3d12.c`, `mad_sampler_info`;
   docs/got-corruption.md section 10): Metal samplers have no MIN/MAX
   reduction, and the mapping took MAXIMUM filters (0x180 set) for COMPARISON

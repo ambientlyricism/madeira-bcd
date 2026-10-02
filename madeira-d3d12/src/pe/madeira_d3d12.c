@@ -832,6 +832,7 @@ struct mad_pso {
     int lazy;   /* madeira-bcd: plain render pipeline built at its first draw (mad_pso_realize) */
     int lazy_cs;   /* madeira-bcd: compute pipeline built at its first dispatch */
     UINT64 cs_hash; UINT cs_len;   /* madeira-bcd: FNV-1a of the CS bytecode, for GPU fault reports */
+    LONG first_used; LONG64 born_present; DWORD born_tick;   /* madeira-bcd: pso-first-use */
     SRWLOCK rlock;                 /* madeira-bcd: serialises this pipeline's lazy build (zero = SRWLOCK_INIT) */
     char vs_name[64], ps_name[64];                  /* ml879: for the draw dump */
     char blend[400];                                /* ml1106/ml1107: every RT's blend state for the draw dump */
@@ -3478,8 +3479,10 @@ static volatile LONG g_sd_strict_waits, g_sd_ug_noted, g_sd_ug_checked, g_sd_ug_
 static volatile LONG64 g_sd_snap_bytes;
 static int g_ic_frames;     /* ind-count: frames to log (0 = off) */
 static UINT64 g_ic_from;    /* ind-count-from: the first present logged */
+static int g_gpu_sync, g_pso_first; static UINT g_present_min_ms;   /* round 4: gpu-sync, pso-first-use, present-min-ms */
+static volatile LONG g_sd_gpu_syncs, g_sd_pso_first, g_sd_throttled;
 static void mad_sync_diag_load(void) {
-    long long fs, ug, ub, dg, cs, qt, ic, icf;
+    long long fs, ug, ub, dg, cs, qt, ic, icf, gs, pf, pm;
     if (g_sd_state >= 0) return;
     fs = mad_cfg_int_pe("fence-strict", 0);           /* diagnostic: 1 = Queue::Wait waits for the commit and batches finish in serial order; 2 = also synchronous Signal and Present waits for its frame (slow) */
     ug = mad_cfg_int_pe("upload-guard", 0);           /* diagnostic: 1 = log UPLOAD-heap data the game rewrites while the GPU still uses it; 2 = also compare with what the GPU read */
@@ -3489,6 +3492,9 @@ static void mad_sync_diag_load(void) {
     qt = mad_cfg_int_pe("queue-trace", 0);            /* diagnostic: log the first N ExecuteCommandLists / Signal / Wait calls (1 = 400) with thread, queue type and fence state */
     ic = mad_cfg_int_pe("ind-count", 0);              /* diagnostic: log N frames (1 = 3000) of per-pipeline ExecuteIndirect instance / threadgroup totals read back from the GPU; one-frame dips are flagged */
     icf = mad_cfg_int_pe("ind-count-from", 0);        /* ind-count: the first present logged */
+    gs = mad_cfg_int_pe("gpu-sync", 0);               /* diagnostic: every ExecuteCommandLists commits its batch and waits until the GPU has finished it (no CPU/GPU overlap at all; slow) */
+    pf = mad_cfg_int_pe("pso-first-use", 0);          /* diagnostic: log every pipeline the first time a command list binds it, with the present it was created at */
+    pm = mad_cfg_int_pe("present-min-ms", 0);         /* diagnostic: Present sleeps so that frames are at least N ms apart (200 = 5 fps), like the main menu's slow first seconds */
     g_fence_strict = fs >= 2 ? 2 : fs == 1 ? 1 : 0;
     g_upload_guard = ug >= 2 ? 2 : ug ? 1 : 0;
     g_ug_bytes = ub < 16 ? 16u : ub > 4096 ? 4096u : (UINT)ub;
@@ -3497,14 +3503,20 @@ static void mad_sync_diag_load(void) {
     g_qtrace = qt <= 0 ? 0 : qt == 1 ? 400 : qt > 100000 ? 100000 : (int)qt;
     g_ic_frames = ic <= 0 ? 0 : ic == 1 ? 3000 : ic > 1000000 ? 1000000 : (int)ic;
     g_ic_from = icf > 0 ? (UINT64)icf : 0;
+    g_gpu_sync = gs ? 1 : 0;
+    g_pso_first = pf ? 1 : 0;
+    g_present_min_ms = pm <= 0 ? 0u : pm > 2000 ? 2000u : (UINT)pm;
     if (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace)
         d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: fence-strict=%d upload-guard=%d (%u bytes a range) desc-guard=%d cbv-snapshot=%u bytes queue-trace=%d\n",
                   g_fence_strict, g_upload_guard, g_ug_bytes, g_desc_guard, g_cbv_snap, g_qtrace);
     if (g_ic_frames)
         d3d12_log("[ind-count] madeira-bcd DIAGNOSTIC: %d frames from present #%llu; every encoder with indirect commands gets a blit pass after it\n",
                   g_ic_frames, (unsigned long long)g_ic_from);
+    if (g_gpu_sync || g_pso_first || g_present_min_ms)
+        d3d12_log("[sync-diag] madeira-bcd DIAGNOSTIC: gpu-sync=%d pso-first-use=%d present-min-ms=%u\n", g_gpu_sync, g_pso_first, g_present_min_ms);
     MemoryBarrier();
-    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace || g_ic_frames) ? 1 : 0;
+    g_sd_state = (g_fence_strict || g_upload_guard || g_desc_guard || g_cbv_snap || g_qtrace || g_ic_frames ||
+                  g_gpu_sync || g_pso_first || g_present_min_ms) ? 1 : 0;
 }
 
 /* Tickets name a batch before it has a serial: the replay knows its open
@@ -4001,6 +4013,9 @@ static void mad_sd_report(UINT64 presents) {
               (long)g_sd_ug_noted, (long)g_sd_ug_checked, (long)g_sd_ug_changed, (long)g_sd_ug_changed_approx, (long)g_sd_ug_dropped,
               (long)g_sd_ug_gpu_copied, (long)g_sd_ug_gpu_diff, (long)g_sd_ug_tables, (long)g_sd_ug_desc_changed,
               (long)g_sd_dg_checked, (long)g_sd_dg_inflight, (long)g_sd_strict_waits, (long)g_sd_snaps, (long long)(g_sd_snap_bytes >> 20));
+    if (g_gpu_sync || g_pso_first || g_present_min_ms)
+        d3d12_log("[sync-diag] present #%llu: gpu-sync %ld ExecuteCommandLists waited for the GPU; pso-first-use %ld pipelines first bound; "
+                  "present-min-ms %ld presents slept\n", (unsigned long long)presents, (long)g_sd_gpu_syncs, (long)g_sd_pso_first, (long)g_sd_throttled);
 }
 /* fence-strict >= 1: a new batch command buffer (or the present's) starts
  * behind everything committed before it. */
@@ -6393,6 +6408,24 @@ static int mad_cs_match(const struct mad_pso *p, const char *want) {
     snprintf(hx, sizeof hx, "%016llx", (unsigned long long)p->cs_hash);
     return !strncmp(hx, slash + 1, strlen(slash + 1));
 }
+/* madeira-bcd: pso-first-use. Round 4: the main menu's grass is clean while
+ * the game creates its ~5000 menu pipelines (4-5 fps) and flickers as soon as
+ * it is done; which passes start only then? One line per pipeline, the first
+ * time a replayed list binds it. */
+static void mad_pso_first(struct mad_pso *p) {
+    LONG n;
+    if (InterlockedExchange(&p->first_used, 1)) return;
+    n = InterlockedIncrement(&g_sd_pso_first);
+    if (n > 30000) return;
+    if (p->is_compute)
+        d3d12_log("[pso-first] present #%lld: compute %s/%016llx first bound (created at present #%lld, %lu ms ago)%s\n",
+                  (long long)g_presents_now, p->vs_name, (unsigned long long)p->cs_hash, (long long)p->born_present,
+                  (unsigned long)(GetTickCount() - p->born_tick), n == 30000 ? " -- limit of 30000 lines reached" : "");
+    else
+        d3d12_log("[pso-first] present #%lld: graphics vs '%s' ps '%s' first bound (created at present #%lld, %lu ms ago)%s\n",
+                  (long long)g_presents_now, p->vs_name, p->ps_name, (long long)p->born_present,
+                  (unsigned long)(GetTickCount() - p->born_tick), n == 30000 ? " -- limit of 30000 lines reached" : "");
+}
 static int exec_tess_indirect_prep(struct mad_exec *e, const struct mad_cmd *c, UINT64 *out_off) {
     struct mad_device *d = e->q->device;
     struct wmtcmd_compute_setpso sp; struct wmtcmd_compute_setbuffer sb[2]; struct wmtcmd_compute_setbytes sby; struct wmtcmd_compute_dispatch dsp;
@@ -6615,7 +6648,9 @@ static void mad_exec_list(struct mad_queue *q, struct mad_list *l, obj_handle_t 
         e.cur = i;   /* ml1137 */
         if (g_capture_on) mad_capture_log_op(c);   /* madeira-bcd */
         switch (c->kind) {
-        case MC_PSO: if (c->u.pso && c->u.pso->is_compute) e.cpso = c->u.pso; else e.pso = c->u.pso; break;
+        case MC_PSO: if (c->u.pso && c->u.pso->is_compute) e.cpso = c->u.pso; else e.pso = c->u.pso;
+            if (g_sd_state > 0 && g_pso_first && c->u.pso && !c->u.pso->first_used) mad_pso_first(c->u.pso);   /* madeira-bcd: pso-first-use */
+            break;
         case MC_CROOTSIG: e.crs = c->u.rootsig; break;
         case MC_CROOT: if (c->u.root.index < MAD_ROOT_PARAM_MAX) e.croot[c->u.root.index] = c->u.root.value; break;
         case MC_CROOT_CONST:
@@ -6815,6 +6850,11 @@ static void mad_ecl_run(ID3D12CommandQueue *This, UINT count, ID3D12CommandList 
         if (q->open_lists >= 48) mad_queue_flush(q);   /* bound the batch */
     }
     if (ml1021_q) LeaveCriticalSection(&ml1021_q->submit_lock);   /* ml1021 */
+    if (g_sd_state > 0 && g_gpu_sync && q) {   /* madeira-bcd: gpu-sync -- this submission runs to completion before the game goes on */
+        mad_queue_flush(q);
+        mad_strict_drain(q->device);
+        InterlockedIncrement(&g_sd_gpu_syncs);
+    }
     /* madeira-bcd: CAP frame -- thumbnail and free what this submission captured
      * before the frame's captures can exceed the memory budget */
     if (g_capture_on && ml1021_q && g_cap_bytes >= (48ull << 20)) mad_capture_drain(ml1021_q->device, g_capture_frame, 0);
@@ -12636,6 +12676,7 @@ static HRESULT device_CreateGraphicsPipelineState_impl(ID3D12Device *This,
     p = calloc(1, sizeof *p);
     if (!p) return E_OUTOFMEMORY;
     p->vtbl = &g_pso_vtbl; p->refs = 1; p->iid = &IID_ID3D12PipelineState; p->name = "PipelineState";
+    p->born_present = g_presents_now; p->born_tick = GetTickCount();   /* madeira-bcd: pso-first-use */
     if (desc->HS.pShaderBytecode || desc->DS.pShaderBytecode) { p->has_tess = 1; InterlockedIncrement(&g_tess_psos); }   /* ml1050 */
 
     {
@@ -13143,6 +13184,7 @@ static HRESULT device_CreateComputePipelineState_impl(ID3D12Device *This,
     p = calloc(1, sizeof *p);
     if (!p) return E_OUTOFMEMORY;
     p->vtbl = &g_pso_vtbl; p->refs = 1; p->iid = &IID_ID3D12PipelineState; p->name = "ComputePipelineState";
+    p->born_present = g_presents_now; p->born_tick = GetTickCount();   /* madeira-bcd: pso-first-use */
     p->is_compute = 1;
     {   /* madeira-bcd: identify the bytecode for GPU fault reports */
         const unsigned char *b = desc->CS.pShaderBytecode; UINT64 hh = 0xcbf29ce484222325ull; SIZE_T q;
@@ -15250,6 +15292,11 @@ static void mad_present_run(struct mad_swapchain *s, UINT idx) {
     if (g_sd_state > 0) {   /* madeira-bcd: sync diagnostics -- a game that paces by Present reuses frame N-lat's data as soon as this returns */
         if (g_upload_guard) mad_ug_verify(s->queue->device, mad_gpu_completed(s->queue->device));
         if (g_ic_frames) mad_ic_collect(s->queue->device);   /* ind-count: sum what the GPU has finished */
+        if (g_present_min_ms) {   /* present-min-ms: frames at least N ms apart */
+            static DWORD last; DWORD now = GetTickCount();
+            if (last && now - last < g_present_min_ms) { Sleep(g_present_min_ms - (now - last)); InterlockedIncrement(&g_sd_throttled); }
+            last = GetTickCount();
+        }
         if ((s->presents % 300) == 299) mad_sd_report(s->presents + 1);
     }
     { LONG64 td = mad_qpc();   /* ml1128 */
