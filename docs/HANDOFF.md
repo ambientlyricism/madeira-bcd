@@ -2701,6 +2701,31 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     pseudo-paths, the support URL tried as a file by ShellExecute, dxmt.conf,
     nvngx_update.exe). The screen is the Social Club emulator's decision;
     per scope nothing further on it.
+  - **GTA broad review of the build 332 log (owner asked to rule out every
+    non-emulator cause, 2026-10-02).** Checked against the working Proton
+    run (Heroic/Epic copy, PROTONLOG): (1) crashes: none (only 4
+    OutputDebugString 0x40010006 and one RPC_S_SERVER_UNAVAILABLE 0x6ba from
+    sechost's device-notify thread because `\pipe\wine_plugplay` does not
+    exist -- no plugplay service; known gap, also hits other games' hotplug
+    notifications); (2) fixmes: common Wine ones (mmdevapi, crypt store
+    release, BCryptGenRandom, d3dkmt QUERYREGISTRY 48, wbemprox blanket);
+    the `CryptDecodeObjectEx Unsupported decoder 1.3.6.1.4.1.311.2.1.4` lines
+    are Streamline verifying its plugins' Authenticode signatures, and crypt32
+    then falls back to wintrust's CryptDllDecodeObject registration (#2003,
+    present in the prefix) -- normal Wine behaviour; (3) DirectStorage:
+    DSTORAGE.dll loads, dstoragecore.dll never does -- identical to Proton;
+    (4) file I/O: all game archives open, misses are the expected loose-file
+    probes; (5) missing DLLs vs Proton: msasn1, wldp (Streamline's signature
+    path), hnetcfg, msctf -- **added to tools/build-wine-extra-dlls.sh this
+    commit (plus xmllite, hnetcfg's delay import)**; drvstore/devobj are not
+    in Wine and Proton does not load them either; (6) GTA runs with avx=0
+    (FEX AVX off); Rockstar's minimum CPU is Haswell (AVX2) but no CPU error
+    appears -- keep in mind if a later crash points at AVX code. **The one
+    structural difference left:** Proton loads the real Social Club from
+    `C:\Program Files\Rockstar Games\Social Club` (socialclub.dll,
+    chrome_elf, libcef, SocialClubD3D12Renderer) and BattlEye; this copy
+    loads socialclub.dll from the game folder. Conclusion: no Madeira-side
+    cause found for the "incomplete installation" screen.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
