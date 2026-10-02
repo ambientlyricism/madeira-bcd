@@ -163,6 +163,13 @@ struct ios_jit_mapping {
                          * falling back to the NULL-owner (parent) entry. */
     unsigned short machine_cached;  /* ml349: PE machine word, read fault-safely once */
     unsigned char  machine_valid;   /* 0 = machine_cached not yet populated */
+    void *map_peb;      /* madeira-bcd: the PEB of the pseudo-process whose
+                         * thread mapped the image (ios_jit_current_peb() at
+                         * registration; NULL when unknown). A NULL-owner copy
+                         * is still used by ONE process -- the one that mapped
+                         * it -- and a pointer into a per-process image (ntdll)
+                         * stored in it must be translated for that process.
+                         * See ios_jit_patch_stale_pointer. */
 };
 static struct ios_jit_mapping ios_jit_mappings[IOS_JIT_MAX_MAPPINGS];
 static int ios_jit_mapping_count = 0;
@@ -3050,6 +3057,7 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
         ios_jit_mappings[slot].reloc_rva = 0;
         ios_jit_mappings[slot].reloc_size = 0;
         ios_jit_mappings[slot].owner_peb = NULL;
+        ios_jit_mappings[slot].map_peb = ios_jit_current_peb();
         ios_jit_mappings[slot].machine_cached = 0;   /* ml349: slot reuse invalidates memo */
         ios_jit_mappings[slot].machine_valid = 0;
         __sync_synchronize();
@@ -4148,24 +4156,87 @@ static int ios_collect_iat_ranges( const unsigned char *img, size_t img_size,
  * registered module copies (never the FEX CodeBuffer tail). Writes go to
  * the RW alias; concurrent readers that still load the old value just
  * take one more fault-redirect, which is benign. */
+/* madeira-bcd: WHICH PROCESS'S TRANSLATION A HEALED SLOT GETS.
+ *
+ * The heal used the scanned range's owner_peb, which is set only for the
+ * per-process ntdll copies. Every other copy -- a child's own emulator
+ * (libarm64ecfex.dll), its exe, its DLLs -- has owner NULL, so a stale ntdll
+ * PE VA found in it was rewritten to the SESSION's ntdll copy. GTA V Enhanced,
+ * build 327 (PlayGTAV.exe 2026-10-02 11:49:21 / 11:50:19): the child's
+ * KiUserExceptionDispatcher (PE 0x71ffd31508, the address FEX jumps to for
+ * every x64 syscall and exception) crossed 256 exec faults, `[stale-heal]
+ * 0x71ffd31508 -> 0x148441508, rewrote 2 slot(s)` (11:50:19 line 20305), one
+ * of them the child emulator's own copy of it. Its next syscall then ran the
+ * PARENT's ntdll: dispatch_syscall handed the child's emulator the parent's
+ * invoke_arm64ec_syscall (0x148467050), which it cannot map back -> NoExec ->
+ * 0xc0000005 (line 20421).
+ *
+ * A NULL-owner copy is used by the process that mapped it, so translate for
+ * that process (map_peb). A range whose process is unknown is left alone when
+ * the target image has per-process copies: the Mach exec-fault redirect is
+ * owner-aware and keeps serving it (one fault per call) instead of a heal
+ * that may send it into another process's copy. For a main process nothing
+ * changes: it owns no copy, so its translation is the NULL-owner one as
+ * before. MADEIRA_HEAL_OWNER=0 restores the old owner_peb-only rule. */
+static int ios_heal_owner_aware( void )
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        /* Default on. 0 makes the stale-pointer heal translate a slot by the
+         * owner of the copy it sits in only (the old rule): a child process's
+         * pointers into ntdll can then be healed into the parent's ntdll copy
+         * (GTA V Enhanced, docs/gta5-child-crash.md section 9). */
+        const char *e = getenv( "MADEIRA_HEAL_OWNER" );
+        cached = !(e && e[0] == '0' && !e[1]);
+    }
+    return cached;
+}
+
+/* Does any registered copy of the image holding `va` belong to one process? */
+static int ios_va_has_owned_copy( uintptr_t va )
+{
+    int i;
+    for (i = 0; i < ios_jit_mapping_count; i++)
+    {
+        uintptr_t b = (uintptr_t)ios_jit_mappings[i].pe_base;
+        if (b && ios_jit_mappings[i].owner_peb && va >= b && va < b + ios_jit_mappings[i].size) return 1;
+    }
+    return 0;
+}
+
+/* The process a slot in mapping i belongs to, for the heal's translation.
+ * Returns 0 when the slot must not be healed (process unknown, target image
+ * copied per process). */
+static int ios_heal_range_owner( int i, uintptr_t stale_va, void **owner )
+{
+    *owner = ios_jit_mappings[i].owner_peb;
+    if (*owner || !ios_heal_owner_aware()) return 1;
+    *owner = ios_jit_mappings[i].map_peb;
+    if (*owner) return 1;
+    return !ios_va_has_owned_copy( stale_va );
+}
+
 int ios_jit_patch_stale_pointer(unsigned long long stale_va)
 {
-    int i, patched = 0;
+    int i, patched = 0, skipped = 0;
     void *target = ios_jit_translate_addr_for_owner((void *)(uintptr_t)stale_va, NULL);
     if (!ios_jit_rw_base_global || !ios_jit_rx_base_global) return 0;
 
     for (i = 0; i < ios_jit_mapping_count; i++)
     {
-        /* Heal each pool range with ITS OWNER's translation: a stale
-         * ntdll PE-VA inside a child-owned copy must point at the child's
-         * copy, not the parent's. */
-        void *range_target = ios_jit_translate_addr_for_owner(
-            (void *)(uintptr_t)stale_va, ios_jit_mappings[i].owner_peb);
+        /* Heal each pool range with ITS PROCESS's translation: a stale
+         * ntdll PE-VA inside a child's copy (owned, or mapped by the child)
+         * must point at the child's copy, not the parent's. */
+        void *range_owner, *range_target;
         uintptr_t pool_off = (uintptr_t)ios_jit_mappings[i].jit_base
                            - (uintptr_t)ios_jit_rx_base_global;
         unsigned char *rw_img = (unsigned char *)ios_jit_rw_base_global + pool_off;
         struct ios_iat_range ranges[64];
         int nr, r;
+        if (!ios_jit_mappings[i].pe_base || !ios_jit_mappings[i].size) continue;
+        if (!ios_heal_range_owner( i, (uintptr_t)stale_va, &range_owner )) { skipped++; continue; }
+        range_target = ios_jit_translate_addr_for_owner( (void *)(uintptr_t)stale_va, range_owner );
         if (range_target == (void *)(uintptr_t)stale_va) continue;
         nr = ios_collect_iat_ranges(rw_img, ios_jit_mappings[i].size, ranges, 64);
         for (r = 0; r < nr; r++)
@@ -4202,8 +4273,7 @@ int ios_jit_patch_stale_pointer(unsigned long long stale_va)
     {
         for (i = 0; i < ios_jit_mapping_count; i++)
         {
-            void *range_target = ios_jit_translate_addr_for_owner(
-                (void *)(uintptr_t)stale_va, ios_jit_mappings[i].owner_peb);
+            void *range_owner, *range_target;
             uintptr_t pool_off = (uintptr_t)ios_jit_mappings[i].jit_base
                                - (uintptr_t)ios_jit_rx_base_global;
             unsigned char *rw_img = (unsigned char *)ios_jit_rw_base_global + pool_off;
@@ -4211,6 +4281,11 @@ int ios_jit_patch_stale_pointer(unsigned long long stale_va)
             size_t tx_end   = tx_start + ios_jit_mappings[i].text_size;
             uint64_t *p   = (uint64_t *)rw_img;
             uint64_t *end = (uint64_t *)(rw_img + (ios_jit_mappings[i].size & ~(size_t)7));
+            int here = 0;
+            static int range_lines;
+            if (!ios_jit_mappings[i].pe_base || !ios_jit_mappings[i].size) continue;
+            if (!ios_heal_range_owner( i, (uintptr_t)stale_va, &range_owner )) continue;
+            range_target = ios_jit_translate_addr_for_owner( (void *)(uintptr_t)stale_va, range_owner );
             if (range_target == (void *)(uintptr_t)stale_va) continue;
             for (; p < end; p++)
             {
@@ -4220,7 +4295,17 @@ int ios_jit_patch_stale_pointer(unsigned long long stale_va)
                 {
                     *p = (uint64_t)(uintptr_t)range_target;
                     patched++;
+                    here++;
                 }
+            }
+            /* madeira-bcd: name the copy and the process each rewrite was made for */
+            if (here && range_lines < 32)
+            {
+                range_lines++;
+                fprintf(stderr, "[stale-heal]   %d slot(s) in the copy of %p (%s) -> %p for peb=%p (owner=%p mapper=%p)\n",
+                        here, ios_jit_mappings[i].pe_base,
+                        ios_pe_module_name( ios_jit_mappings[i].pe_base, ios_jit_mappings[i].size ),
+                        range_target, range_owner, ios_jit_mappings[i].owner_peb, ios_jit_mappings[i].map_peb);
             }
         }
         if (patched)
@@ -4230,8 +4315,12 @@ int ios_jit_patch_stale_pointer(unsigned long long stale_va)
     /* fprintf, not ERR — the perf WINEDEBUG default mutes err+virtual and
      * this MUST stay visible (silent healing hid the 2026-07-04 boot
      * breakage). */
-    fprintf(stderr, "[stale-heal] 0x%llx -> %p, rewrote %d slot(s)\n",
-            stale_va, target, patched);
+    fprintf(stderr, "[stale-heal] 0x%llx -> %p, rewrote %d slot(s)%s\n",
+            stale_va, target, patched,
+            ios_heal_owner_aware() ? " (each copy translated for the process that maps it)" : "");
+    if (skipped)
+        fprintf(stderr, "[stale-heal] 0x%llx: %d cop(ies) of unknown process left to the owner-aware "
+                "fault redirect (the target image has per-process copies)\n", stale_va, skipped);
     return patched;
 }
 
@@ -4867,25 +4956,37 @@ int ios_patch_execreq_leave_current( const void *pe_addr )
 }
 
 /* madeira-bcd: which PE section of a pool-copied image holds `va` (a NoExec
- * target, a protect request)? Lock-free like the other fault-path diagnostics:
- * reads the mapping table and the image's own headers. Writes
- * "section #N 'name' rva+size chars" into buf and the image base into *img_base;
+ * target, a protect request)? `va` may be a PE address or an address inside a
+ * module's pool copy; for a pool address the text names the copy, its owner
+ * and the process that mapped it (build 327: the child died in the PARENT's
+ * ntdll copy, which a PE-only lookup could not name). Lock-free like the other
+ * fault-path diagnostics: reads the mapping table and the image's own headers.
+ * Writes the description into buf and the image's PE base into *img_base;
  * returns 0 when no pool-copied image covers va. */
 int ios_image_section_describe( unsigned long long va, char *buf, size_t len, unsigned long long *img_base )
 {
-    int i;
+    int i, pass;
 
+    for (pass = 0; pass < 2; pass++)
     for (i = 0; i < ios_jit_mapping_count; i++)
     {
         const unsigned char *pe = ios_jit_mappings[i].pe_base, *b = NULL;
+        const unsigned char *in = pass ? (const unsigned char *)ios_jit_mappings[i].jit_base : pe;
         size_t sz = ios_jit_mappings[i].size;
         uint32_t e_lfanew = 0, nsec, optsz, s, off;
         const unsigned char *sh;
+        char where[112];
         int k;
 
-        if (!pe || sz < 0x1000 || va < (uintptr_t)pe || va >= (uintptr_t)pe + sz) continue;
+        if (!pe || !in || sz < 0x1000 || va < (uintptr_t)in || va >= (uintptr_t)in + sz) continue;
         if (img_base) *img_base = (uintptr_t)pe;
-        off = (uint32_t)(va - (uintptr_t)pe);
+        off = (uint32_t)(va - (uintptr_t)in);
+        if (pass)
+            snprintf( where, sizeof(where), "POOL copy %p (owner=%p mapper=%p) of %p, rva %#x, ",
+                      ios_jit_mappings[i].jit_base, ios_jit_mappings[i].owner_peb,
+                      ios_jit_mappings[i].map_peb, (const void *)pe, off );
+        else
+            snprintf( where, sizeof(where), "rva %#x, ", off );
         /* The pool copy's headers first: they were copied when the image was
          * mapped, before a protector could wipe the live ones. */
         for (k = 0; k < 2; k++)
@@ -4897,7 +4998,7 @@ int ios_image_section_describe( unsigned long long va, char *buf, size_t len, un
         }
         if (k == 2)
         {
-            snprintf( buf, len, "(image headers unreadable, rva %#x)", off );
+            snprintf( buf, len, "%s(image headers unreadable, rva %#x)", where, off );
             return 1;
         }
         nsec = *(const uint16_t *)(b + e_lfanew + 6);
@@ -4914,12 +5015,12 @@ int ios_image_section_describe( unsigned long long va, char *buf, size_t len, un
             memcpy( &raw, sh + 40 * s + 16, 4 ); memcpy( &ch, sh + 40 * s + 36, 4 );
             if (!vs) vs = raw;
             if (off < sva || off - sva >= ((vs + 0xfffu) & ~0xfffu)) continue;
-            snprintf( buf, len, "section #%u '%s' rva %#x+%#x chars %#x (%s%s%s%s)", s, name, sva, vs, ch,
+            snprintf( buf, len, "%ssection #%u '%s' rva %#x+%#x chars %#x (%s%s%s%s)", where, s, name, sva, vs, ch,
                       (ch & 0x40000000u) ? "R" : "-", (ch & 0x80000000u) ? "W" : "-",
                       (ch & 0x20000000u) ? "X" : "-", (ch & 0x00000020u) ? " CODE" : "" );
             return 1;
         }
-        snprintf( buf, len, "outside every section (rva %#x, %u sections)", off, nsec );
+        snprintf( buf, len, "%soutside every section (rva %#x, %u sections)", where, off, nsec );
         return 1;
     }
     return 0;
@@ -13875,6 +13976,7 @@ int ios_jit_copy_module_for_child(void *module_addr, void *child_peb)
         ios_jit_mappings[slot].reloc_rva = m->reloc_rva;
         ios_jit_mappings[slot].reloc_size = m->reloc_size;
         ios_jit_mappings[slot].owner_peb = child_peb;
+        ios_jit_mappings[slot].map_peb = child_peb;
         __sync_synchronize();
         ios_jit_mappings[slot].pe_base = m->pe_base;
         if (slot == ios_jit_mapping_count) ios_jit_mapping_count++;
@@ -23837,15 +23939,15 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
 
 #ifdef WINE_IOS
     /* madeira-bcd: [prot-img] -- protection changes of 64 KB or more on the
-     * process's own main image, with the section they start in and the
-     * thread's InSyscallCallback. GTA V Enhanced died executing
-     * GTA5_Enhanced.exe+0x509a144, outside the two sections the emulator knows
-     * as executable; the PE wrapper's [exec-req] probe logs only while that
-     * flag is clear, so a request made while it was left set (see
-     * ios_patch_execreq_leave) left no trace. insc=1 here means the PE wrapper
-     * did NOT tell the emulator about this change (unless the emulator made the
-     * call itself, which it does for single pages, below this size). First 48
-     * per session. docs/gta5-child-crash.md section 8. */
+     * process's own main image, with the section they start in. GTA V Enhanced
+     * died executing GTA5_Enhanced.exe+0x509a144, in sections the emulator was
+     * never told were made executable. Whether the emulator WAS told cannot be
+     * read here: the PE wrapper enters this syscall with InSyscallCallback set
+     * on the notified path too (enter_syscall_callback() comes first), so the
+     * flag is 1 either way (build 327: every line said insc=1, which meant
+     * nothing, so it is gone). The answer is the PE side's [exec-req] line and
+     * FEX's "Add SMC interval" after it. First 48 per session.
+     * docs/gta5-child-crash.md sections 8-9. */
     {
         static int prot_img_n;
         PEB *cur_peb = NtCurrentTeb() ? NtCurrentTeb()->Peb : NULL;
@@ -23855,17 +23957,15 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         {
             extern int ios_image_section_describe( unsigned long long va, char *buf, size_t len,
                                                    unsigned long long *img_base );
-            CHPE_V2_CPU_AREA_INFO *area = NtCurrentTeb()->ChpeV2CpuAreaInfo;
             char sec[160];
 
             prot_img_n++;
             if (!ios_image_section_describe( (uintptr_t)base, sec, sizeof(sec), NULL ))
                 snprintf( sec, sizeof(sec), "(no pool copy)" );
-            dprintf( 2, "[prot-img] #%d tid=%04x %p+%#lx (rva %#lx) new_prot=%#x old=%#x status=%#x insc=%d | %s\n",
+            dprintf( 2, "[prot-img] #%d tid=%04x %p+%#lx (rva %#lx) new_prot=%#x old=%#x status=%#x | %s\n",
                      prot_img_n, (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread, base,
                      (unsigned long)size, (unsigned long)((char *)base - (char *)view->base),
-                     (unsigned)new_prot, status ? 0u : (unsigned)old, status,
-                     area ? (int)area->InSyscallCallback : -1, sec );
+                     (unsigned)new_prot, status ? 0u : (unsigned)old, status, sec );
         }
     }
 #endif

@@ -9605,8 +9605,10 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                         if (rip_sec_n < 8 && ios_image_section_describe( cs[0], rsec, sizeof(rsec), &ib ))
                         {
                             rip_sec_n++;
-                            ERR("  [guest-rip-sec] rip=%p = image %p+%#llx, %s, vprot=%#x\n",
-                                (void*)cs[0], (void*)ib, (unsigned long long)(cs[0] - ib), rsec,
+                            /* vprot is Wine's view of the address itself: meaningful
+                             * for a PE address, 0 for a pool copy (not Wine-managed). */
+                            ERR("  [guest-rip-sec] rip=%p in image %p: %s, vprot=%#x\n",
+                                (void*)cs[0], (void*)ib, rsec,
                                 (unsigned)ios_reclaim_page_vprot( cs[0] ));
                         }
                     }

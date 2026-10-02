@@ -620,3 +620,156 @@ Read, in order:
 3. If it no longer dies there: run once more WITHOUT the line; a return of the
    NoExec proves the cause, and the `[prot-img]` line for 0x144fac000.. (or
    nearby) will show `insc=1`.
+
+## 9. Build 327: the leak fix works; the child then dies in the PARENT's ntdll
+
+> **Türkçe özet:** `env.MADEIRA_EXECREQ_LEAVE = 1` işe yaradı: oyunun koruma
+> katmanı TLS geri çağrısında artık TÜM bölümleri (.pdata, .tls, .rsrc,
+> .reloc, ikinci .text ve 0x14509a144'ü içeren küçük bölüm) çalıştırılabilir
+> yapıyor ve emülatör hepsini öğreniyor; 321'deki 0x14509a144 çöküşü yok
+> oldu (bölüm 8'deki teşhis doğrulandı). Oyun bu yüzden farklı bir yoldan
+> ilerliyor ve kendini değiştiren kod çok daha sık tuzağa düşüyor; her
+> sistem çağrısı ve istisna ntdll'in KiUserExceptionDispatcher adresinden
+> geçiyor. Bu adres 256 kez hata verince Madeira'nın "bayat işaretçi onarıcısı"
+> (stale-heal) işaretçiyi havuz kopyasıyla değiştiriyor. Hata burada: çocuk
+> sürecin emülatöründeki işaretçi, çocuğun değil ANA sürecin (PlayGTAV) ntdll
+> kopyasına çevrildi. Sonraki sistem çağrısı ana sürecin ntdll'inde koştu ve
+> çocuğun emülatörünün tanımadığı bir adrese (0x148467050) atladı → çöküş.
+> Bu, düzeltmenin yeni ortaya çıkardığı eski bir hata (her çocuk süreçte
+> yeterince istisna olunca olurdu). Düzeltme: her havuz kopyası, onu eşleyen
+> sürecin adına çevriliyor (varsayılan açık; ana süreçler için hiçbir şey
+> değişmiyor; eski kural `env.MADEIRA_HEAL_OWNER = 0`). `[prot-img]`
+> satırlarındaki `insc=1` anlamsızdı (bayrak bu noktada her zaman 1) ve
+> kaldırıldı. Test: `env.MADEIRA_EXECREQ_LEAVE = 1` satırı kalsın, başka satır
+> gerekmiyor.
+
+Logs: PlayGTAV.exe 2026-10-02 11:49:21 and 11:50:19, build 327, both with
+`env.MADEIRA_EXECREQ_LEAVE = 1` (plus MADEIRA_DXGI_SRC, MADEIRA_GUEST_LOG=all,
+MADEIRA_KMT_ADAPTER, MADEIRA_PAD_MODE=hid). Line numbers are 11:50:19's
+unless marked (11:49:21 as "1149:").
+
+### 9.1 Section 8 confirmed
+
+`[execreq-leave] ... now clears` for the session copy (353) and the child copy
+(1665). The TLS callback's section pass on thread 002c is now complete and
+every request reaches the child's emulator (`[exec-req]` #31-#45, 3317-3359,
+each followed by `Add SMC interval`): header, .text, .rdata, .data, **.pdata
+0x144FAC000**, 0x145081000, 0x145082000, .tls, 0x145099000, **0x14509A000**
+(`Add SMC interval: 14509A000 - 14509B000`, the 4 KB section holding the old
+target 0x14509a144), .rsrc, .reloc, 0x14511B000, 0x14511C000 and the
+protector's .text 0x145123000. In build 321 the requests after .data (#20)
+were the ones lost to the leaked flag. The NoExec at 0x14509a144 does not
+occur any more.
+
+The section table, from `[prot-img]`: .text rva 0x1000, .rdata 0x247b000,
+.data 0x286a000, .pdata 0x4fac000+0xd4400, .tls 0x5083000+0x15e00, .rsrc
+0x509b000, .reloc 0x50ca000, #13 .text 0x5123000+0xa5e000; 0x509a144 lies in
+one of the small sections between .tls and .rsrc (#7/#8, under the 64 KB
+`[prot-img]` threshold).
+
+### 9.2 The new crash
+
+* 20419-20421: `[iOS-xquery] MISS tracker=0x1500a4b78 addr=0x148467050`,
+  `NoExec instruction in entry block: 148467050`, on the child's game thread
+  0034 (1149: 27496). 0x148467050 = the SESSION's ntdll copy 0x1483e0000 +
+  0x87050 (invoke_arm64ec_syscall), `[rip-leak] ... rva 0x87050` (20424);
+  rax = 0x19 (NtQueryInformationProcess), R10 = the x64 stub 0x71ffd55337.
+* 20464: the emulator's own rethrow goes to `req pc=0x148441508` = the session
+  copy's KiUserExceptionDispatcher, and the next dispatch shows the PARENT's
+  ResetToConsistentState (`rtcs=0000000148629588`, 20468; all earlier child
+  exceptions show the child's `rtcs=000000014FDF1588`). In build 321 the same
+  rethrow went to the PE VA 0x71ffd31508 (1051 log line 19215).
+
+So the child's emulator jumps to the parent's ntdll copy for every syscall and
+exception: FEX keeps KiUserExceptionDispatcher in a static
+(`Exception::KiUserExceptionDispatcher`, set once in ProcessInit to the PE VA),
+and something rewrote it.
+
+### 9.3 Root cause: the stale-pointer heal used the wrong process
+
+```
+19748 (1149)  [stale-heal] 0x71ffd31508 crossed 256 faults — queued for heal
+20305         [stale-heal] 0x71ffd31508 ESCALATED: rewrote 2 data slot(s) outside IATs
+20305         [stale-heal] 0x71ffd31508 -> 0x148441508, rewrote 2 slot(s)
+```
+
+The heal (`ios_jit_patch_stale_pointer`, virtual_ios.c; scanner thread
+"wine-stale-heal" in signal_arm64_ios.c) rewrites every slot in the module
+pool copies that holds a PE VA which exec-faulted 256 times, with the pool
+address "for the owner of the copy the slot sits in". Only the per-process
+ntdll copies have an owner. The child's emulator (libarm64ecfex.dll at
+0x71fcdb0000, pool 0x14fce0000) is a copy with owner NULL, so its slot was
+translated like the session's: to the session's ntdll copy. The two slots are
+the parent's and the child's FEX statics; the parent's is right, the child's
+is the crash.
+
+Why only now: with the leak fixed, the protector's code sections are RWX for
+the emulator, so its self-modification traps far more often (`Unhandled JIT
+SIGBUS ... 0x39000028`, the ml1065 byte-store retry: 274 lines here, 0 in
+build 321). Every trap and every x64 syscall enters KiUserExceptionDispatcher
+at its PE VA, one exec-fault redirect each, until the 256th queues the heal.
+The bug is older than the fix; any x64 child that exec-faults on an ntdll EC
+address 256 times hits it.
+
+### 9.4 Why `[prot-img]` said insc=1 everywhere
+
+The probe sits in the unix NtProtectVirtualMemory. The PE wrapper calls
+`enter_syscall_callback()` before the syscall on the notified path too, so the
+flag is 1 inside the syscall in every case (main process included: #1-#10 on
+tid 0024 all said insc=1). It cannot tell a notified call from a leaked one;
+it was a design mistake in section 8 and is removed. What tells them apart is
+the PE side's `[exec-req]` line and FEX's `Add SMC interval` after it.
+
+### 9.5 Fix (build/ntdll-unix)
+
+* `struct ios_jit_mapping` gets `map_peb`: the PEB of the process whose thread
+  registered the copy (`ios_jit_current_peb()` in ios_jit_add_mapping; the
+  child ntdll copy records its owner).
+* `ios_jit_patch_stale_pointer` translates each copy for `owner_peb`, else
+  `map_peb`. A copy whose process is unknown is left alone when the target
+  image has per-process copies (the owner-aware Mach exec-fault redirect keeps
+  serving it, one fault per call), with a `[stale-heal] ... left to the
+  owner-aware fault redirect` line. Every rewrite in the data pass is named:
+  `[stale-heal]   N slot(s) in the copy of <pe> (<module>) -> <target> for
+  peb=... (owner=... mapper=...)` (first 32).
+  A main process owns no copy, so its translation is the NULL-owner one, as
+  before: God of War / Ghost of Tsushima main processes heal exactly as they
+  did. **Default on**; `env.MADEIRA_HEAL_OWNER = 0` restores the old rule.
+* `[prot-img]`: insc removed (9.4).
+* `[guest-rip-sec]` and `ios_image_section_describe` also name a POOL address:
+  `POOL copy <jit> (owner=... mapper=...) of <pe>, rva ..., section ...`, so a
+  crash like this one says which process's copy the RIP is in.
+* Host checks: new `tests/host/check-stale-heal-owner.py` (production heal
+  against a model with the session and child ntdll copies, both emulators and
+  an unknown-mapper copy; default and `=0`; PASS with ASan/UBSan);
+  `check-execreq-leave.py` extended (pool address naming, no insc). Both PASS;
+  check-child-ntdll-alias still PASSes.
+
+### 9.6 Found on the way, not changed
+
+* The IAT sync in NtProtectVirtualMemory copies into the FIRST mapping whose
+  PE range contains the region. For ntdll that is the session's copy, also when
+  a child protects ntdll (its RUNE64 hooks ntdll stubs: `[exec-req]` #11-#30 on
+  002c at 0x71ffd60520, 0x71ffd55aa0, 0x71ffd557a0): the child's change lands
+  in the PARENT's copy. Owner-aware selection there is the next candidate if
+  the parent misbehaves after a child hooks ntdll.
+* `[ec-getctx] ml715 ... native_pc=0 -> returned rip=0 rsp=0 flags=00100000`
+  right before both crashes: the protector's GetThreadContext(self) gets an
+  empty context (no CONTEXT_DEBUG_REGISTERS echoed). Harmless so far; watch it
+  if the next run stops in the protector.
+* The byte-store SMC retry loop (`Unhandled JIT SIGBUS ... 0x39000028`, 6-8
+  retries per store) is slow but lands.
+
+### 9.7 Next device log
+
+Same game file as build 327 (keep `env.MADEIRA_EXECREQ_LEAVE = 1`; no new
+line needed). Look for:
+
+1. `[stale-heal] 0x71ffd31508 ... rewrote N slot(s) (each copy translated for
+   the process that maps it)` and the per-copy lines: the child's emulator copy
+   (0x71fcdb0000) must go to the CHILD's ntdll copy (0x14fba8000 + 0x61508 =
+   0x14fc09508), the parent's to 0x148441508.
+2. No `NoExec ... 148467050`. If a NoExec appears, its `[guest-rip-sec]` line
+   now names the copy and owner.
+3. If it still dies: the first `[exc-disp] raise tid=0034` / `[int3-guest]`
+   after the heal, and the end of the crash report.

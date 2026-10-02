@@ -54,7 +54,9 @@ assert child.index('ios_jit_copy_module_for_child(pLdrInitializeThunk, child_peb
     < child.index('ios_patch_execreq_leave_current( pLdrInitializeThunk )') \
     < child.index('server_init_process_done();'), 'the child copy must be patched before the child runs'
 protect = function(native, 'NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *size_ptr,')
-assert '[prot-img] #%d tid=%04x' in protect and 'area->InSyscallCallback' in protect
+# build 327: insc= was always 1 inside the syscall (the wrapper sets the flag
+# before it on the notified path too), so [prot-img] no longer prints it.
+assert '[prot-img] #%d tid=%04x' in protect and 'status=%#x | %s' in protect and 'insc=%d' not in protect
 assert protect.index('[prot-img]') < protect.index('server_leave_uninterrupted_section( &virtual_mutex, &sigset );')
 assert '[guest-rip-sec] rip=%p' in signal
 
@@ -90,7 +92,7 @@ void *ios_jit_translate_addr( void *addr )
     return (char *)ios_jit_mappings[fb].jit_base + (a - (uintptr_t)ios_jit_mappings[fb].pe_base);
 }
 '''
-code += between(native, '#define IOS_EXECREQ_WORDS 17u', 'snprintf( buf, len, "outside every section (rva %#x, %u sections)", off, nsec );\n        return 1;\n    }\n    return 0;\n}')
+code += between(native, '#define IOS_EXECREQ_WORDS 17u', 'snprintf( buf, len, "%soutside every section (rva %#x, %u sections)", where, off, nsec );\n        return 1;\n    }\n    return 0;\n}')
 code += r'''
 #define PREF 0x180000000ull
 static unsigned char *load_image( const char *path, uint32_t *size_out )
@@ -201,6 +203,13 @@ int main( int argc, char **argv )
     printf( "data: %s\n", buf );
     assert( strstr( buf, "'.data'" ) && strstr( buf, "(RW-)" ) );
     assert( !ios_image_section_describe( 0x10000, buf, sizeof(buf), NULL ) );
+    /* a pool address is named with its copy and that copy's owner (build 327:
+     * the child died in the parent's ntdll copy + 0x87050) */
+    ib = 0;
+    assert( ios_image_section_describe( (uintptr_t)pool + 0x200000 + 0x87050, buf, sizeof(buf), &ib ) &&
+            ib == (uintptr_t)img );
+    printf( "pool: %s\n", buf );
+    assert( strstr( buf, "POOL copy" ) && strstr( buf, "owner=0x10999c000" ) && strstr( buf, "rva 0x87050" ) );
 
     /* an image without the probe */
     memset( img + rva, 0, 4 );
