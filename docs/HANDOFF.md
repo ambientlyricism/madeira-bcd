@@ -2528,6 +2528,35 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     the recovery present.
     (Merged as the cherry-pick of 4ec5954; arm64ec syntax check clean apart from
     the 4 known errors; catalog current.)
+  - **GTA V on build 327 with `env.MADEIRA_EXECREQ_LEAVE = 1` (logs
+    PlayGTAV.exe 2026-10-02 11:49:21 / 11:50:19): the leak fix works, then
+    the child died in the PARENT's ntdll; fixed (agent commit 961d8e3, merged
+    as its cherry-pick).** The TLS callback's section pass now reaches the
+    emulator completely (11:50:19 lines 3317-3359: .pdata, .tls, 0x14509A000
+    holding the old 0x14509a144 target, .rsrc, .reloc, .text#13), so the build
+    321 NoExec is gone and section 8 is confirmed. New crash: NoExec at
+    0x148467050 = the session's ntdll copy + 0x87050 on the child's thread
+    0034. Cause: `[stale-heal] 0x71ffd31508 -> 0x148441508, rewrote 2
+    slot(s)` (20305): after 256 exec faults on ntdll's
+    KiUserExceptionDispatcher the heal translated the slot in the child
+    emulator's copy (owner NULL) to the PARENT's ntdll copy, so the child's
+    next syscall ran the parent's ntdll (rethrow `req pc=0x148441508` at
+    20464; rtcs switches to the parent's at 20468). Latent; reached now
+    because the RWX protector sections trap far more often (274 `Unhandled
+    JIT SIGBUS` vs 0). **Fix (default on, main processes unchanged):**
+    mappings record the registering process (`map_peb`); the heal translates
+    each copy for owner_peb else map_peb and skips copies of an unknown
+    process when the target image has per-process copies; per-copy
+    `[stale-heal]` lines; `env.MADEIRA_HEAL_OWNER = 0` = old rule. `[prot-img]`
+    insc removed (always 1 inside the syscall); `[guest-rip-sec]` now names
+    pool addresses. Host checks check-stale-heal-owner (new),
+    check-execreq-leave, check-child-ntdll-alias PASS; docs/gta5-child-crash.md
+    section 9. Found, not changed: the IAT sync writes a child's ntdll hooks
+    into the parent's ntdll copy (first match); the protector's
+    GetThreadContext(self) returns an empty context. Device test: same file as
+    build 327 (keep `env.MADEIRA_EXECREQ_LEAVE = 1`); expect the child's
+    emulator copy healed to its own ntdll copy and no NoExec at 148467050.
+    Build 328 (GoT round 4) was cancelled for build 329 carrying both.
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan
