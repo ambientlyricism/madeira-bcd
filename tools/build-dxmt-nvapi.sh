@@ -34,6 +34,9 @@ cp "$D/src/nvapi/nvapi.cpp" "$OUT/nvapi.cpp"
 python3 "$R/tools/patch-dxmt-nvapi.py" "$OUT/nvapi.cpp"
 # Strings handed back without their NUL (driver branch, adapter name).
 python3 "$R/tools/patch-nvapi-strings.py" "$OUT/nvapi.cpp"
+# The driver the registry names (581.57) instead of 999.99: GTA V Enhanced
+# requires 572.60 or newer.
+python3 "$R/tools/patch-nvapi-driver-version.py" "$OUT/nvapi.cpp"
 # Frame-buffer sizes and the core count GTA V Enhanced asks for after it
 # created its device (docs/madeira-bcd.md "NVAPI GPU memory").
 python3 "$R/tools/patch-nvapi-gpu-info.py" "$OUT/nvapi.cpp"

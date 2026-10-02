@@ -13,7 +13,7 @@ ERR_GFX_D3D_NOD3D12, build 314).
 
 With MADEIRA_KMT_ADAPTER=1 win32u answers that query for the adapter's LUID
 (build/win32u-unix/d3dkmt_ios.c) with the registry GPU's DriverVersion
-(35.0.15.6094 for the NVIDIA identity), so this asks D3DKMT on the adapter's
+(32.0.15.8157 = 581.57 for the NVIDIA identity), so this asks D3DKMT on the adapter's
 own KMT handle (local_kmt_, opened from the same LUID in the constructor),
 exactly as Windows does. Without the switch, or when the query fails, the
 value stays ~0 (upstream). The first 4 calls are logged ("[dxgi-src]

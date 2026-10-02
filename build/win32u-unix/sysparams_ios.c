@@ -1171,7 +1171,11 @@ static const char* driver_vendor_to_version( UINT16 vendor )
     {
     case 0x8086: /* Intel */    return "35.0.101.6314";
     case 0x1002: /* AMD */      return "35.0.21025.1024";
-    case 0x10de: /* Nvidia */   return "35.0.15.6094";
+    /* madeira-bcd: GTA V Enhanced requires NVIDIA 572.60 or newer and the
+     * working Proton run reported 575.57; 35.0.15.6094 read as 560.94. The
+     * registry, D3DKMT and DXGI UMD versions all come from here (NVAPI:
+     * tools/patch-nvapi-driver-version.py). 32.0.15.8157 = 581.57. */
+    case 0x10de: /* Nvidia */   return "32.0.15.8157";
     default:                    return "35.0.10.1000";
     }
 }

@@ -2256,6 +2256,21 @@ makes, with the reason and the evidence), `docs/WOW64.md`, `docs/BUILDING.md`.
     Open: device test; other GTA leads left: QUERYREGISTRY (48) for
     Streamline/NGX, driver version mismatch (registry 560.94 vs NVAPI vs the
     working run's 575.57), NVAPI "RTX 4090" vs DXGI "RTX 3060".
+  - **NVIDIA driver version raised to 581.57 (owner's find, 2026-10-02:
+    GTA V Enhanced requires NVIDIA 572.60 or newer).** We reported
+    35.0.15.6094 = **560.94** in the registry, D3DKMT UMD/KMD and DXGI
+    CheckInterfaceSupport (GoT logs "Driver Version: 560.94"), and 99999 in
+    NVAPI; the working Proton run had 575.57. **Changed (default, every game
+    with "Report an NVIDIA GPU"):** sysparams_ios.c driver_vendor_to_version
+    NVIDIA -> `32.0.15.8157` (581.57; the real NVIDIA a.b.c.d layout), and
+    new `tools/patch-nvapi-driver-version.py` (in build-dxmt-nvapi.sh after
+    the strings patch): GetDriverAndBranchVersion / GetDisplayDriverVersion
+    -> 58157, branch "r580_00". All five nvapi patches apply in order on a
+    copy of dxmt's nvapi.cpp; check-nvapi-trace and check-kmt-adapter PASS.
+    Risk: GoT reads this version (it passed with 560.94; a newer one should
+    pass too) -- if GoT's GPU check fails on the next build, this is why.
+    Open: GTA device test with the same lines (+ `d3d12-core-dll = 1` as a
+    second step).
   - **Owner's standing permission (2026-10-01):** start multiple agents
     (subagents) whenever they help solve a problem or reach success faster;
     no need to ask first ("hata çözmek için gerektiğinde çoklu ajan

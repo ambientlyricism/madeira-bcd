@@ -20,7 +20,7 @@ struct madeira_kmt_identity
 {
     unsigned short     vendor, device;     /* PCI ids of the registry GPU (10de:2544 or 106b:0001) */
     char               name[128];          /* "NVIDIA GeForce RTX 3060" */
-    char               driver_version[32]; /* registry DriverVersion, "35.0.15.6094" */
+    char               driver_version[32]; /* registry DriverVersion, "32.0.15.8157" */
     char               path[128];          /* PCI\VEN_10DE&DEV_2544&SUBSYS_00000000&REV_00\00000000 */
     unsigned long long dedicated;          /* bytes: vram-mb, else 4096 MB (the registry's memory size) */
 };
