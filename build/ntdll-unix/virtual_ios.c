@@ -12509,8 +12509,9 @@ static int ios_sc_brp_layout;      /* the arena was moved for it at boot */
  *   - chrome_elf.dll's PartitionAlloc (glued pools, jumbo#1 in the 18:24 log),
  *   - libcef.dll's own PartitionAlloc (jumbo#3; it died in FreePages on the
  *     soft grant 0x7400000000, STATUS_FREE_VM_NOT_AT_BASE in R10),
- *   - Oilpan's caged heap (V8 13: CPPGC_POINTER_COMPRESSION + larger cage
- *     reserve 2 x 16 GB aligned to 32 GB and use only [base+16 GB, +4 GB)).
+ *   - Oilpan's caged heap (CPPGC_POINTER_COMPRESSION + larger cage reserve
+ *     2 x 16 GB aligned to 32 GB; the heap is [base+16 GB, +16 GB) (gin's
+ *     kCageSize), handed out from its bottom, and 4 GB of it are real here).
  * Each PartitionAlloc copy then asks for 16 GB more, page-aligned at a random
  * hint (build 340: chrome_elf.dll jumbo#2, libcef.dll jumbo#4-8): its metadata
  * region (PartitionAddressSpace::InitMetadataRegionAndOffsets, Chromium 142+,
@@ -12536,17 +12537,23 @@ static int ios_sc_brp_layout;      /* the arena was moved for it at boot */
  *                                 own memory only
  *   [0x7800000000, 0x7900000000)  chrome_elf.dll's regular pool, 4 GB
  *   [0x7900000000, +pool)         JIT pool RW alias (host-only, never a guest pointer)
- *   [0x7a00000000, 0x7c00000000)  V8 sandbox / cage holdback, 8 GB
+ *   [0x7a00000000, 0x7c00000000)  V8 sandbox (its partially reserved 8 GB) / cage holdback
  *   [0x7c00000000, 0x7d00000000)  Oilpan's cage: its 32 GB block is chrome_elf's,
  *                                 0x7800000000, so it lies in chrome_elf's BRP half
  *   [0x7d00000000, 0x8000000000)  FEX arena, 12 GB (as layout 1)
  * The first 32 GB ask of SocialClubHelper.exe is chrome_elf.dll's (libcef.dll
- * imports it, so it initialises first), the second libcef.dll's; the next one
- * is Oilpan's, served only after the helper got the V8 cage (V8 initialises
- * before Blink), so a 32 GB step of V8's sandbox search is never mistaken for
- * it. A metadata region is asked for right after its pools, before the V8
- * cage, at a hint that is not 4 GB-aligned (V8's sandbox search steps are).
- * Every slot is held natively (PROT_NONE, no view) until its ask. */
+ * imports it, so it initialises first), the second libcef.dll's; the third is
+ * Oilpan's. Blink reserves Oilpan's cage BEFORE V8 initialises (Chromium 142:
+ * InProcessRendererThread::Init -> Platform::InitializeBlink -> ProcessHeap::Init
+ * -> cppgc::InitializeProcess; V8::Initialize runs later in RenderThreadImpl),
+ * and V8 reserves its sandbox through VirtualAlloc2, i.e.
+ * NtAllocateVirtualMemoryEx, which never comes here -- so a 32 GB ask at a 32 GB
+ * boundary after both PartitionAlloc blocks can only be Oilpan's (the old rule
+ * waited for the V8 cage and refused it: report agent-sc-next-walls, wall 1). V8's
+ * 8 GB sandbox step gets the cage in NtAllocateVirtualMemoryEx (ios_sc2_ex_cage).
+ * A metadata region is asked for right after its pools, before the V8 cage, at a
+ * hint that is not 4 GB-aligned. Every slot is held natively (PROT_NONE, no view)
+ * until its ask. */
 #define IOS_SC2_POOL_REAL   0x100000000ULL     /* 4 GB really reserved per PartitionAlloc block */
 #define IOS_SC2_L_BASE      0x7000000000ULL
 #define IOS_SC2_FLOOR       0x7100000000ULL
@@ -12603,16 +12610,18 @@ static int ios_sc_layout(void)
 }
 
 /* Which slot a SocialClubHelper.exe reserve gets in layout 2. `held` has bit k
- * for each slot still held; `e_mine` / `cage_mine`: this helper already got
- * chrome_elf's block / the V8 cage. NONE leaves the request to the generic
- * jumbo path; REFUSE fails it with nothing else tried. */
-static int ios_sc2_classify( uint64_t size, uint64_t hint, unsigned held, int e_mine, int cage_mine )
+ * for each slot still held; `e_mine` / `l_mine` / `cage_mine`: this helper
+ * already got chrome_elf's block / libcef's block / the V8 cage. NONE leaves
+ * the request to the generic jumbo path; REFUSE fails it with nothing else
+ * tried. */
+static int ios_sc2_classify( uint64_t size, uint64_t hint, unsigned held, int e_mine, int l_mine, int cage_mine )
 {
     if (size == 0x800000000ULL && hint && !(hint & (0x800000000ULL - 1)))
     {
         if (held & (1u << IOS_SC2_E)) return IOS_SC2_E;
         if (held & (1u << IOS_SC2_L)) return IOS_SC2_L;
-        if (e_mine && cage_mine && (held & (1u << IOS_SC2_OILPAN))) return IOS_SC2_OILPAN;
+        /* the third: Oilpan, before or after the V8 cage (see the layout comment) */
+        if (e_mine && l_mine && (held & (1u << IOS_SC2_OILPAN))) return IOS_SC2_OILPAN;
         return IOS_SC2_REFUSE;
     }
     /* a metadata region: right after its pools, before the cage, hint not 4 GB-aligned */
@@ -22683,8 +22692,8 @@ static int ios_sc_grant_release( void *base, SIZE_T *size, int *rehold )
 static int ios_sc2_route( void *hint, SIZE_T size, ULONG type, ULONG protect, void **pick, SIZE_T *sz, NTSTATUS *st )
 {
     void *peb = ios_jit_current_peb();
-    int k = ios_sc2_classify( size, (uint64_t)(ULONG_PTR)hint, ios_sc2_held,
-                              ios_sc_grant_has( peb, IOS_SC2_E ), ios_sc_grant_has( peb, IOS_SC_K_CAGE ) );
+    int k = ios_sc2_classify( size, (uint64_t)(ULONG_PTR)hint, ios_sc2_held, ios_sc_grant_has( peb, IOS_SC2_E ),
+                              ios_sc_grant_has( peb, IOS_SC2_L ), ios_sc_grant_has( peb, IOS_SC_K_CAGE ) );
     uint64_t base, report;
     void *p;
     SIZE_T s;
@@ -22695,8 +22704,8 @@ static int ios_sc2_route( void *hint, SIZE_T size, ULONG type, ULONG protect, vo
         static unsigned refused;
         if (refused++ < 8)
             dprintf( 2, "[sc-cef] layout 2: 32 GB at a 32 GB boundary refused (hint %p, held 0x%x): both PartitionAlloc "
-                        "blocks are given, and Oilpan's comes after the V8 cage -- this is a 32 GB step of V8's "
-                        "sandbox search or a third PartitionAlloc\n", hint, ios_sc2_held );
+                        "blocks and Oilpan's are given, or this helper did not get both PartitionAlloc blocks -- "
+                        "a fourth 32 GB block\n", hint, ios_sc2_held );
         *st = STATUS_NO_MEMORY;
         return 1;
     }

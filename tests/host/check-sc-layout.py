@@ -16,10 +16,10 @@ and checks:
     one page poisoned in every other small image each time, the old first-fit refuses
     libcef.dll from the second helper on (as on the device) and the new policy serves all 19;
   - env.MADEIRA_SC_PA_POOLS 0/1/2 and the RW alias base pick the layout;
-  - the helper's ask sequence (chrome_elf PA, its 16 GB metadata region, libcef PA, its
-    metadata region, V8's sandbox search, the V8 cage, Oilpan; build 340 log) gets E, J2, L,
-    J2L, nothing, nothing, Oilpan -- a 32 GB step of V8's search is refused, never given
-    Oilpan's block, and a 16 GB step (4 GB-aligned hint) never takes a metadata slot;
+  - the helper's NtAllocateVirtualMemory asks in order (chrome_elf PA, its 16 GB metadata
+    region, libcef PA, its metadata region -- build 340 log -- then Oilpan, which Chromium 142's
+    Blink reserves BEFORE V8 initialises) get E, J2, L, J2L, Oilpan; a fourth 32 GB block is
+    refused, and an 8 / 16 GB ask (4 GB-aligned hint) never takes a slot;
   - the layout 2 address map: both PartitionAlloc blocks on 32 GB boundaries, Oilpan at
     chrome_elf's block + 16 GB, both metadata regions (8 GB real of 16) in libcef's BRP
     half, alias / cage / Oilpan / FEX arena disjoint up to 0x8000000000;
@@ -99,6 +99,8 @@ assert 'if (a < IOS_SC2_L_BASE || !ios_sc_grant_n || !ios_sc_current_is_helper()
 assert 'if (ios_sc_grants[i].peb != peb || ios_sc_grants[i].dead) continue;' in note, 'only its own live grants'
 route = function(native, 'static int ios_sc2_route(')
 assert 'ios_sc_grant_add( base, report, s, size, k, peb );' in route
+assert 'ios_sc_grant_has( peb, IOS_SC2_E ),\n                              ios_sc_grant_has( peb, IOS_SC2_L ), ' \
+       'ios_sc_grant_has( peb, IOS_SC_K_CAGE ) );' in route, 'Oilpan needs both PartitionAlloc blocks, not the cage'
 
 free = function(native, 'NTSTATUS WINAPI NtFreeVirtualMemory(')
 assert 'if (ios_sc_grant_release( base, &served, &sc_rehold ))' in free
@@ -319,44 +321,47 @@ int main( void )
     {
         unsigned held = (1u << IOS_SC2_E) | (1u << IOS_SC2_L) | (1u << IOS_SC2_J2) | (1u << IOS_SC2_J2L)
                         | (1u << IOS_SC2_OILPAN);
-        int e = 0, cage = 0;
-        uint64_t v8;
-        if (ios_sc2_classify( 32 * GB, 0x2d5800000000ull, held, e, cage ) != IOS_SC2_E) FAIL("chrome_elf PA\n");
+        int e = 0, l = 0, cage = 0, k;
+        if (ios_sc2_classify( 32 * GB, 0x2d5800000000ull, held, e, l, cage ) != IOS_SC2_E) FAIL("chrome_elf PA\n");
         held &= ~(1u << IOS_SC2_E); e = 1;
-        if (ios_sc2_classify( 16 * GB, 0x6ce965050000ull, held, e, cage ) != IOS_SC2_J2) FAIL("chrome_elf metadata\n");
+        /* a 32 GB ask between chrome_elf's and libcef's blocks is libcef's, never Oilpan's */
+        if (ios_sc2_classify( 32 * GB, 0x67d000000000ull, held | (1u << IOS_SC2_OILPAN), e, l, cage ) != IOS_SC2_L)
+            FAIL("second block\n");
+        if (ios_sc2_classify( 16 * GB, 0x6ce965050000ull, held, e, l, cage ) != IOS_SC2_J2) FAIL("chrome_elf metadata\n");
         held &= ~(1u << IOS_SC2_J2);
-        if (ios_sc2_classify( 32 * GB, 0x67d000000000ull, held, e, cage ) != IOS_SC2_L) FAIL("libcef PA\n");
-        held &= ~(1u << IOS_SC2_L);
+        if (ios_sc2_classify( 32 * GB, 0x67d000000000ull, held, e, l, cage ) != IOS_SC2_L) FAIL("libcef PA\n");
+        held &= ~(1u << IOS_SC2_L); l = 1;
         /* build 340, jumbo#4: libcef's metadata region at an unaligned random hint */
-        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, cage ) != IOS_SC2_J2L) FAIL("libcef metadata\n");
-        if (ios_sc2_classify( 16 * GB, 0, held, e, cage ) != IOS_SC2_NONE) FAIL("hint 0 took a metadata slot\n");
-        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, 1 ) != IOS_SC2_NONE)
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, l, cage ) != IOS_SC2_J2L) FAIL("libcef metadata\n");
+        if (ios_sc2_classify( 16 * GB, 0, held, e, l, cage ) != IOS_SC2_NONE) FAIL("hint 0 took a metadata slot\n");
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, l, 1 ) != IOS_SC2_NONE)
             FAIL("a metadata slot after the V8 cage\n");
         held &= ~(1u << IOS_SC2_J2L);
-        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, cage ) != IOS_SC2_NONE) FAIL("a third metadata region\n");
-        for (v8 = 512 * GB; v8 >= 16 * GB; v8 /= 2)   /* V8's partially reserved sandbox, 4 GB-aligned hints */
-        {
-            int k = ios_sc2_classify( v8, 0x3f00000000ull, held, e, cage );
-            int k2 = ios_sc2_classify( v8, 0x4000000000ull, held, e, cage );   /* a hint 32 GB-aligned too */
-            if (k != IOS_SC2_NONE) FAIL("V8 %llu GB took a slot (%d)\n", (unsigned long long)(v8 / GB), k);
-            if (v8 == 32 * GB ? k2 != IOS_SC2_REFUSE : k2 != IOS_SC2_NONE)
-                FAIL("V8 %llu GB at a 32 GB boundary: %d\n", (unsigned long long)(v8 / GB), k2);
-        }
-        if (ios_sc2_classify( 8 * GB, 0x3f00000000ull, held, e, cage ) != IOS_SC2_NONE) FAIL("V8 8 GB -> cage path\n");
-        cage = 1;
-        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, held, e, cage ) != IOS_SC2_OILPAN) FAIL("Oilpan\n");
+        if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, held, e, l, cage ) != IOS_SC2_NONE) FAIL("a third metadata region\n");
+        /* Chromium 142: Blink's ProcessHeap::Init reserves Oilpan's cage (cppgc caged-heap.cc: 4 tries
+         * of 32 GB at a random 32 GB-aligned hint) BEFORE V8::Initialize -- no V8 cage yet */
+        k = ios_sc2_classify( 32 * GB, 0x1000000000ull, held, e, l, cage );
+        if (k != IOS_SC2_OILPAN) FAIL("Oilpan before the V8 cage: %d (the old rule refused it)\n", k);
         held &= ~(1u << IOS_SC2_OILPAN);
-        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, held, e, cage ) != IOS_SC2_REFUSE) FAIL("a fourth block\n");
-        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, (1u << IOS_SC2_OILPAN), 0, 1 ) != IOS_SC2_REFUSE)
+        /* cppgc's other tries / a fourth block: refused */
+        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, held, e, l, cage ) != IOS_SC2_REFUSE) FAIL("a fourth block\n");
+        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, held, e, l, 1 ) != IOS_SC2_REFUSE) FAIL("a fourth block, cage\n");
+        /* V8 reserves through VirtualAlloc2 (NtAllocateVirtualMemoryEx), which never classifies; were one of
+         * its steps to come here, nothing but 32 GB at a 32 GB boundary is decided */
+        if (ios_sc2_classify( 8 * GB, 0x3f00000000ull, held, e, l, cage ) != IOS_SC2_NONE) FAIL("8 GB classified\n");
+        if (ios_sc2_classify( 16 * GB, 0x3f00000000ull, held, e, l, cage ) != IOS_SC2_NONE) FAIL("16 GB classified\n");
+        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, (1u << IOS_SC2_OILPAN), 0, 1, 1 ) != IOS_SC2_REFUSE)
             FAIL("Oilpan for a helper without chrome_elf's block\n");
-        if (ios_sc2_classify( 16 * GB, 0x1234560000ull, (1u << IOS_SC2_J2) | (1u << IOS_SC2_E), 0, 0 ) != IOS_SC2_NONE)
+        if (ios_sc2_classify( 32 * GB, 0x1000000000ull, (1u << IOS_SC2_OILPAN), 1, 0, 0 ) != IOS_SC2_REFUSE)
+            FAIL("Oilpan for a helper without libcef's block (another helper's)\n");
+        if (ios_sc2_classify( 16 * GB, 0x1234560000ull, (1u << IOS_SC2_J2) | (1u << IOS_SC2_E), 0, 0, 0 ) != IOS_SC2_NONE)
             FAIL("16 GB before chrome_elf's PA took J2\n");
         /* chrome_elf's PartitionAlloc without a metadata region: libcef's still gets J2L */
         if (ios_sc2_classify( 16 * GB, 0x2fd6ce670000ull, (1u << IOS_SC2_J2) | (1u << IOS_SC2_J2L) | (1u << IOS_SC2_OILPAN),
-                              1, 0 ) != IOS_SC2_J2L)
+                              1, 1, 0 ) != IOS_SC2_J2L)
             FAIL("libcef's metadata when chrome_elf asked for none\n");
         printf("PASS: chrome_elf PA -> 0x%llx, its metadata -> 0x%llx, libcef PA -> 0x%llx, its metadata -> 0x%llx, "
-               "V8's search refused or left alone, Oilpan -> view 0x%llx only after the V8 cage\n",
+               "Oilpan -> view 0x%llx as the third 32 GB block, before the V8 cage; a fourth is refused\n",
                IOS_SC2_E_BASE, IOS_SC2_J2_BASE, IOS_SC2_L_BASE, IOS_SC2_J2L_BASE, IOS_SC2_OILPAN_BASE);
     }
 
