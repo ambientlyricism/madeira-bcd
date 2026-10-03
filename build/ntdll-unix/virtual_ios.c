@@ -20153,6 +20153,24 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
             ULONG_PTR zbits = user_space_wow_limit;
 
 #ifdef WINE_IOS
+            /* user_space_wow_limit is a SESSION global and outlives the last
+             * 32-bit process (it is cleared only at window teardown, which
+             * waits for the next 32-bit start).  For a process WITHOUT a guest
+             * window nothing translates it into a window, so the session TEB
+             * block was searched for in host [0, 4 GB) -- __PAGEZERO on iOS --
+             * and every new 64-bit thread failed with STATUS_NO_MEMORY once the
+             * 32-TEB session block was used up (2026-10-03 16:07 device log:
+             * services.exe RPC worker could not be created, SCM call hung).
+             * Same rule as ios_section_zero_bits(). */
+            if (!wow && zbits)
+            {
+                static int said;
+
+                if (said++ < 4)
+                    dprintf( 2, "[teb-block] session TEB block for a process without a guest "
+                                "window: dropping foreign WoW ceiling %p\n", (void *)zbits );
+                zbits = 0;
+            }
             /* Once published, user_space_wow_limit already IS the right ceiling
              * (2 GB or 4 GB by the main image's LAA bit).  Only a thread created
              * before init_peb publishes it lands here, and then the answer is
