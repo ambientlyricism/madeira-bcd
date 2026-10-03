@@ -22789,6 +22789,60 @@ static int ios_sc2_route( void *hint, SIZE_T size, ULONG type, ULONG protect, vo
     return 1;
 }
 
+/* ml433 (#72): map the boot cage holdback for an 8 GB ask -- see IOS_CAGE_BASE.
+ * Shared by NtAllocateVirtualMemory's hinted-failure branch and, for
+ * SocialClubHelper.exe's V8 sandbox in layout 2, NtAllocateVirtualMemoryEx
+ * (ios_sc2_ex_cage). Returns the status; on success *pick / *sz are what the
+ * caller is given: `asked` (the full 8 GB) at IOS_CAGE_BASE, whose real view is
+ * 64 KB short -- an ios_soft tail entry absorbs a stray commit there. */
+static NTSTATUS ios_cage_grant( ULONG type, ULONG protect, SIZE_T asked, void **pick, SIZE_T *sz, const char *rev )
+{
+    SIZE_T csz = IOS_CAGE_REAL_SIZE;
+    NTSTATUS st;
+
+    munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
+    ios_cage_holdback_live = 0;
+    *pick = (void *)(uintptr_t)IOS_CAGE_BASE;
+    st = allocate_virtual_memory( pick, &csz, type, protect, 0, 0, 0, 0 );
+    if (!st && (uintptr_t)*pick == IOS_CAGE_BASE)
+    {
+        *sz = asked;   /* report the full 8GB; the real view is 64K short */
+        if (ios_soft_n < IOS_SOFT_MAX)
+        {
+            ios_soft[ios_soft_n].base = IOS_CAGE_BASE + IOS_CAGE_REAL_SIZE;
+            ios_soft[ios_soft_n].size = 0x200000000ULL - IOS_CAGE_REAL_SIZE;
+            ios_soft[ios_soft_n].cage = 1;
+            ios_soft_n++;
+        }
+    }
+    else if (!st) *sz = csz;   /* landed elsewhere: honest grant, no size lie */
+    dprintf(2, "[cage] grant %p real=0x%llx reported=0x%lx st=0x%x rev=%s\n",
+            *pick, (unsigned long long)IOS_CAGE_REAL_SIZE, (unsigned long)(st ? 0 : *sz), (unsigned)st, rev);
+    return st;
+}
+
+/* Layout 2: is this SocialClubHelper.exe NtAllocateVirtualMemoryEx call V8's
+ * 8 GB sandbox step? (wall 3 of the agent-sc-next-walls report.) V8 allocates
+ * through VirtualAlloc2 whenever kernelbase exports it (platform-win32.cc
+ * VirtualAllocWrapper), so its sandbox never reaches NtAllocateVirtualMemory's
+ * hinted-failure branch and the cage holdback there. Told 2 TB
+ * (ios_sc2_reported_highest), V8 builds a partially reserved sandbox:
+ * OS::Allocate(hint, size, 4 GB, kNoAccess) = VirtualAlloc2(hint, size,
+ * MEM_RESERVE, PAGE_NOACCESS, no extended parameters), hinted then unhinted,
+ * 512 GB halving to 8 GB (kSandboxMinimumReservationSize); the larger steps
+ * fail as before. The 8 GB step gets the cage at its first call, hinted or
+ * not: V8 takes any 4 GB-aligned base at or below half its limit
+ * (AllocateInternal, InitializeAsPartiallyReservedSandbox), while its hint is
+ * random below 1 TB and the 8 GB hole the unhinted call needs does not exist
+ * (furniture's largest was 7885 MB in the 22:51 log). Gin's configurable pool
+ * asks the same shape later; by then the holdback is gone. */
+static int ios_sc2_ex_cage( SIZE_T size, ULONG type, ULONG protect, ULONG_PTR limit_low, ULONG_PTR limit_high,
+                            ULONG_PTR align, ULONG attributes, int holdback_live )
+{
+    return holdback_live && size == 0x200000000ULL && type == MEM_RESERVE && protect == PAGE_NOACCESS &&
+           !limit_low && !limit_high && !align && !attributes;
+}
+
 /* Layout 2: what a SocialClubHelper.exe commit [a, a + size) says about the
  * helper's grants g[0..n). *gi is the grant it concerns; *off the super
  * page's pool offset (metadata page commits), else the commit's end or offset
@@ -23706,28 +23760,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                  * a 16GB overreserve retry loop — serve it from the boot
                  * holdback, the only aligned stretch left. See IOS_CAGE_BASE. */
                 if (st2 && ios_cage_holdback_live && *size_ptr == 0x200000000ULL)
-                {
-                    SIZE_T csz = IOS_CAGE_REAL_SIZE;
-                    munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
-                    ios_cage_holdback_live = 0;
-                    pick = (void *)(uintptr_t)IOS_CAGE_BASE;
-                    st2 = allocate_virtual_memory( &pick, &csz, type, protect, 0, 0, 0, 0 );
-                    if (!st2 && (uintptr_t)pick == IOS_CAGE_BASE)
-                    {
-                        sz = *size_ptr;   /* report the full 8GB; the real view is 64K short */
-                        if (ios_soft_n < IOS_SOFT_MAX)
-                        {
-                            ios_soft[ios_soft_n].base = IOS_CAGE_BASE + IOS_CAGE_REAL_SIZE;
-                            ios_soft[ios_soft_n].size = 0x200000000ULL - IOS_CAGE_REAL_SIZE;
-                            ios_soft[ios_soft_n].cage = 1;
-                            ios_soft_n++;
-                        }
-                    }
-                    else if (!st2) sz = csz;   /* landed elsewhere: honest grant, no size lie */
-                    dprintf(2, "[cage] grant %p real=0x%llx reported=0x%lx st=0x%x rev=ml433\n",
-                            pick, (unsigned long long)IOS_CAGE_REAL_SIZE,
-                            (unsigned long)(st2 ? 0 : sz), (unsigned)st2);
-                }
+                    st2 = ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "ml433" );
                 /* ml434 (#72 layer 2): the 4GB ask is the cppgc caged heap and
                  * must come back 4GB-ALIGNED. By the time it arrives (~69s) the
                  * furniture window is 89% full (ml433: free=1701MB, maxhole
@@ -25111,8 +25144,41 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             }
         }
 
-        st = allocate_virtual_memory( ret, size_ptr, type, protect,
-                                      limit_low, limit_high, align, attributes );
+        /* madeira-bcd: Social Club layout 2. SocialClubHelper.exe's V8 reserves
+         * and commits through VirtualAlloc2, so NtAllocateVirtualMemory's helper
+         * bookkeeping is needed here too: its commits judged (ios_sc2_note_commit
+         * says nothing at or above the FEX arena, which keeps the emulator's own
+         * commits cheap), dead helpers' grants released before a large ask, the
+         * V8 sandbox's 8 GB step given the cage (ios_sc2_ex_cage) and its large
+         * grants remembered for ios_sc_reap_dead (ios_sc_grant_note). */
+        {
+            int sc2 = is_jumbo && ios_sc_layout_mode == 2 && ios_sc_cef_enabled() && ios_sc_current_is_helper();
+            int caged = 0;
+
+            if ((type & MEM_COMMIT) && *ret && ios_sc_layout_mode == 2 && (ULONG_PTR)*ret < IOS_SC_ARENA_BASE)
+                ios_sc2_note_commit( *ret, *size_ptr );
+            if (sc2 && ios_sc_grant_dead_n) ios_sc_reap_dead();
+            if (sc2 && ios_sc2_ex_cage( *size_ptr, type, protect, limit_low, limit_high, align, attributes,
+                                        ios_cage_holdback_live ))
+            {
+                void *hint = *ret, *pick = NULL;
+                SIZE_T sz = 0;
+
+                st = ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "sc2-ex" );
+                dprintf( 2, "[sc-cef] layout 2: V8 sandbox's 8 GB step (VirtualAlloc2, hint %p) for SocialClubHelper.exe: "
+                            "the cage -> %p (st=0x%x)\n", hint, st ? NULL : pick, (unsigned)st );
+                if (!st)
+                {
+                    *ret = pick;
+                    *size_ptr = sz;
+                    caged = 1;
+                }
+            }
+            if (!caged)
+                st = allocate_virtual_memory( ret, size_ptr, type, protect,
+                                              limit_low, limit_high, align, attributes );
+            if (sc2 && !st) ios_sc_grant_note( *ret, *size_ptr );
+        }
 
         if (is_jumbo) ios_jumbo_census( jumbo_hint, jumbo_size, st ? NULL : *ret, (unsigned)st );
         if (!st && *size_ptr >= 0x10000000 && *size_ptr < 0x40000000 && (type & MEM_RESERVE))
