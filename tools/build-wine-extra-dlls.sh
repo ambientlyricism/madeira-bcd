@@ -62,6 +62,11 @@ if [ ! -f "$B/Makefile" ]; then
           --without-freetype --without-gnutls ${TOOLS:+--with-wine-tools="$TOOLS"} ) > "$B.cfg.log" 2>&1 \
         || { tail -20 "$B.cfg.log"; echo "::error::wine arm64ec configure failed"; exit 1; }
 fi
+# widl looks for imported typelibs (stdole2.tlb) under aarch64-windows, its
+# arch dir for ARM64EC, but an arm64ec-only tree builds them under
+# arm64ec-windows; without this riched20, hnetcfg and wbemdisp fail with
+# "cannot find stdole2.tlb".
+mkdir -p "$B/dlls/stdole2.tlb" && ln -sfn arm64ec-windows "$B/dlls/stdole2.tlb/aarch64-windows"
 # msvcr*: mirror the data exports into the PE mapping (see the script).
 python3 "$R/tools/patch-wine-msvcrt-datasync.py" "$R/wine/dlls/msvcrt/main.c"
 xi_patched=0
