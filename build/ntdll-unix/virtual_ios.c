@@ -2556,7 +2556,20 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
      * code buffers (the tail) are refused against. Waiting out the remaining
      * grace (<= 3 s, once, at process start) keeps the grace guarantee intact and
      * gives that space back to the code cache. */
-    if (alloc_size >= 32u * 1024 * 1024)
+    /* madeira-bcd: wait the same way for ANY request the bump cannot serve.
+     * GTA build 364 (2026-10-03 21:00): RockstarService.exe exited, RECLAIM put
+     * 25 MB on the freelist (freelist=20), and for the next 1.4 s every load in
+     * the launcher (uxtheme, gameoverlayrenderer64, socialclub, netprofm,
+     * rpcss.exe, d2d1) failed EXHAUSTED inside the 3 s grace -- the launcher
+     * died at d2d1. pool_limit 0 (the tail's freelist-only take) keeps the old
+     * rule. */
+    int bump_short = 0;
+    if (pool_limit)
+    {
+        size_t cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off, ios_jit_hole_end );
+        bump_short = cand + alloc_size > pool_limit;
+    }
+    if (alloc_size >= 32u * 1024 * 1024 || bump_short)
     {
         int waited = 0;
         for (;;)
@@ -2575,7 +2588,15 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
             waited++;
             pthread_mutex_lock( &ios_pool_lock );
         }
-        if (waited)
+        if (waited && bump_short)
+        {
+            static int pool_wait_n;
+            if (pool_wait_n++ < 32)
+                dprintf(2, "[pool-wait] bump short: waited %d00 ms for a freed range's grace to expire rather than "
+                        "fail 0x%lx bytes (bump=0x%lx limit=0x%lx freelist=%d)\n", waited, (unsigned long)alloc_size,
+                        (unsigned long)jit_pool_offset, (unsigned long)pool_limit, ios_pool_free_count);
+        }
+        else if (waited)
             dprintf(2, "[jit-pool] ml1052 waited %d00 ms for a freed range's grace to expire rather than bump 0x%lx bytes of head\n",
                     waited, (unsigned long)alloc_size);
         now = time( NULL );
@@ -12491,6 +12512,30 @@ static int ios_resource_only_map( int refused, const void *arbitrary_user_pointe
     return refused == 2 && !arbitrary_user_pointer;
 }
 
+/* madeira-bcd: ANY image view the loader is not mapping and that asks for no
+ * execute access gets no pool copy either -- kernelbase maps
+ * LOAD_LIBRARY_AS_IMAGE_RESOURCE with FILE_MAP_READ (PAGE_READONLY). GTA build
+ * 364 (2026-10-03 21:00): PlayGTAV.exe copied Launcher.exe (32 MB) twice for two
+ * version queries and kept both copies until it exited; the pool ran out 1.4 s
+ * later. Set by virtual_map_section around the map, cleared by
+ * map_image_into_view for an image with a CLR header (CoreCLR maps its R2R
+ * assemblies this way and runs code from them); mprotect_exec then refuses the
+ * copy with 2, so ios_resource_only_map maps the view without exec. A later
+ * NtProtectVirtualMemory(PAGE_EXECUTE*) on the view still copies (the flag is
+ * clear by then). env.MADEIRA_RESOURCE_MAP_COPY = 1 copies as before. */
+static _Thread_local int ios_map_resource_view;
+
+static int ios_resource_map_nocopy(void)
+{
+    static int on = -1;
+    if (on < 0)
+    {
+        const char *e = getenv( "MADEIRA_RESOURCE_MAP_COPY" );
+        on = !(e && e[0] == '1' && !e[1]);
+    }
+    return on;
+}
+
 /* Social Club's PartitionAlloc pools (env.MADEIRA_SC_PA_POOLS = 1, opt-in).
  *
  * Its chrome_elf.dll reserves PartitionAlloc's core pools GLUED: one 32 GB
@@ -14223,6 +14268,21 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                             cur_teb ? (void *)cur_teb->Peb : NULL);
                 }
                 return 0;
+            }
+
+            /* madeira-bcd: a resource-only view (ios_map_resource_view) never
+             * runs code: no pool copy, refused like a Social Club image below. */
+            if (ios_map_resource_view)
+            {
+                static int resource_view_n;
+                if (resource_view_n++ < 16)
+                    dprintf(2, "[resource-map] %s %p+0x%lx mapped without a pool copy (no loader name, no "
+                            "execute access: a version / resource query; env.MADEIRA_RESOURCE_MAP_COPY=1 copies)\n",
+                            ios_pe_module_name( image_base, image_size ), image_base, (unsigned long)image_size);
+                ios_jit_copy_refused = 2;
+                mprotect( base, size, PROT_READ );
+                errno = ENOMEM;
+                return -1;
             }
 
             /* madeira-bcd: a Social Club client's libcef.dll and DLSS runtimes
@@ -18593,6 +18653,9 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
 #ifdef WINE_IOS
     int ios_noexec_resource = 0;
     ios_jit_copy_refused = 0;
+    /* madeira-bcd: a .NET image keeps its pool copy (see ios_map_resource_view). */
+    if (ios_map_resource_view && get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR ))
+        ios_map_resource_view = 0;
 #endif
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
@@ -19145,8 +19208,19 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
         res = load_builtin( image_info, &nt_name, &exp_name, machine, &info,
                             addr_ptr, size_ptr, limit_low, limit_high, offset.QuadPart );
         if (res == STATUS_IMAGE_ALREADY_LOADED)
+        {
+#ifdef WINE_IOS
+            /* madeira-bcd: no loader name and no execute access = a resource-only
+             * view; it gets no pool copy (ios_map_resource_view). */
+            ios_map_resource_view = !(access & SECTION_MAP_EXECUTE) &&
+                                    !NtCurrentTeb()->Tib.ArbitraryUserPointer && ios_resource_map_nocopy();
+#endif
             res = virtual_map_image( handle, addr_ptr, size_ptr, shared_file, limit_low, limit_high,
                                      alloc_type, machine, image_info, &nt_name, FALSE, offset.QuadPart );
+#ifdef WINE_IOS
+            ios_map_resource_view = 0;
+#endif
+        }
         if (shared_file) NtClose( shared_file );
         free( image_info );
         if (NtCurrentTeb64()) NtCurrentTeb64()->Tib.ArbitraryUserPointer = prev;
