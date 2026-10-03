@@ -17,12 +17,18 @@ buffer (bound at set time) is re-emitted and the fixed-function state is
 marked dirty. The active object's own copy is empty while it is swapped in,
 as each object is active in one context at a time.
 
-Idempotent; fails by name if an anchor moves. Run from the repository root.
+The first swap in a process logs "[d3d11] madeira-bcd: SwapDeviceContextState
+in use (context state swap)" once; tools/build-d3d11-dll.sh also looks for that
+string in the DLL it builds, to prove the patch is in.
+
+Idempotent; fails by name if an anchor moves. Run from the repository root;
+the optional argument is another d3d11 source directory to patch instead of
+dxmt/src/d3d11 (tools/build-d3d11-dll.sh patches a copy that way).
 """
 import pathlib
 import sys
 
-ROOT = pathlib.Path("dxmt/src/d3d11")
+ROOT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "dxmt/src/d3d11")
 MARKER = "madeira-bcd: context state swap"
 
 
@@ -59,6 +65,9 @@ changed |= edit("d3d11_context_impl.cpp", [
      """  SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
     /* madeira-bcd: context state swap (tools/patch-dxmt-context-state-swap.py) */
     std::lock_guard<mutex_t> lock(mutex);
+    static bool s_swapNoted = false;
+    if (!std::exchange(s_swapNoted, true))
+      Logger::info("[d3d11] madeira-bcd: SwapDeviceContextState in use (context state swap)");
 
     if (ppPreviousState)
       *ppPreviousState = nullptr;
