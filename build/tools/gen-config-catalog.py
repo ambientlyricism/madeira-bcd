@@ -114,6 +114,12 @@ OVERLAY = {
                         "second debugger region and both form one pool (about 880 MB instead of 560-630 MB). Costs "
                         "the second region's size in memory. Off by default; read at launch, the game's own file "
                         "wins."},
+    "pool-pair": {"category": "Memory & JIT pool", "title": "Split JIT pool: prefer two runs above the window",
+                "kind": "bool", "default": "1",
+                "note": "With pool-split on: when the largest free run lies below the 0x140000000 executable window "
+                        "(where the pool cannot split), the pool takes two runs above the window instead if together "
+                        "they are larger (GTA V: 368 + 320 MB instead of 464 MB). Falls back to the single run if the "
+                        "placement misses. On by default; 0 turns it off. Read at launch, the game's own file wins."},
     "env.MADEIRA_SC_CEF": {"category": "Wine core (ntdll)", "title": "Social Club's Chromium in one process",
                 "kind": "bool", "default": "1",
                 "note": "On by default; 0 turns it off. SocialClubHelper.exe runs --single-process with "

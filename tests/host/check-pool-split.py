@@ -89,6 +89,20 @@ assert 'setenv("WINE_IOS_JIT_HOLE", String(format: "%lx:%lx", hole.off, hole.end
 assert 'unsetenv("WINE_IOS_JIT_HOLE")' in hole_env
 print('PASS: the app splits only on request and exports WINE_IOS_JIT_HOLE only for a split pool')
 
+# pool-pair (GTA build 364, 21:00 / 23:47): two runs above the window instead of the 464 MB hole below it
+pair = swift[swift.index('let pairOff = '):swift.index('if pairA == nil && largest < vm_address_t(poolSize) {')]
+assert 'MadeiraConfig.gameValue("pool-pair")' in pair and 'MadeiraConfig.get("pool-pair")' in pair
+assert '.contains(splitValue) && windowHeld && !pairOff' in pair, 'pool-pair needs pool-split and the held window'
+assert 's.base + s.size <= exeWinBase' in pair, 'only when the single-region pool would land below the window'
+assert 'aFit + bFit > best' in pair, 'only when the pair beats the single run'
+assert 'freeRuns(0x100000000, pa.base, minSize: pa.size)' in pair and 'plugs.append(' in pair
+assert swift.count('if pairA == nil && earlyPoolBase != 0 && windowHeld') == 2, 'ml1040 steering is off in pair mode'
+check = swift[swift.index('var pairSecond: (base: vm_address_t, size: vm_address_t)? = nil'):swift.index('guard let rxPtr = rxPtrOpt else {')]
+assert 'if got == pa.base {' in check and 'pairSecond = takeSecondRegion(' in check
+assert 'jit26_prepare_region(nil, pairSingle)' in check, 'a missed pair falls back to the single-region size'
+assert 'pairSecond ?? takeSecondRegion(' in swift
+print('PASS: pool-pair takes two runs above the window only with pool-split, and falls back on a miss')
+
 harness = r'''
 #include <stdio.h>
 #include <stdlib.h>

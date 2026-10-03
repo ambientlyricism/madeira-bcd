@@ -387,6 +387,13 @@ enum StikJITHelper {
         // so that nothing of ours could land in it. Release it now -- the very
         // next allocation of this size is the debugger's.
         var plugs: [(vm_address_t, vm_size_t)] = []
+        // madeira-bcd split pool switch (see SPLIT POOL below); the census reads it too.
+        let splitValue = (MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // madeira-bcd pool-pair (below): region A's run and the size the single-region
+        // pool would have had, for the check after the request.
+        var pairA: (base: vm_address_t, size: vm_address_t)? = nil
+        var pairSingle = 0
         let earlyPoolBase = vm_address_t(madeira_early_pool_base)
         let earlyPoolSize = vm_address_t(madeira_early_pool_size)
         if earlyPoolBase != 0 {
@@ -427,7 +434,75 @@ enum StikJITHelper {
             LogStore.shared.log("ml1036: free holes >=64MB in [0x119000000,0x7000000000) with the window held: "
                 + (desc.isEmpty ? "NONE" : desc))
             let largest = holes.map { $0.size }.max() ?? 0
-            if largest < vm_address_t(poolSize) {
+            // madeira-bcd pool-pair (pool-split only): two runs ABOVE the window, split
+            // only by the main thread's stack, can beat the largest single run when that
+            // one lies BELOW the window, where the pool cannot split ("the gap would
+            // hold the executable window"). GTA V build 364, 21:00 and 23:47: 470MB below
+            // vs 369+331MB / 436+327MB above -> a 464MB pool and "[jit-pool] EXHAUSTED";
+            // the pair gives 688 / 752MB. Region A takes the run above the window (every
+            // lower run that could hold it is plugged, so first-fit lands there) and
+            // takeSecondRegion then takes B exactly as for any split pool. Used only when
+            // the single-region pool would land below the window and the pair is larger;
+            // `pool-pair = 0` in the game's file or madeira.cfg turns it off.
+            let pairOff = ["0", "off", "false", "no"].contains((MadeiraConfig.gameValue("pool-pair")
+                ?? MadeiraConfig.get("pool-pair") ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            let mb16: vm_address_t = 16 << 20
+            let ceiling: vm_address_t = 0x180000000           // SHARED_REGION_BASE_ARM64, as takeSecondRegion
+            let singleFit = largest < vm_address_t(poolSize) ? largest & ~(mb16 - 1) : vm_address_t(poolSize)
+            if ["1", "on", "true", "yes"].contains(splitValue) && windowHeld && !pairOff && singleFit < vm_address_t(poolSize) {
+                // Where the single-region request lands: first-fit, past ml1040's plugs
+                // (holes below the placeholder, only when a hole above it fits).
+                let steered = earlyPoolBase != 0 && holes.contains { $0.base + $0.size > earlyPoolBase && $0.size >= singleFit }
+                let singleAt = holes.first(where: { $0.size >= singleFit && !(steered && $0.base + $0.size <= earlyPoolBase) })
+                if let s = singleAt, s.base + s.size <= exeWinBase {
+                    var best = singleFit
+                    var bestB: (base: vm_address_t, size: vm_address_t) = (base: 0, size: 0)
+                    for run in holes where run.base >= exeWinBase + exeWinSize && run.base < ceiling {
+                        let aFit = min(min(run.size, ceiling - run.base) & ~(mb16 - 1), vm_address_t(poolSize))
+                        guard aFit >= 256 << 20, aFit < vm_address_t(poolSize) else { continue }
+                        // B as takeSecondRegion picks it: the largest run in [A's end, ceiling),
+                        // the rest of A's own run included.
+                        let aEnd = run.base + aFit
+                        var bRun: (base: vm_address_t, size: vm_address_t) = (base: aEnd, size: min(run.base + run.size, ceiling) - aEnd)
+                        for h in holes where h.base > run.base && h.base < ceiling && min(h.base + h.size, ceiling) - h.base > bRun.size {
+                            bRun = (base: h.base, size: min(h.base + h.size, ceiling) - h.base)
+                        }
+                        let want = (vm_address_t(poolSize) - aFit + mb16 - 1) & ~(mb16 - 1)
+                        let bFit = min(bRun.size & ~(mb16 - 1), want)
+                        if bFit >= 64 << 20 && aFit + bFit > best {
+                            best = aFit + bFit
+                            pairA = (base: run.base, size: aFit)
+                            bestB = (base: bRun.base, size: bFit)
+                        }
+                    }
+                    if let pa = pairA {
+                        pairSingle = Int(singleFit)
+                        poolSize = Int(pa.size)
+                        LogStore.shared.log(String(format: "[pool-split] ml1036 pair above the window: A=0x%lx+%luMB B=0x%lx+%luMB "
+                            + "total=%luMB (single best was %luMB at 0x%lx, below the window, where the pool cannot split; "
+                            + "pool-pair = 0 turns this off)",
+                            Int(pa.base), Int(pa.size >> 20), Int(bestB.base), Int(bestB.size >> 20), Int(best >> 20),
+                            Int(singleFit >> 20), Int(s.base)), level: .success)
+                        if best < 500 << 20 {
+                            LogStore.shared.log("⚠️ SMALL JIT POOL (\(best >> 20)MB) on this launch: expect ~1 s freezes in heavy games. "
+                                + "Quit and relaunch the app for a smooth session.", level: .error)
+                        }
+                        // The debugger allocates first-fit: plug every lower run that could
+                        // hold region A (as takeSecondRegion does for B); released after the request.
+                        for h in freeRuns(0x100000000, pa.base, minSize: pa.size) {
+                            var a = h.base
+                            if vm_allocate(mach_task_self_, &a, vm_size_t(h.size), 0 /* VM_FLAGS_FIXED */) == KERN_SUCCESS {
+                                if a == h.base {
+                                    plugs.append((a, vm_size_t(h.size)))
+                                    LogStore.shared.log(String(format: "[pool-split] ml1036 pair: plugged lower run 0x%lx+%luMB so first-fit lands at 0x%lx",
+                                                               Int(h.base), Int(h.size >> 20), Int(pa.base)))
+                                } else { vm_deallocate(mach_task_self_, a, vm_size_t(h.size)) }
+                            }
+                        }
+                    }
+                }
+            }
+            if pairA == nil && largest < vm_address_t(poolSize) {
                 let fit = Int(largest) & ~((16 << 20) - 1)
                 if fit >= 256 << 20 {
                     LogStore.shared.log("ml1036: no hole fits a \(poolSize >> 20)MB pool — SHRINKING to \(fit >> 20)MB "
@@ -462,10 +537,10 @@ enum StikJITHelper {
             // app killed itself. The hole below ends under 0x140000000, so a
             // pool there is safe; steering only helps if the target fits.
             let aboveFits = holes.contains { $0.base + $0.size > earlyPoolBase && $0.size >= vm_address_t(poolSize) }
-            if earlyPoolBase != 0 && windowHeld && !aboveFits {
+            if pairA == nil && earlyPoolBase != 0 && windowHeld && !aboveFits {
                 LogStore.shared.log("ml1040: no hole above the window fits \(poolSize >> 20)MB — not plugging, the pool takes the hole below it")
             }
-            if earlyPoolBase != 0 && windowHeld && aboveFits {
+            if pairA == nil && earlyPoolBase != 0 && windowHeld && aboveFits {
                 for h in holes where h.base + h.size <= earlyPoolBase && h.size >= vm_address_t(poolSize) {
                     var a = h.base
                     if vm_allocate(mach_task_self_, &a, vm_size_t(h.size), 0 /* FIXED */) == KERN_SUCCESS && a == h.base {
@@ -507,6 +582,65 @@ enum StikJITHelper {
         }
         // ml1040: the plugs existed only to steer first-fit; give the VA back.
         for (a, sz) in plugs { vm_deallocate(mach_task_self_, a, sz) }
+        // madeira-bcd pool-pair: region A must sit at the run chosen by the census and
+        // region B must be taken now. Otherwise fall back to the single-region pool the
+        // census would have made (pairSingle), as if pool-pair were off.
+        var pairSecond: (base: vm_address_t, size: vm_address_t)? = nil
+        if let pa = pairA, let p = rxPtrOpt {
+            let got = vm_address_t(bitPattern: p)
+            if got == pa.base {
+                pairSecond = takeSecondRegion(above: got + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
+                                              exeWindow: (exeWinBase, exeWinSize))
+            }
+            if let second = pairSecond {
+                LogStore.shared.log(String(format: "[pool-split] ml1036 pair placed: region A 0x%lx+%luMB, region B 0x%lx+%luMB, "
+                    + "%luMB in all (the single-region pool would have been %luMB)",
+                    Int(got), poolSize >> 20, Int(second.base), Int(second.size >> 20),
+                    (poolSize + Int(second.size)) >> 20, pairSingle >> 20), level: .success)
+            } else {
+                let why: String = got == pa.base
+                    ? "region B was not taken"
+                    : String(format: "region A landed at 0x%lx, not 0x%lx", Int(got), Int(pa.base))
+                LogStore.shared.log("[pool-split] ml1036 pair FAILED: \(why) — falling back to the single-region "
+                    + "\(pairSingle >> 20)MB pool", level: .error)
+                if pairSingle > poolSize {
+                    // A region that missed A's run may sit in the hole the single pool
+                    // needs: give it back first. Region A at its run stays held until the
+                    // replacement is good (it cannot be in the way: it is above the window).
+                    if got != pa.base {
+                        let dkr = vm_deallocate(mach_task_self_, got, vm_size_t(poolSize))
+                        LogStore.shared.log("[pool-split] ml1036 pair: region released (kr=\(dkr))")
+                        rxPtrOpt = nil
+                    }
+                    var replaced = false
+                    if let q = jit26_prepare_region(nil, pairSingle), q != UnsafeMutableRawPointer(bitPattern: 0) {
+                        let qa = Int(bitPattern: q)
+                        let qGuest = qa + pairSingle > guestLo && qa < guestHi
+                        if qa >= goodLow && !qGuest && !overlapsExeWindow(vm_address_t(qa), vm_address_t(pairSingle)) {
+                            if let old = rxPtrOpt { vm_deallocate(mach_task_self_, vm_address_t(bitPattern: old), vm_size_t(poolSize)) }
+                            rxPtrOpt = q
+                            poolSize = pairSingle
+                            replaced = true
+                        } else {
+                            let dkr = vm_deallocate(mach_task_self_, vm_address_t(qa), vm_size_t(pairSingle))
+                            LogStore.shared.log(String(format: "BAD POOL placement 0x%lx for the %luMB fallback — released (kr=%d)",
+                                                       qa, pairSingle >> 20, dkr), level: .error)
+                        }
+                    } else {
+                        LogStore.shared.log("Debugger failed to allocate RX memory (pool-pair fallback, \(pairSingle >> 20)MB)", level: .error)
+                    }
+                    if replaced {
+                        LogStore.shared.log("[pool-split] ml1036 pair fallback: the pool is \(poolSize >> 20)MB in one region, "
+                            + "as without pool-pair")
+                    } else if rxPtrOpt != nil {
+                        LogStore.shared.log("[pool-split] ml1036 pair fallback failed: keeping region A alone (\(poolSize >> 20)MB)",
+                                            level: .error)
+                    } else {
+                        LogStore.shared.log("[pool-split] ml1036 pair fallback failed: no pool region", level: .error)
+                    }
+                }
+            }
+        }
         guard let rxPtr = rxPtrOpt else {
             if requestUnanswered && !debuggerAttached {
                 // Nothing answered the BRK: there is no pool and no placement to
@@ -666,14 +800,13 @@ enum StikJITHelper {
         // WINE_IOS_JIT_HOLE tells ntdll never to hand out the part in between.
         // Costs the second region's size in footprint (debugger-blessed pages are
         // dirty from birth) -- the total stays within the requested pool size.
-        let splitValue = (MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // (splitValue is read before the hole census, which uses it for pool-pair.)
         poolHole = nil
         if ["1", "on", "true", "yes"].contains(splitValue) {
             if poolSize >= requestedPoolSize {
                 LogStore.shared.log("[pool-split] the pool got its full \(poolSize >> 20)MB in one region — no split needed")
-            } else if let second = takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
-                                                    exeWindow: (exeWinBase, exeWinSize)) {
+            } else if let second = pairSecond ?? takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
+                                                                  exeWindow: (exeWinBase, exeWinSize)) {
                 if let rw = mapSplitAlias(rxA: rxAddrV, sizeA: vm_address_t(poolSize), rxB: second.base, sizeB: second.size) {
                     let span = Int(second.base + second.size - rxAddrV)
                     let holeEnd = Int(second.base - rxAddrV)
