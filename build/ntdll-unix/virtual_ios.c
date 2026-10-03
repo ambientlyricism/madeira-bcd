@@ -13353,6 +13353,26 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
         if (!unix_prot) unix_prot = PROT_READ;   /* PAGE_EXECUTE alone: readable is the honest answer */
     }
 
+    /* madeira-bcd: a resource-only image view (ios_map_resource_view) never runs
+     * code, so no exec request made while mapping it may create anything
+     * executable -- in particular not the ml348 "OUTSIDE nearest image"
+     * anonymous-RWX alias that a last section whose 16 KB-rounded end passes
+     * SizeOfImage falls into before the image refusal further down. That alias
+     * is keyed by VA and outlives the view, so the next image mapped there ran
+     * from it (gta-2237: "RockstarService.exe start" died at its entry stub, the
+     * service never started and the launcher found no pipe). */
+    if ((unix_prot & PROT_EXEC) && ios_map_resource_view)
+    {
+        static int resource_exec_n;
+        if (resource_exec_n++ < 16)
+            dprintf( 2, "[resource-map] exec request %p+0x%lx in a resource-only view refused "
+                        "(no pool copy, no anon alias)\n", base, (unsigned long)size );
+        ios_jit_copy_refused = 2;
+        mprotect( base, size, PROT_READ );
+        errno = ENOMEM;
+        return -1;
+    }
+
 #endif
 
     /* ml247: catch WHO narrows maxprot on pool pages.

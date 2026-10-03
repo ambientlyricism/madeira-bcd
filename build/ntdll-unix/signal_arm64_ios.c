@@ -4414,6 +4414,34 @@ wx_done: ;
 skip_reclaim_band: ;
             }
 
+            /* madeira-bcd: a thread of an EXITED pseudo-process woke into its
+             * reclaimed JIT copies; its ntdll copy is gone too, so guest SEH can
+             * only re-fault until the ml461/ml465 terminal kills the whole app
+             * (gta-2237: tid 014c, the thread-pool worker of the exited
+             * "RockstarService.exe stop"). End that thread only -- never through
+             * the exit wrappers, whose fds may belong to another thread by now. */
+            if (!handled && thread_teb &&
+                (req->exception == EXC_BAD_ACCESS || req->exception == EXC_BAD_INSTRUCTION))
+            {
+                extern int ios_peb_is_dead( const void *peb );
+                void *zpeb = NULL;
+                vm_size_t zsz = sizeof(zpeb);
+                if (vm_read_overwrite( mach_task_self(), (vm_address_t)(thread_teb + offsetof(TEB, Peb)),
+                                       sizeof(zpeb), (vm_address_t)&zpeb, &zsz ) == KERN_SUCCESS &&
+                    zsz == sizeof(zpeb) && ios_peb_is_dead( zpeb ))
+                {
+                    static int zombie_n;
+                    kern_return_t zkr = thread_terminate( thread );
+                    if (zkr != KERN_SUCCESS) zkr = thread_suspend( thread );
+                    if (zombie_n++ < 16)
+                        dprintf( 2, "[zombie] teb=%p of exited peb=%p faulted pc=0x%llx addr=0x%llx -- "
+                                    "ended this thread only (kr=%d)\n", (void *)thread_teb, zpeb,
+                                 (unsigned long long)__darwin_arm_thread_state64_get_pc( state ),
+                                 (unsigned long long)fault_addr, (int)zkr );
+                    handled = 1;   /* thread_set_state on the ended thread below is harmless */
+                }
+            }
+
             /* ml369 (#63): last-resort in-process guest exception delivery.
              * Nothing above claimed the fault; declining it is a death
              * sentence under StikDebug (the stub cannot inject signals, so
