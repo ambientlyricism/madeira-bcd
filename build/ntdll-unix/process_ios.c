@@ -1739,26 +1739,6 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                         "(env.MADEIRA_SC_CEF=0 allows it)\n" );
             return STATUS_ACCESS_DENIED;
         }
-        /* env.MADEIRA_SC_HELPER = 0: no SocialClubHelper.exe at all. The owner's
-         * Windows PC (2026-10-03, same Steam build, -nobattleye -scOfflineOnly)
-         * never starts it either: socialclub.log there says "Fatal Error: code
-         * 1024", "Social Club UI - Entering State: 'WAIT_BROWSER'", five
-         * OnChannelError() rgsc_gameinst_0, then after ~31 s "Timed out waiting
-         * for Browser" / 'FAILED' -- and the game goes on to Story mode without
-         * the overlay. On the device the helper starts, connects, and the game
-         * waits for a browser that never answers. Refusing it takes the PC's
-         * path. */
-        if (kind == SC_BROWSER)
-        {
-            const char *h = getenv( "MADEIRA_SC_HELPER" );
-            if (h && h[0] == '0')
-            {
-                dprintf( 2, "[sc-cef] REFUSING SocialClubHelper.exe (env.MADEIRA_SC_HELPER=0): the game's Social "
-                            "Club UI then times out waiting for the browser and the game goes on without it, "
-                            "as on Windows with -scOfflineOnly\n" );
-                return STATUS_ACCESS_DENIED;
-            }
-        }
         if (kind == SC_BROWSER)
         {
             const char *jl = getenv( "MADEIRA_JITLESS" );
