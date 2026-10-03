@@ -347,6 +347,11 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
+      # [sc-reg]: MADEIRA_SC_REG_RO=1 refuses write access to Social Club's
+      # registry key, as a non-admin Windows does (GTA V Enhanced, 2026-10-03).
+      - name: Patch wine with the Social Club registry switch
+        run: python3 tools/patch-wine-sc-registry.py wine/dlls/ntdll/unix/registry.c
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before
