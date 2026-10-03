@@ -75,8 +75,31 @@ if [ -n "$XI" ]; then
     # Old objects from an unpatched build must not satisfy make.
     for d in $XI; do rm -f "$B/dlls/$d/arm64ec-windows/$d.dll" "$B/dlls/$d"/arm64ec-windows/*.o; done
 fi
+# Delay imports become plain imports. lld's ARM64EC delay-load stub is x64 code
+# inside .text (`lea rax, __imp_aux_X; jmp __tailMerge`), and the pool copy
+# Madeira runs ARM64EC code from relocates the delay IAT to the stub's POOL
+# address, so the first call executes x64 code outside the emulator's
+# executable ranges: NoExec, then an unhandled c0000005 (Rockstar Games
+# Launcher in d2d1's DWriteCreateFactory stub, 2026-10-03 19:42 log). Only
+# when every delayed DLL ships or is built here; otherwise the module is left
+# as it is.
+undelayed=""
+for d in $todo; do
+    mk="$R/wine/dlls/$d/Makefile.in"
+    delayed="$(sed -n 's/^DELAYIMPORTS[[:space:]]*=[[:space:]]*//p' "$mk")"
+    [ -n "$delayed" ] && grep -q "^IMPORTS" "$mk" || continue
+    ok=1
+    for i in $delayed; do
+        shipped "$i" || case " $todo " in *" $i "*) ;; *) ok=0 ;; esac
+    done
+    [ "$ok" = 1 ] || continue
+    sed -i.bak -e '/^DELAYIMPORTS[[:space:]]*=/d' -e "s/^\(IMPORTS[[:space:]]*=.*\)\$/\1 $delayed/" "$mk" && rm -f "$mk.bak"
+    undelayed="$undelayed $d"
+done
 make -C "$B" -k -j"$JOBS" $targets > "$B.build.log" 2>&1
 git -C "$R/wine" checkout -- dlls/msvcrt/main.c dlls/xinput1_3/main.c
+for d in $undelayed; do git -C "$R/wine" checkout -- "dlls/$d/Makefile.in"; done
+[ -n "$undelayed" ] && echo "::notice::delay imports linked as plain imports:$undelayed"
 xi_built=0; xi_failed=""
 if [ "$xi_patched" = 1 ]; then
     for d in $XI; do
