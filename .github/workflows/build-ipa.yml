@@ -957,6 +957,11 @@ jobs:
       - name: Patch DXMT byte-aligned vertex fetch
         run: python3 tools/patch-dxmt-vb-align.py
 
+      # Wine's d2d1 brackets its draws with SwapDeviceContextState, which was
+      # IMPLEMENT_ME (abort): Rockstar Games Launcher exited with code 3.
+      - name: Patch DXMT context state swap
+        run: python3 tools/patch-dxmt-context-state-swap.py
+
       # God of War died on a loading screen at 7.5 GB: 2.4 GB of native malloc in
       # two seconds while it created its shaders. DXMT keeps every shader with
       # airconv's parsed program; the parse is now dropped after creation and
