@@ -55,6 +55,7 @@ gate = create[create.index('/* madeira-bcd: Social Club\'s Chromium -- see sc_he
 gate = gate[:gate.index('unixdir = get_unix_curdir( params );')]
 assert 'getenv( "MADEIRA_SC_CEF" )' in gate and "(sc && sc[0] == '0') ? SC_NOT_HELPER" in gate
 assert 'if (kind == SC_CHILD)' in gate and 'return STATUS_ACCESS_DENIED;' in gate
+assert 'const char *h = getenv( "MADEIRA_SC_HELPER" );' in gate and "if (h && h[0] == '0')" in gate
 assert 'getenv( "MADEIRA_JITLESS" )' in gate and 'getenv( "MADEIRA_SC_CEF_FLAGS" )' in gate
 assert 'params->CommandLine.Buffer = nbuf;' in gate
 assert create.index('task #34 single-process CEF') < create.index("Social Club's Chromium -- see sc_helper_kind") \
