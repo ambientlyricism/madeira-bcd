@@ -17,6 +17,12 @@ Compiles the production code and checks:
   - virtual_ios.c (ios_sc_name_is, ios_sc_path_is_helper, ios_sc_refused_name, ios_sc_cef_refuse):
     libcef.dll and nvngx_dlss(g).dll are refused only in a Social Club client that is not the
     helper, with the switch on (log 21:26: nvngx_dlss.dll's 28 MB left libcef 1.8 MB short);
+  - virtual_ios.c ios_sc2_reported_highest: in layout 2, SocialClubHelper.exe alone (64-bit,
+    limit not already wider) is told HighestUserAddress 2 TB - 1; a model of V8 14's
+    DetermineAddressSpaceLimit (FEX's CPUID: 48 bits) then passes its CHECK (1 TB sandbox <
+    limit), which the clamped 512 GB fails, and plans a partially reserved sandbox of
+    512 GB halving to 8 GB; placement and server_ios.c's remote-allocation limits keep the
+    real limit (ios_highest_user_address);
   - virtual_ios.c env.MADEIRA_SC_PA_POOLS (ios_sc_pa_hold_arena, ios_sc_glued_pools,
     ios_sc_pa_drop_hold) against a model Mach map and allocator: not opted in, nothing
     moves and nothing is granted; opted in, the FEX arena boots at 0x7d00000000 (12 GB)
@@ -95,6 +101,21 @@ assert 'ios_soft' not in function(native, 'static NTSTATUS ios_sc_glued_pools(')
 print('PASS: only SocialClubHelper.exe\'s 32 GB-aligned 32 GB reserve takes the glued-pools path; '
       'the FEX arena moves only with env.MADEIRA_SC_PA_POOLS = 1')
 
+sysinfo = function(native, 'void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )')
+real_expr = ('    if (wow64) info->HighestUserAddress = (char *)get_wow_user_space_limit() - 1;\n'
+             '    else info->HighestUserAddress = (char *)user_space_limit - 1;\n')
+widen = sysinfo.index('ios_sc2_reported_highest( real, wow64, ios_sc_layout_mode, ios_sc_current_is_helper() );')
+assert sysinfo.index(real_expr) < widen < sysinfo.index('/* ml991: report, once,'), 'widened after the real value, logged by ml991'
+assert 'if (!wow64 && ios_sc_layout_mode == 2 && ios_sc_cef_enabled())' in sysinfo
+assert 'user_space_limit =' not in sysinfo, 'only the report changes'
+real_fn = function(native, 'ULONG_PTR ios_highest_user_address( BOOL wow64 )')
+assert 'return wow64 ? get_wow_user_space_limit() - 1 : (ULONG_PTR)user_space_limit - 1;' in real_fn
+server = (root / 'build/ntdll-unix/server_ios.c').read_text()
+assert 'sbi.HighestUserAddress' not in server and 'virtual_get_system_info' not in server, \
+    'remote-allocation limits must not use the reported (possibly widened) value'
+assert server.count('limit_high = min( ios_highest_user_address( is_wow64() ), call->') == 2
+print('PASS: virtual_get_system_info widens only the report; server_ios.c\'s remote-allocation limits use the real one')
+
 # --- the code under test ----------------------------------------------------------
 enums = proc[proc.index('enum { SC_NOT_HELPER = 0'):]
 enums = enums[:enums.index('\n\n')] + '\n'
@@ -121,7 +142,8 @@ sc_decl += 'static void *ios_jit_current_peb( void ) { return (void *)1; }\n'
 sc_decl += ('static void ios_sc_grant_add( uint64_t v, uint64_t r, uint64_t real, uint64_t asked, int k, void *p ) '
             '{ (void)v; (void)r; (void)real; (void)asked; (void)k; (void)p; grants++; }\n')
 sc_decl += function(native, 'static int ios_sc_layout_pick(') + function(native, 'static int ios_sc_layout(void)')
-glued = function(native, 'static int ios_sc_pa_hold_arena(') + \
+glued = function(native, 'static ULONG_PTR ios_sc2_reported_highest(') + \
+    function(native, 'static int ios_sc_pa_hold_arena(') + \
     function(native, 'static void ios_sc_pa_drop_hold(void)') + \
     function(native, 'static NTSTATUS ios_sc_glued_pools(')
 
@@ -133,6 +155,7 @@ harness = r'''
 typedef uint16_t WCHAR;
 typedef unsigned int NTSTATUS, ULONG;
 typedef size_t SIZE_T;
+typedef uintptr_t ULONG_PTR;
 #define STATUS_SUCCESS 0
 #define STATUS_NO_MEMORY 0xc0000017
 #define STATUS_CONFLICTING_ADDRESSES 0xc0000018
@@ -347,6 +370,45 @@ static void gate_and_cmdline( void )
     printf("PASS: libcef.dll and nvngx_dlss(g).dll are refused only in a Social Club client that is not the helper, switch on\n");
 }
 
+/* V8 14 sandbox.cc DetermineAddressSpaceLimit on Windows x64: min(CPUID bits - 1, the power of two at or
+ * above lpMaximumApplicationAddress + 1), 48 bits when out of [36, 64] */
+static uint64_t v8_address_space_limit( uint64_t highest, unsigned cpuid_bits )
+{
+    uint64_t end = highest + 1;
+    unsigned sw = 64 - __builtin_clzll( end - 1 ), hw = cpuid_bits - 1, bits = sw < hw ? sw : hw;
+    if (bits < 36 || bits > 64) bits = 48;
+    return 1ull << bits;
+}
+
+static void address_limit( void )
+{
+    const uint64_t clamped = 0x7fffffffffull, tb = 1ull << 40, sandbox = tb, min_reserve = 8ull << 30;
+    uint64_t told = ios_sc2_reported_highest( clamped, 0, 2, 1 ), limit, reserve, steps = 0;
+
+    if (told != IOS_SC2_WIDE_HIGHEST || told != 0x1ffffffffffull) FAIL("helper told 0x%llx\n", (unsigned long long)told);
+    if (ios_sc2_reported_highest( clamped, 0, 2, 0 ) != clamped) FAIL("the game widened\n");
+    if (ios_sc2_reported_highest( clamped, 0, 1, 1 ) != clamped || ios_sc2_reported_highest( clamped, 0, 0, 1 ) != clamped)
+        FAIL("widened outside layout 2\n");
+    if (ios_sc2_reported_highest( 0x7ffeffff, 1, 2, 1 ) != 0x7ffeffff) FAIL("a WoW64 guest limit widened\n");
+    if (ios_sc2_reported_highest( 0x7ffffffeffffull, 0, 2, 1 ) != 0x7ffffffeffffull) FAIL("MADEIRA_WIDE_USER_VA narrowed\n");
+    /* the wall: 512 GB fails V8's CHECK_LT(kSandboxSize, address_space_limit) */
+    if (v8_address_space_limit( clamped, 48 ) != 512ull << 30 || sandbox < v8_address_space_limit( clamped, 48 ))
+        FAIL("model: the clamped limit should fail V8's CHECK\n");
+    limit = v8_address_space_limit( told, 48 );   /* FEX CPUID 0x80000008: 48 linear address bits */
+    if (limit != 2 * tb || !(sandbox < limit)) FAIL("told 2 TB: limit 0x%llx\n", (unsigned long long)limit);
+    reserve = limit / 4 < sandbox ? limit / 4 : sandbox;
+    if (reserve != 512ull << 30) FAIL("max reservation 0x%llx\n", (unsigned long long)reserve);
+    if (reserve >= sandbox) FAIL("a fully reserved sandbox would be tried\n");
+    for (; reserve >= min_reserve; reserve /= 2) steps++;
+    if (steps != 7) FAIL("%llu partially reserved steps\n", (unsigned long long)steps);
+    /* InitializeAsPartiallyReservedSandbox keeps a base <= limit / 2 (else frees it and retries) */
+    if (IOS_SC2_CAGE_BASE > limit / 2) FAIL("V8 would free the cage: it wants a base <= 0x%llx\n",
+                                            (unsigned long long)(limit / 2));
+    printf("PASS: layout 2 tells SocialClubHelper.exe alone HighestUserAddress 0x%llx: V8's limit 2^%d passes its 1 TB "
+           "CHECK (the clamped 512 GB fails it); partially reserved sandbox 512 GB -> 8 GB in 7 steps\n",
+           (unsigned long long)told, 64 - __builtin_clzll( limit ) - 1);
+}
+
 /* the boot half runs once per process, so each case is its own run of this binary */
 static void not_opted_in( void )
 {
@@ -419,7 +481,7 @@ static void layout2( void )   /* the Oilpan 4 GB is held by ios_sc2_boot_holds, 
 int main( int argc, char **argv )
 {
     const char *mode = argc > 1 ? argv[1] : "";
-    if (!strcmp( mode, "gate" )) gate_and_cmdline();
+    if (!strcmp( mode, "gate" )) { gate_and_cmdline(); address_limit(); }
     else if (!strcmp( mode, "off" )) not_opted_in();
     else if (!strcmp( mode, "move-fails" )) move_fails();
     else if (!strcmp( mode, "on" )) opted_in();

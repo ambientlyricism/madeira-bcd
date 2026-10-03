@@ -12635,6 +12635,30 @@ static int ios_sc2_classify( uint64_t size, uint64_t hint, unsigned held, int e_
     return IOS_SC2_NONE;
 }
 
+/* Layout 2: the HighestUserAddress SocialClubHelper.exe is told (wall 2 of the
+ * agent-sc-next-walls report). V8 14 (Chromium 142) takes its address-space
+ * limit as min(CPUID's virtual address bits - 1, lpMaximumApplicationAddress + 1
+ * rounded up to a power of two) and CHECKs kSandboxSize (1 TB on Windows x64)
+ * against it before reserving anything (sandbox.cc DetermineAddressSpaceLimit,
+ * Sandbox::Initialize). ml990 clamps user_space_limit to the 512 GB this device
+ * can map, so V8 gets 2^39 and dies on the CHECK. Told 2 TB (FEX's CPUID leaf
+ * 0x80000008 says 48 bits), V8 passes it and goes straight to a partially
+ * reserved sandbox: 512 GB halving to 8 GB, one hinted and one unhinted
+ * VirtualAlloc2 per step. Anything above 512 GB still fails
+ * (allocate_virtual_memory refuses a base past address_space_limit, map_view
+ * finds no room for a size that large), and the 8 GB step gets the cage
+ * (ios_sc2_ex_cage). Only the report changes: user_space_limit and every
+ * placement keep the real limit, as do server_ios.c's remote-allocation limits
+ * (ios_highest_user_address). Not for WoW64 (a guest limit), nor when the limit
+ * is already wider (env.MADEIRA_WIDE_USER_VA). */
+#define IOS_SC2_WIDE_HIGHEST 0x1ffffffffffULL   /* 2 TB - 1 */
+
+static ULONG_PTR ios_sc2_reported_highest( ULONG_PTR real, int wow64, int layout, int helper )
+{
+    if (wow64 || layout != 2 || !helper || real >= IOS_SC2_WIDE_HIGHEST) return real;
+    return IOS_SC2_WIDE_HIGHEST;
+}
+
 /* Hold slot k natively (PROT_NONE, no view). [0x7000000000, +4 GB) may already
  * be held by the app (StikJITHelper.swift): a PROT_NONE region covering it is
  * taken over as the hold. */
@@ -19579,6 +19603,28 @@ void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
     if (wow64) info->HighestUserAddress = (char *)get_wow_user_space_limit() - 1;
     else info->HighestUserAddress = (char *)user_space_limit - 1;
 
+    /* madeira-bcd: Social Club layout 2 -- see ios_sc2_reported_highest */
+    if (!wow64 && ios_sc_layout_mode == 2 && ios_sc_cef_enabled())
+    {
+        ULONG_PTR real = (ULONG_PTR)info->HighestUserAddress;
+        ULONG_PTR told = ios_sc2_reported_highest( real, wow64, ios_sc_layout_mode, ios_sc_current_is_helper() );
+
+        if (told != real)
+        {
+            static void *said;
+            void *peb = ios_jit_current_peb();
+
+            info->HighestUserAddress = (void *)told;
+            if (said != peb)
+            {
+                said = peb;
+                dprintf( 2, "[sc-cef] layout 2: SocialClubHelper.exe (peb=%p) told HighestUserAddress=%p (V8 CHECKs "
+                            "its 1 TB sandbox against lpMaximumApplicationAddress); placement keeps %p\n",
+                         peb, (void *)told, (void *)real );
+            }
+        }
+    }
+
     /* ml991: report, once, exactly what an application is told about memory.
      *
      * rdr59's wall is a 0x700000000 (28,672 MB) MEM_RESERVE that cannot be
@@ -19612,6 +19658,16 @@ void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
                      phys, phys >> 20, virt, virt >> 20 );
         }
     }
+}
+
+/* madeira-bcd: the highest user address placement may use -- what
+ * virtual_get_system_info reports before ios_sc2_reported_highest widens it for
+ * SocialClubHelper.exe. server_ios.c caps a remote allocation's or view's
+ * limit_high with it: the widened value would fail get_extended_params' check
+ * against user_space_limit. */
+ULONG_PTR ios_highest_user_address( BOOL wow64 )
+{
+    return wow64 ? get_wow_user_space_limit() - 1 : (ULONG_PTR)user_space_limit - 1;
 }
 
 
