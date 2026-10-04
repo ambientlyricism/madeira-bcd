@@ -5,7 +5,8 @@ Compiles the production alias-push code from build/ntdll-unix/virtual_ios.c
 (ios_jit_add_mapping, unixcall_ios_push_jit_aliases and its helpers, the
 callback drop in ios_jit_reclaim_process, ios_patch_rtl_pc_to_file_header_current)
 against a model of FEX's alias table (FEX/Source/Windows/ARM64EC/IosJitAlias.cpp:
-one entry per PE range, an overlapping add retires the older entry, reverse
+one entry per PE range, an add overlapping an entry's PE or (with
+tools/patch-fex-ios-alias-retire-jit.py) JIT range retires it, reverse
 translation walks oldest-first) with one table per emulator, as on the device
 where every x64 pseudo-process loads its own libarm64ecfex.dll.
 
@@ -56,6 +57,17 @@ child = function(loader, 'DECLSPEC_EXPORT void wine_ios_child_main(')
 assert child.index('ios_jit_copy_module_for_child(pLdrInitializeThunk, child_peb)') \
     < child.index('ios_patch_rtl_pc_to_file_header_current( pLdrInitializeThunk )') \
     < child.index('server_init_process_done();'), 'child copy must be patched before the child runs'
+
+# The FEX build patch that retires dead entries on a reused JIT range applies
+# to the pinned FEX and is wired into the xtajit64 build.
+assert 'patch-fex-ios-alias-retire-jit.py' in (root / 'tools/build-xtajit64.sh').read_text()
+with tempfile.TemporaryDirectory(prefix='madeira-alias-retire-') as d:
+    cpp = Path(d) / 'IosJitAlias.cpp'
+    cpp.write_text((root / 'FEX/Source/Windows/ARM64EC/IosJitAlias.cpp').read_text())
+    for _ in range(2):
+        subprocess.run(['python3', str(root / 'tools/patch-fex-ios-alias-retire-jit.py'), str(cpp)], check=True,
+                       capture_output=True)
+    assert '(jb < JitBase + Size && JitBase < jb + sz)' in cpp.read_text()
 
 # The callback drop runs before the pool is reclaimed.
 reclaim = function(native, 'void ios_jit_reclaim_process( void *peb )')
@@ -119,8 +131,9 @@ static void fex_add( struct fex *f, uint64_t pe, uint64_t jit, uint64_t size )
     if (pe < 0x100000000ull) return;                       /* sub-floor table, not modelled */
     for (int i = 0; i < f->n; i++)
         if (f->e[i].pe == pe && f->e[i].jit == jit && f->e[i].size == size) return;
-    for (int i = 0; i < f->n; i++)                          /* retire PE overlaps */
-        if (f->e[i].size && f->e[i].pe < pe + size && pe < f->e[i].pe + f->e[i].size) f->e[i].size = 0;
+    for (int i = 0; i < f->n; i++)                          /* retire PE and JIT overlaps */
+        if (f->e[i].size && ((f->e[i].pe < pe + size && pe < f->e[i].pe + f->e[i].size) ||
+                             (f->e[i].jit < jit + size && jit < f->e[i].jit + f->e[i].size))) f->e[i].size = 0;
     for (int i = 0; i < f->n; i++)
         if (!f->e[i].size) { f->e[i].pe = pe; f->e[i].jit = jit; f->e[i].size = size; return; }
     f->e[f->n].pe = pe; f->e[f->n].jit = jit; f->e[f->n].size = size; f->n++;
@@ -185,7 +198,8 @@ int main( int argc, char **argv )
     cur_peb = CHILD_PEB;
     ios_jit_add_mapping( (void *)0x140000000ull, (void *)0x14a022000ull, 0x5b81000 );     /* GTA5_Enhanced.exe */
     ios_jit_add_mapping( (void *)0x71fcdb0000ull, (void *)0x14fce0000ull, 0x40f000 );     /* its libarm64ecfex */
-    assert( fex_rev( &fex_main, 0x14a022010ull ) == 0x140000010ull );                       /* old behaviour */
+    /* per-process: the child keeps them for its own drain; old rule: the main gets them */
+    assert( fex_rev( &fex_main, 0x14a022010ull ) == (pp ? 0x14a022010ull : 0x140000010ull) );
     int main_adds = fex_main.adds;
 
     reg.callback = cb_child;
@@ -274,9 +288,18 @@ int main( int argc, char **argv )
             assert( fex_rev( svc_table, 0x190000010ull + k * 0x100000ull ) == 0x7200000010ull + k * 0x100000ull );
         ios_jit_add_mapping( (void *)0x7300000000ull, (void *)0x1a0000000ull, 0x10000 );      /* WINTRUST */
         assert( fex_rev( svc_table, 0x1a0000010ull ) == 0x7300000010ull );
-        cur_peb = OTHER;                                        /* without an emulator: the last registrant */
+        cur_peb = OTHER;                                        /* without an emulator: kept for its own drain */
         ios_jit_add_mapping( (void *)0x7310000000ull, (void *)0x1a1000000ull, 0x10000 );
-        assert( fex_rev( svc_table, 0x1a1000010ull ) == 0x7310000010ull );
+        assert( fex_rev( svc_table, 0x1a1000010ull ) == 0x1a1000010ull );
+        cur_peb = NULL;                                         /* no PEB at all: the last registrant */
+        ios_jit_add_mapping( (void *)0x7318000000ull, (void *)0x1a1800000ull, 0x10000 );
+        assert( fex_rev( svc_table, 0x1a1800010ull ) == 0x7318000010ull );
+        cur_peb = OTHER;
+        /* build 376: a dead exe's entry, then a new image on its reused JIT range
+         * (tools/patch-fex-ios-alias-retire-jit.py): the new one wins */
+        fex_add( svc_table, 0x1231e0000ull, 0x1c0000000ull, 0x1b0000 );
+        fex_add( svc_table, 0x73e8af0000ull, 0x1c0000000ull - 0x2000, 0xe0000 );
+        assert( fex_rev( svc_table, 0x1c001878aull - 0x2000 ) == 0x73e8b0878aull );
         ios_alias_cb_set( OTHER, cb_main );                     /* with one: its own, not the service's */
         ios_jit_add_mapping( (void *)0x7320000000ull, (void *)0x1a2000000ull, 0x10000 );
         assert( fex_rev( svc_table, 0x1a2000010ull ) == 0x1a2000010ull );

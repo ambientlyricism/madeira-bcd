@@ -3487,8 +3487,9 @@ static int ios_jit_alias_has_emulator( void *peb )
  * and five restarts later the JIT pool was exhausted.
  *
  * Now each registered emulator keeps its own callback: an image goes to the
- * emulator of the process that maps it, and only when that process has none
- * to the last registrant as before. The drain pushes the registering
+ * emulator of the process that maps it; a known process without one yet keeps
+ * the image for its own drain, and only an image mapped with no PEB at all
+ * goes to the last registrant as before. The drain pushes the registering
  * process's own and unattributed mappings first and other processes' only
  * while the table keeps IOS_ALIAS_DRAIN_RESERVE entries free. */
 #define IOS_FEX_ALIAS_MAX       256   /* kMaxEntries in FEX's IosJitAlias.cpp */
@@ -3642,7 +3643,15 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
     if ((own_cb = ios_alias_cb_for( ios_jit_current_peb() )))
         own_cb((unsigned long long)(uintptr_t)pe_base, (unsigned long long)(uintptr_t)jit_base,
                (unsigned long long)size);
-    else if (ios_jit_alias_pushback_cb)
+    /* madeira-bcd: per-process, a known process whose emulator has not
+     * registered yet keeps its image to itself -- its drain pushes it (map_peb
+     * == self). Handing it to the last registrant left a dead entry there once
+     * the process exited and its pool range was reused: GTA V Enhanced build
+     * 376 (2026-10-04 10:29), RockstarService.exe's "start" instance mapped its
+     * exe before registering, the launcher's emulator got it, and the
+     * launcher's cryptnet.dll later landed on that range and was reverse-
+     * translated to the dead exe (see tools/patch-fex-ios-alias-retire-jit.py). */
+    else if (ios_jit_alias_pushback_cb && !(ios_alias_per_process_enabled() && ios_jit_current_peb()))
     {
         /* madeira-bcd diagnostic, no behaviour change: name an image that a
          * process maps after ANOTHER process registered its emulator. The push
