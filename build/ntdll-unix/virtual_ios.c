@@ -12831,6 +12831,152 @@ static int ios_sc_current_is_helper(void)
     return ios_sc_path_is_helper( pp->ImagePathName.Buffer, pp->ImagePathName.Length / sizeof(WCHAR) );
 }
 
+/* madeira-bcd: [sc-rph] the renderer half of Social Club's pages under
+ * --single-process.
+ *
+ * SocialClubHelper.exe picks its CefApp by process type: no --type= gets the
+ * browser app, --type=renderer the renderer app. Only the renderer app's
+ * GetRenderProcessHandler returns a handler (Rockstar's page bridge: it reads
+ * "rgsc-ipc-channel-name" when a browser is created, logs "Renderer IPC
+ * channel: ..." and connects the page to the launcher); the browser app's
+ * returns NULL. A single-process Chromium asks the BROWSER app for the
+ * renderer's handler, so that half never ran. GTA log 2026-10-04 12:56: the
+ * launcher sent four navigations (two online, two offline file:// pages), each
+ * naming a fresh channel rgsc_ipc_<pid>_channel_1, _2, ...; every page loaded
+ * (load-start / load-end events came back over channel_0), nobody ever opened
+ * those channels, and the launcher gave up "timed out loading both its online
+ * and offline content" (SC_INIT_ERR_WEBSITE_FAILED_LOAD). A renderer process of
+ * its own cannot exist here: layout 2 has room for one Chromium.
+ *
+ * For the one helper build analysed (TimeDateStamp 0x6a86d563, SizeOfImage
+ * 0x244000) every byte this relies on is checked first. Then a 112-byte x64
+ * thunk goes into the zero tail of .text (past SizeOfRawData, cleared by the
+ * mapper above) and the browser app's GetRenderProcessHandler vtable slot
+ * points to it. The thunk builds the helper's own renderer app once (its
+ * operator new and constructor), keeps one reference to it in the zero tail of
+ * .data's last page, and returns that app's handler through the helper's own
+ * getter (which adds the caller's reference):
+ *     push rbx; sub rsp,0x30; mov rbx,rdx
+ *     mov rax,[cache]; test rax,rax; jnz have
+ *     mov ecx,0x60; call new; test rax,rax; jz none
+ *     mov rcx,rax; mov edx,1; call RendererApp::RendererApp
+ *     mov [rsp+0x20],rax; AddRef through the virtual base; mov rax,[rsp+0x20]
+ *     mov [cache],rax
+ *   have: mov rcx,rax; mov rdx,rbx; call App::GetRenderProcessHandler
+ *   out:  mov rax,rbx; add rsp,0x30; pop rbx; ret
+ *   none: mov qword [rbx],0; jmp out
+ * Applied after relocation and before the section protections, so the JIT-pool
+ * copy of .text carries it. Any mismatch: nothing is written and the reason is
+ * logged. env.MADEIRA_SC_RENDER_HANDLER = 0 turns it off; so does
+ * env.MADEIRA_SC_CEF = 0 (no --single-process then). */
+#define IOS_SCH_STAMP       0x6a86d563u
+#define IOS_SCH_SIZE        0x244000u
+#define IOS_SCH_TEXT        0x1000u      /* .text: VirtualSize 0x17f34c, raw 0x17f400 */
+#define IOS_SCH_DATA        0x1cc000u    /* .data: VirtualSize 0x43bc */
+#define IOS_SCH_THUNK       0x180800u
+#define IOS_SCH_CACHE       0x1d0ff8u
+#define IOS_SCH_VT_BROWSER  0x182268u    /* browser app's CefApp vtable */
+#define IOS_SCH_VT_RENDERER 0x182658u    /* renderer app's CefApp vtable */
+#define IOS_SCH_GET_HANDLER 0x51b0u      /* returns this+0x28 as a CefRefPtr */
+#define IOS_SCH_GET_NULL    0x4330u      /* returns a NULL CefRefPtr */
+#define IOS_SCH_SLOT_BROWSER  3          /* CefApp::GetBrowserProcessHandler */
+#define IOS_SCH_SLOT_RENDERER 4          /* CefApp::GetRenderProcessHandler */
+
+static const unsigned char ios_sch_thunk[112] =
+{
+    0x53, 0x48,0x83,0xec,0x30, 0x48,0x89,0xd3,
+    0x48,0x8b,0x05,0xe9,0x07,0x05,0x00, 0x48,0x85,0xc0, 0x75,0x3f,
+    0xb9,0x60,0x00,0x00,0x00, 0xe8,0xea,0xde,0xfb,0xff, 0x48,0x85,0xc0, 0x74,0x44,
+    0x48,0x89,0xc1, 0xba,0x01,0x00,0x00,0x00, 0xe8,0x70,0x61,0xe8,0xff,
+    0x48,0x89,0x44,0x24,0x20, 0x48,0x8b,0x48,0x08, 0x48,0x63,0x49,0x04,
+    0x48,0x8d,0x4c,0x08,0x08, 0x48,0x8b,0x11, 0xff,0x12,
+    0x48,0x8b,0x44,0x24,0x20, 0x48,0x89,0x05,0xa5,0x07,0x05,0x00,
+    0x48,0x89,0xc1, 0x48,0x89,0xda, 0xe8,0x52,0x49,0xe8,0xff,
+    0x48,0x89,0xd8, 0x48,0x83,0xc4,0x30, 0x5b, 0xc3,
+    0x48,0xc7,0x03,0x00,0x00,0x00,0x00, 0xeb,0xee,
+};
+
+/* The helper code the thunk and the vtable change rely on (no relocations in
+ * any of these ranges). */
+static const struct { unsigned int rva; unsigned char len; unsigned char bytes[64]; } ios_sch_code[] =
+{
+    { IOS_SCH_GET_HANDLER, 0x3b, { /* App::GetRenderProcessHandler / GetBrowserProcessHandler */
+      0x40,0x53,0x48,0x83,0xec,0x20,0x33,0xc0,0x4c,0x8d,0x41,0x28,0x48,0x85,0xc9,0x48,
+      0x8b,0xda,0x4c,0x0f,0x44,0xc0,0x4c,0x89,0x02,0x4d,0x85,0xc0,0x74,0x14,0x49,0x8b,
+      0x40,0x08,0x49,0x83,0xc0,0x08,0x48,0x63,0x48,0x04,0x49,0x03,0xc8,0x48,0x8b,0x01,
+      0xff,0x10,0x48,0x8b,0xc3,0x48,0x83,0xc4,0x20,0x5b,0xc3 } },
+    { 0x69a0, 0x20, { /* RendererApp::RendererApp(this, most_derived) */
+      0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xec,0x20,0x33,
+      0xf6,0x48,0x8b,0xd9,0x85,0xd2,0x74,0x21,0x48,0x8d,0x05,0x11,0xbd,0x17,0x00,0x48 } },
+    { 0x13e708, 0x20, { /* operator new */
+      0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0xeb,0x0f,0x48,0x8b,0xcb,0xe8,0xcd,
+      0xea,0x01,0x00,0x85,0xc0,0x74,0x13,0x48,0x8b,0xcb,0xe8,0xe9,0xd9,0x01,0x00,0x48 } },
+    { IOS_SCH_GET_NULL, 0x0b, { 0x48,0xc7,0x02,0x00,0x00,0x00,0x00,0x48,0x8b,0xc2,0xc3 } },
+    /* app_get_render_process_handler (CefAppCppToC): the C++ call is slot 4 */
+    { 0x7e267, 0x06, { 0x48,0x8b,0xcb,0xff,0x50,0x20 } },
+};
+
+/* Why `base` (SocialClubHelper.exe, mapped and relocated) cannot take the
+ * patch, or NULL when it can. */
+static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const IMAGE_NT_HEADERS *nt,
+                                     const IMAGE_SECTION_HEADER *sec )
+{
+    const ULONG64 *vb = (const ULONG64 *)(base + IOS_SCH_VT_BROWSER);
+    const ULONG64 *vr = (const ULONG64 *)(base + IOS_SCH_VT_RENDERER);
+    ULONG64 b = (ULONG64)(ULONG_PTR)base;
+    int i, text = 0, data = 0;
+    size_t k;
+
+    if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return "not a 64-bit x64 image";
+    if (nt->FileHeader.TimeDateStamp != IOS_SCH_STAMP || nt->OptionalHeader.SizeOfImage != IOS_SCH_SIZE ||
+        total_size < IOS_SCH_SIZE) return "another build (TimeDateStamp / SizeOfImage)";
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    {
+        if (sec[i].VirtualAddress == IOS_SCH_TEXT && sec[i].Misc.VirtualSize == 0x17f34c &&
+            sec[i].SizeOfRawData == 0x17f400 && (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)) text = 1;
+        if (sec[i].VirtualAddress == IOS_SCH_DATA && sec[i].Misc.VirtualSize == 0x43bc &&
+            (sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) data = 1;
+    }
+    if (!text || !data) return "section layout differs";
+    for (k = 0; k < sizeof(ios_sch_code) / sizeof(ios_sch_code[0]); k++)
+        if (memcmp( base + ios_sch_code[k].rva, ios_sch_code[k].bytes, ios_sch_code[k].len ))
+            return "code bytes differ";
+    if (vb[IOS_SCH_SLOT_BROWSER] != b + IOS_SCH_GET_HANDLER || vb[IOS_SCH_SLOT_RENDERER] != b + IOS_SCH_GET_NULL ||
+        vr[IOS_SCH_SLOT_BROWSER] != b + IOS_SCH_GET_NULL || vr[IOS_SCH_SLOT_RENDERER] != b + IOS_SCH_GET_HANDLER)
+        return "CefApp vtables differ (or not relocated to the view)";
+    for (k = 0; k < sizeof(ios_sch_thunk); k++)
+        if (base[IOS_SCH_THUNK + k]) return ".text tail not zero";
+    if (*(const ULONG64 *)(base + IOS_SCH_CACHE)) return ".data tail not zero";
+    return NULL;
+}
+
+static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IMAGE_NT_HEADERS *nt,
+                                         const IMAGE_SECTION_HEADER *sec, const UNICODE_STRING *nt_name )
+{
+    static int enabled = -1;
+    const char *why;
+
+    if (enabled < 0)
+    {
+        const char *e = getenv( "MADEIRA_SC_RENDER_HANDLER" );
+        enabled = !(e && e[0] == '0') && ios_sc_cef_enabled();
+    }
+    if (!enabled || !nt_name || !nt_name->Buffer ||
+        !ios_sc_path_is_helper( nt_name->Buffer, nt_name->Length / sizeof(WCHAR) )) return;
+    if ((why = ios_sch_mismatch( base, total_size, nt, sec )))
+    {
+        dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p not patched: %s -- its pages get no "
+                    "renderer bridge under --single-process (the launcher times out loading them)\n", base, why );
+        return;
+    }
+    memcpy( base + IOS_SCH_THUNK, ios_sch_thunk, sizeof(ios_sch_thunk) );
+    ((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = (ULONG64)(ULONG_PTR)base + IOS_SCH_THUNK;
+    dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p: the browser app now hands out its renderer "
+                "app's CefRenderProcessHandler (thunk %p) -- the page bridge runs under --single-process "
+                "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n", base, base + IOS_SCH_THUNK );
+}
+
 /* Does the calling pseudo-process have socialclub.dll mapped? The table is read
  * under the pool lock, the images' export names outside it (the caller holds
  * virtual_mutex, so none of this process's images can be unmapped meanwhile). */
@@ -19167,6 +19313,8 @@ static NTSTATUS map_image_into_view( struct file_view *view, const UNICODE_STRIN
             (unsigned long long)image_info->base,
             (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) ? 1 : 0 );
     }
+    /* madeira-bcd: [sc-rph], before the protections and the JIT-pool copy. */
+    ios_sc_render_handler_patch( ptr, total_size, nt, sec, nt_name );
 #endif
 
     /* set the image protections */
