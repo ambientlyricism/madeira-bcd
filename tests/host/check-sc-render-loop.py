@@ -10,6 +10,7 @@ Requires x86_64 Linux, GNU binutils, Python and a C compiler.
 from pathlib import Path
 import os
 import re
+import resource
 import subprocess
 import tempfile
 
@@ -69,6 +70,21 @@ with tempfile.TemporaryDirectory(prefix='madeira-sc-loop-') as name:
     assert 0x1d03bc <= define('IOS_SCH_TASK') < define('IOS_SCH_TASK') + 64 <= define('IOS_SCH_CACHE')
     print('PASS: assembly matches production bytes, entry RVAs and disjoint zero-tail ranges', flush=True)
 
+    drain_linker = folder / 'drain.ld'
+    drain_linker.write_text('SECTIONS { . = %d; .text : { *(.text) } }\n' % define('IOS_SCH_RENDER_DRAIN') +
+                           'current_loop = %d; run_until_idle = 0x1728b0;\n' % define('IOS_SCH_CURRENT_LOOP'))
+    subprocess.run(['as', '--64', str(root / 'tests/host/sc-render-drain.S'),
+                    '-o', str(folder / 'drain.o')], check=True)
+    subprocess.run(['ld', '-T', str(drain_linker), str(folder / 'drain.o'),
+                    '-o', str(folder / 'drain.elf')], check=True)
+    subprocess.run(['objcopy', '-O', 'binary', '--only-section=.text',
+                    str(folder / 'drain.elf'), str(folder / 'drain.bin')], check=True)
+    drain_blob = bytes(int(x, 16) for x in re.findall(r'0x([\da-fA-F]{2})', array('ios_sch_render_drain')))
+    assert (folder / 'drain.bin').read_bytes() == drain_blob
+    trace_blob = bytes(int(x, 16) for x in re.findall(r'0x([\da-fA-F]{2})', array('ios_sch_run_trace')))
+    assert define('IOS_SCH_RUN_INSTALL') + len(trace_blob) <= define('IOS_SCH_RENDER_DRAIN')
+    assert define('IOS_SCH_RENDER_DRAIN') + len(drain_blob) <= 0x181000
+
     code = r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -98,7 +114,7 @@ typedef struct { uint32_t VirtualAddress; union { uint32_t VirtualSize; } Misc;
 static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); return !(e && e[0] == '0'); }
 /* Test output contains no guest payload or addresses. */
 #define dprintf(...) ((void)0)
-''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
+''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
 static IMAGE_NT_HEADERS nt;
 static IMAGE_SECTION_HEADER sections[2];
 static WCHAR helper_name[] = {'S','o','c','i','a','l','C','l','u','b','H','e','l','p','e','r','.','e','x','e'};
@@ -147,6 +163,10 @@ static int allocations, constructions, originals, posts, allocation_fail, accept
 static int queue, due, completed, delayed_completed, work_calls, delayed_calls, idle_calls;
 static uint32_t expected_level = 1;
 static void *expected_handler = (void *)0x12345678;
+static struct Loop *browser_loop;
+static struct RunState *browser_parent;
+static void (ABI *drain_entry)(void);
+static int startup_queue, startup_completed, drain_calls, nest_drain, nested_drains;
 static struct Loop *ABI get_loop(void) { return current; }
 static void *ABI helper_new(size_t size)
 {
@@ -160,11 +180,37 @@ static struct Loop *ABI construct_loop(struct Loop *loop, int type)
     constructions++;
     return current = loop;
 }
+static void ABI run_until_idle(struct Loop *loop)
+{
+    assert(loop == current);
+    if (pthread_equal(pthread_self(), renderer)) {
+        /* The browser's pump is active while the renderer starts. The old
+         * renderer call targets that global loop and fails this assertion. */
+        assert(loop != browser_loop && browser_loop->state == browser_parent);
+    }
+    struct RunState *parent = loop->state;
+    struct RunState scoped = {parent ? parent->level + 1 : 1, 1, NULL};
+    loop->state = &scoped;
+    drain_calls++;
+    while (startup_queue) {
+        startup_queue--;
+        startup_completed++;
+    }
+    if (nest_drain) {
+        nest_drain = 0;
+        drain_entry();
+        assert(loop->state == &scoped);
+        nested_drains++;
+    }
+    assert(loop->state == &scoped);
+    loop->state = parent;
+}
 static void ABI original_webkit(void *handler)
 {
     assert(handler == expected_handler);
     assert(current || allocation_fail);
     originals++;
+    drain_entry(); /* Execute the production-patched renderer CALL site. */
 }
 static void verify_loop(struct Loop *loop)
 {
@@ -226,12 +272,17 @@ static void *run_renderer(void *entry)
     void (ABI *initialize)(void *) = entry;
     renderer = pthread_self();
     assert(!current);
+    startup_queue = 3;
+    nest_drain = 1;
     initialize(expected_handler);
     assert(allocations == 1 && constructions == 1 && originals == 1 && posts == 1);
     assert(current && current == task->loop && task->refs == 2);
+    assert(!current->state && !startup_queue && startup_completed == 3 &&
+           drain_calls == 2 && nested_drains == 1 && browser_loop->state == browser_parent);
     struct Loop *owned = current;
     initialize(expected_handler);
     assert(allocations == 1 && constructions == 1 && originals == 2 && posts == 1);
+    assert(drain_calls == 3);
 
     /* Tasks posted after IPC connects must run, including delayed callbacks. */
     queue = 3; due = 2;
@@ -271,6 +322,7 @@ static void *run_renderer(void *entry)
     before = posts;
     initialize(expected_handler);
     assert(allocations == 2 && constructions == 1 && originals == 3 && posts == before);
+    assert(drain_calls == 3); /* No TLS loop: never borrow the browser's loop. */
     assert(task->loop == owned && !current);
     free(owned);
     task->loop = NULL;
@@ -284,7 +336,7 @@ int main(int argc, char **argv)
     assert(image != MAP_FAILED);
     uint64_t view = (uintptr_t)image, got = 0;
     reset_image(image, view);
-    if (argc > 1) {
+    if (argc > 1 && !strcmp(argv[1], "disabled")) {
         reject_without_writes(image);
         assert(!munmap(image, IOS_SCH_SIZE));
         puts("PASS: disabled renderer/CEF adapter leaves the image unchanged");
@@ -301,7 +353,8 @@ int main(int argc, char **argv)
     const size_t dirty[] = { IOS_SCH_THUNK, IOS_SCH_LOOP_INIT, IOS_SCH_TASK,
                             IOS_SCH_TASK + 63, IOS_SCH_CACHE, IOS_SCH_VT_RPH, IOS_SCH_RUN_INSTALL,
                             IOS_SCH_RUN_INSTALL + sizeof(ios_sch_run_trace) - 1,
-                            IOS_SCH_RUN_RING, IOS_SCH_RUN_RING + IOS_SCH_RUN_RING_SIZE - 1 };
+                            IOS_SCH_RUN_RING, IOS_SCH_RUN_RING + IOS_SCH_RUN_RING_SIZE - 1,
+                            IOS_SCH_RENDER_DRAIN, IOS_SCH_RENDER_DRAIN + sizeof(ios_sch_render_drain) - 1 };
     for (size_t i = 0; i < sizeof(dirty) / sizeof(dirty[0]); i++) {
         reset_image(image, view); image[dirty[i]] ^= 1; reject_without_writes(image);
     }
@@ -310,6 +363,11 @@ int main(int argc, char **argv)
     reject_without_writes(image);
     reset_image(image, view);
     ios_sc_render_handler_patch(image, IOS_SCH_SIZE, &nt, sections, &name);
+    int32_t drain_disp = 0;
+    assert((unsigned char)image[IOS_SCH_RENDER_DRAIN_SITE] == 0xe8);
+    memcpy(&drain_disp, image + IOS_SCH_RENDER_DRAIN_SITE + 1, sizeof(drain_disp));
+    assert(IOS_SCH_RENDER_DRAIN_SITE + 5 + drain_disp == IOS_SCH_RENDER_DRAIN);
+    assert(!memcmp(image + IOS_SCH_RENDER_DRAIN, ios_sch_render_drain, sizeof(ios_sch_render_drain)));
     const size_t trace_sites[] = {0x174121, 0x17412b};
     const size_t trace_entries[] = {IOS_SCH_RUN_INSTALL, IOS_SCH_RUN_RESTORE};
     const size_t trace_spans[] = {7, 9};
@@ -349,9 +407,27 @@ int main(int argc, char **argv)
     stub(image, IOS_SCH_LOOP_WORK, (uintptr_t)do_work);
     stub(image, IOS_SCH_LOOP_DELAYED, (uintptr_t)do_delayed);
     stub(image, IOS_SCH_LOOP_IDLE, (uintptr_t)do_idle);
+    stub(image, 0x1728b0, (uintptr_t)run_until_idle);
+    /* Self-written call-frame fixture around the real patched CALL. */
+    const unsigned char enter[] = {0x48,0x83,0xec,0x28};
+    const unsigned char leave[] = {0x48,0x83,0xc4,0x28,0xc3};
+    memcpy(image + IOS_SCH_RENDER_DRAIN_SITE - sizeof(enter), enter, sizeof(enter));
+    memcpy(image + IOS_SCH_RENDER_DRAIN_SITE + 5, leave, sizeof(leave));
+    drain_entry = (void *)(image + IOS_SCH_RENDER_DRAIN_SITE - sizeof(enter));
+    if (argc > 1 && !strcmp(argv[1], "legacy-drain")) {
+        /* Control: the original global drain must fail the TLS ownership
+         * check while the browser's state is active on the other thread. */
+        int32_t old_disp = 0x11be60 - IOS_SCH_RENDER_DRAIN_SITE - 5;
+        memcpy(image + IOS_SCH_RENDER_DRAIN_SITE + 1, &old_disp, sizeof(old_disp));
+    }
     *(uintptr_t *)(image + IOS_SCH_POST_TASK) = (uintptr_t)post_delayed;
     assert(!mprotect(image + 0x1000, 0x180000, PROT_READ | PROT_EXEC));
     struct Loop browser = {0};
+    struct RunState active_browser = {7, 0, (void *)0x87654321};
+    browser.state = &active_browser;
+    browser_loop = &browser;
+    browser_parent = &active_browser;
+    *(struct Loop **)(image + 0x1cea00) = &browser;
     current = &browser;
     pthread_t thread;
     void *initialize = (void *)(uintptr_t)*(uint64_t *)(image + IOS_SCH_VT_RPH);
@@ -359,12 +435,18 @@ int main(int argc, char **argv)
     assert(!pthread_create(&thread, NULL, run_renderer, initialize));
     assert(!pthread_join(thread, NULL));
     assert(current == &browser); /* Renderer initialization never borrows browser TLS. */
+    assert(browser.state == browser_parent && active_browser.level == 7 &&
+           !active_browser.quit && active_browser.dispatcher == (void *)0x87654321);
     allocation_fail = 0;
     int before = posts;
     ((void (ABI *)(void *))(image + IOS_SCH_LOOP_INIT))(expected_handler);
     assert(current == &browser && posts == before && constructions == 1);
+    assert(browser.state == browser_parent && drain_calls == 4);
+    ((void (ABI *)(void))(image + 0x11be60))(); /* Browser's original global drain still works. */
+    assert(browser.state == browser_parent && drain_calls == 5);
     assert(!munmap(image, IOS_SCH_SIZE));
     puts("PASS: preferred vtables + unrelocated task callbacks execute; TLS, IPC work/timers, bounds, refs and shutdown");
+    puts("PASS: renderer startup drains its TLS work, nested states restore, active browser state stays intact");
     return 0;
 }
 '''
@@ -376,5 +458,9 @@ int main(int argc, char **argv)
                     '-O2', '-fsanitize=address,undefined', '-g', '-pthread', str(driver),
                     '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+    legacy = subprocess.run([str(binary), 'legacy-drain'], capture_output=True, text=True,
+                            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+    assert legacy.returncode != 0 and 'loop == current' in legacy.stderr, legacy.stderr
+    print('PASS: original renderer CALL fails the cross-thread TLS ownership control', flush=True)
     for variable in ('MADEIRA_SC_RENDER_HANDLER', 'MADEIRA_SC_CEF'):
         subprocess.run([str(binary), 'disabled'], check=True, env={**os.environ, variable: '0'})
