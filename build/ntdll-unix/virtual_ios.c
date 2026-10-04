@@ -3277,8 +3277,93 @@ static int ios_jit_alias_has_emulator( void *peb )
     return 0;
 }
 
+/* madeira-bcd: PER-PROCESS alias pushes (env MADEIRA_ALIAS_PER_PROCESS, default
+ * on; 0 restores the single last-registrant callback above).
+ *
+ * Each x64 pseudo-process has its own 256-entry IosAliasEntries table. Two
+ * things filled the wrong ones (GTA V Enhanced, build 372, 2026-10-04 08:08 log):
+ * an image mapped after a later process registered went to THAT process's table
+ * (Launcher's d3d11/dxgi/oleaut32 to the RockstarService start helper's), and
+ * every registration drained every process's mappings into the new table
+ * (28, 114, 141, 166, 196, 232, then 250-268 pushes), so a RockstarService
+ * started with a nearly full table. Its later WINTRUST.dll / cryptnet.dll
+ * stayed unregistered, the delay-load stub ran from the pool copy with no
+ * pool -> PE translation ("[iOS-xquery] MISS ... rev=" the same address,
+ * "NoExec instruction in entry block"), the service died with c0000005, the
+ * launcher reported "Failed to connect to the Rockstar Games Library Service",
+ * and five restarts later the JIT pool was exhausted.
+ *
+ * Now each registered emulator keeps its own callback: an image goes to the
+ * emulator of the process that maps it, and only when that process has none
+ * to the last registrant as before. The drain pushes the registering
+ * process's own and unattributed mappings first and other processes' only
+ * while the table keeps IOS_ALIAS_DRAIN_RESERVE entries free. */
+#define IOS_FEX_ALIAS_MAX       256   /* kMaxEntries in FEX's IosJitAlias.cpp */
+#define IOS_ALIAS_DRAIN_RESERVE 96
+typedef void (*ios_alias_cb_t)(unsigned long long, unsigned long long, unsigned long long);
+static struct { void *peb; ios_alias_cb_t cb; } ios_alias_cbs[IOS_ALIAS_REG_MAX];
+
+static int ios_alias_per_process_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        /* Default on. 0 restores the old pushes: every image goes to the emulator
+         * that registered last, and a registration drains every process's images. */
+        const char *env = getenv( "MADEIRA_ALIAS_PER_PROCESS" );
+        enabled = !(env && env[0] == '0' && !env[1]);
+    }
+    return enabled;
+}
+
+static ios_alias_cb_t ios_alias_cb_for( void *peb )
+{
+    int i;
+
+    if (!peb || !ios_alias_per_process_enabled()) return NULL;
+    for (i = 0; i < IOS_ALIAS_REG_MAX; i++)
+        if (ios_alias_cbs[i].peb == peb) return ios_alias_cbs[i].cb;
+    return NULL;
+}
+
+static void ios_alias_cb_set( void *peb, ios_alias_cb_t cb )
+{
+    int i, slot = -1;
+
+    if (!peb) return;
+    for (i = 0; i < IOS_ALIAS_REG_MAX; i++)
+    {
+        if (ios_alias_cbs[i].peb == peb) { slot = i; break; }
+        if (slot < 0 && !ios_alias_cbs[i].peb) slot = i;
+    }
+    if (slot < 0)
+    {
+        dprintf(2, "[alias-push] madeira-bcd peb=%p: no free per-process callback slot (%d), "
+                "its images go to the last registrant\n", peb, IOS_ALIAS_REG_MAX);
+        return;
+    }
+    ios_alias_cbs[slot].cb = cb;
+    __sync_synchronize();
+    ios_alias_cbs[slot].peb = peb;
+}
+
+static void ios_alias_cb_drop( void *peb )
+{
+    int i;
+
+    if (!peb) return;
+    for (i = 0; i < IOS_ALIAS_REG_MAX; i++)
+        if (ios_alias_cbs[i].peb == peb)
+        {
+            ios_alias_cbs[i].peb = NULL;
+            __sync_synchronize();
+            ios_alias_cbs[i].cb = NULL;
+        }
+}
+
 void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
 {
+    ios_alias_cb_t own_cb;
     int i;
 
     /* Task #33: purge every entry whose PE range OVERLAPS the new image's.
@@ -3361,7 +3446,10 @@ void ios_jit_add_mapping(void *pe_base, void *jit_base, size_t size)
      * (via the unix_ios_push_jit_aliases unix-call), forward this new
      * mapping to it too. Early mappings (added before xtajit64 loads) are
      * picked up by the iteration in unix_ios_push_jit_aliases. */
-    if (ios_jit_alias_pushback_cb)
+    if ((own_cb = ios_alias_cb_for( ios_jit_current_peb() )))
+        own_cb((unsigned long long)(uintptr_t)pe_base, (unsigned long long)(uintptr_t)jit_base,
+               (unsigned long long)size);
+    else if (ios_jit_alias_pushback_cb)
     {
         /* madeira-bcd diagnostic, no behaviour change: name an image that a
          * process maps after ANOTHER process registered its emulator. The push
@@ -3716,7 +3804,7 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
      * both exports are resolved from the mapped module at the end of this call. */
     struct ios_push_jit_aliases_args *params = args;
     void *self, *own, *prev_peb;
-    int i, pushed = 0, own_pushed = 0, parent_skipped = 0;
+    int i, pass, pushed = 0, own_pushed = 0, parent_skipped = 0, others_left = 0;
     if (!params || !params->callback) return STATUS_INVALID_PARAMETER;
     /* madeira-bcd: the process registering is the one running this unix call
      * (PE ntdll's arm64ec_process_init_dispatchers, on its first thread). */
@@ -3725,6 +3813,7 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
     prev_peb = ios_jit_alias_pushback_peb;
     ios_jit_alias_pushback_cb = params->callback;
     ios_jit_alias_pushback_peb = self;
+    if (ios_alias_per_process_enabled()) ios_alias_cb_set( self, params->callback );
     if (self && !ios_jit_alias_has_emulator( self ) && ios_jit_alias_registered_n < IOS_ALIAS_REG_MAX)
     {
         ios_jit_alias_registered[ios_jit_alias_registered_n] = self;
@@ -3749,8 +3838,26 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
      * one of the two is pushed: the registering process's own copy if it has
      * one (madeira-bcd, see ios_jit_alias_drain_wants above), else the parent
      * entry. Other processes' copies are never pushed. */
+    /* madeira-bcd: pass 0 pushes this process's own and unattributed mappings,
+     * pass 1 other processes' while the table keeps IOS_ALIAS_DRAIN_RESERVE
+     * free (see ios_alias_per_process_enabled); one pass when that is off. */
+    for (pass = 0; pass < 2; pass++)
     for (i = 0; i < ios_jit_mapping_count; i++)
     {
+        if (ios_alias_per_process_enabled() && self)
+        {
+            void *mapper = ios_jit_mappings[i].map_peb;
+            int mine = ios_jit_mappings[i].owner_peb == self || !mapper || mapper == self;
+
+            if (mine != !pass) continue;
+            if (pass && ios_jit_alias_drain_wants( i, own ) &&
+                pushed >= IOS_FEX_ALIAS_MAX - IOS_ALIAS_DRAIN_RESERVE)
+            {
+                others_left++;
+                continue;
+            }
+        }
+        else if (pass) break;
         if (!ios_jit_alias_drain_wants( i, own ))
         {
             if (!ios_jit_mappings[i].owner_peb)
@@ -3777,8 +3884,9 @@ NTSTATUS unixcall_ios_push_jit_aliases(void *args)
         pushed++;
     }
     dprintf(2, "[alias-push] madeira-bcd peb=%p registered its emulator (cb=%p; later pushes went to "
-            "peb=%p until now): %d mapping(s) pushed, %d own copy(ies), %d parent copy(ies) left out%s\n",
-            self, (void *)params->callback, prev_peb, pushed, own_pushed, parent_skipped,
+            "peb=%p until now): %d mapping(s) pushed, %d own copy(ies), %d parent copy(ies) left out, "
+            "%d of other processes left out%s\n",
+            self, (void *)params->callback, prev_peb, pushed, own_pushed, parent_skipped, others_left,
             own ? "" : (self ? " [MADEIRA_CHILD_OWN_NTDLL=0: old drain]" : " [no PEB]"));
     /* ml613: the guaranteed init path — resolve both FEX exports here, where the
      * emulator module is certainly mapped, instead of from a diagnostic probe
@@ -10640,6 +10748,7 @@ void ios_jit_reclaim_process( void *peb )
      * the next image map anywhere would call freed (later reused) code. Drop
      * the callback instead: the push had no live table to land in anyway, and
      * the next emulator to register gets the whole table from its drain. */
+    ios_alias_cb_drop( peb );
     if (peb == ios_jit_alias_pushback_peb && ios_jit_alias_pushback_cb)
     {
         dprintf(2, "[alias-push] madeira-bcd peb=%p exits while its emulator receives the alias pushes "
