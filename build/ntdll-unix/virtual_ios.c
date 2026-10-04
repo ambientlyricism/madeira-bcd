@@ -265,6 +265,113 @@ static size_t ios_pool_hole_between( size_t total, size_t head, size_t tail,
 /* 1 for a pool offset inside the hole (always 0 without a split). */
 #define IOS_POOL_IN_HOLE(o) ((size_t)(o) - ios_jit_hole_off < ios_jit_hole_end - ios_jit_hole_off)
 
+/* madeira-bcd POOL-LOW (StikJITHelper.swift, `pool-low = 1` in madeira.cfg or in a
+ * game's own file; env WINE_IOS_JIT_TAIL_REGION="<rx>:<size>", hex). Off by default.
+ *
+ * Every GTA V Enhanced log has a 416-476 MB free run BELOW the executable window
+ * (ml1036 census: 0x126000000+416MB .. 0x122400000+476MB, ending at 0x140000000),
+ * and build 374 (2026-10-04 09:25) ran the head dry at 557 of the 560 MB below the
+ * hole while 112 MB of the pool were FEX code buffers. The run cannot join the pool
+ * span: [rx, rx + size) would then contain the executable window, and everything
+ * here and in FEX treats that range as pool memory. So the app takes it as a THIRD
+ * debugger region, region C, outside the span, and maps its RW alias at the SAME
+ * RX->RW distance as the pool (one reservation [C's RW, pool RW + size), the
+ * part in between PROT_NONE), because FEX applies one DualMap::WriteOffset to
+ * every code buffer. Only the EC_CODE carves (FEX code buffers) come from C, first,
+ * and the pool tail takes over when C is full; image copies and anon RWX stay in
+ * the pool. C carves live in ios_tail_carves like any other carve, their `off` the
+ * (wrapping) distance from the pool's RX base, so rx + off and rw + off hold for
+ * them too. What still has to know about C is everything that asks "is this
+ * address in the pool?" for code: the signal and Mach handlers, NtContinue's
+ * native resume, the carve free and lookup, the warmer, Wine's free-area scan and
+ * the tripwires; they call ios_jit_low_contains / ios_jit_low_rw_contains. WoW64
+ * processes never get a C carve: their FEX refuses an executable allocation
+ * outside [WINE_IOS_JIT_RX, +SIZE) (AllocatorHooks.h). Without the env var the
+ * size is 0 and every test below is false. */
+uintptr_t ios_jit_low_rx_global, ios_jit_low_rw_global;
+size_t ios_jit_low_size_global;
+static volatile size_t ios_jit_low_reserved;   /* C's bump: bytes carved from its bottom */
+static int ios_jit_low_full_logged;
+#define IOS_POOL_LOW_MIN       (16u * 1024 * 1024)
+#define IOS_POOL_LOW_CARVE_MAX 0x8000000u         /* TAIL_MAX: FEX's own branch-range limit */
+
+/* 1 for an address in region C's RX side / RW side. Lock-free and async-signal-safe:
+ * the Mach and signal handlers in signal_arm64_ios.c call these. */
+int ios_jit_low_contains( uintptr_t a )
+{
+    size_t n = ios_jit_low_size_global;
+    return n && a - ios_jit_low_rx_global < n;
+}
+
+int ios_jit_low_rw_contains( uintptr_t a )
+{
+    size_t n = ios_jit_low_size_global;
+    return n && a - ios_jit_low_rw_global < n;
+}
+
+/* 1 when [a, a + size) touches region C's RX side, 2 its RW side, else 0. */
+static int ios_jit_low_overlaps( uintptr_t a, size_t size )
+{
+    size_t n = ios_jit_low_size_global;
+
+    if (!n || !size) return 0;
+    if (a < ios_jit_low_rx_global + n && a + size > ios_jit_low_rx_global) return 1;
+    if (a < ios_jit_low_rw_global + n && a + size > ios_jit_low_rw_global) return 2;
+    return 0;
+}
+
+/* WINE_IOS_JIT_TAIL_REGION against the pool: 1 with C's RX base and size when it
+ * is page-aligned, at least IOS_POOL_LOW_MIN, entirely below the pool span (so it
+ * can never overlap it or its hole) and its RW alias at the pool's distance does
+ * not wrap; 0 for anything else, which leaves pool-low off. */
+static int ios_pool_low_parse( const char *env, uint64_t pool_rx, uint64_t pool_rw, uint64_t pool_size,
+                               uint64_t *rx_out, uint64_t *size_out )
+{
+    char *sep = NULL;
+    uint64_t rx, size;
+
+    if (!env || !*env || !pool_rx || !pool_rw || !pool_size) return 0;
+    rx = strtoull( env, &sep, 16 );
+    if (!sep || *sep != ':') return 0;
+    size = strtoull( sep + 1, NULL, 16 );
+    if (!rx || (rx & 0x3fff) || (size & 0x3fff) || size < IOS_POOL_LOW_MIN) return 0;
+    if (rx < 0x100000000ULL || rx + size < rx || rx + size > pool_rx) return 0;
+    if (pool_rw < pool_rx - rx) return 0;
+    *rx_out = rx;
+    *size_out = size;
+    return 1;
+}
+
+/* Region C's bump: `want` bytes from C's bottom, or 0 when it does not fit (the
+ * pool tail serves it then). Never consumes anything on failure. */
+static int ios_pool_low_take( volatile size_t *reserved, size_t low_size, size_t want, size_t *off_out )
+{
+    size_t cur;
+
+    do
+    {
+        cur = *reserved;
+        if (want > low_size || cur > low_size - want) return 0;
+    } while (!__sync_bool_compare_and_swap( reserved, cur, cur + want ));
+    *off_out = cur;
+    return 1;
+}
+
+/* The RW alias of a pool with region C is one reservation from C's RW side to the
+ * pool's RW end: its base and length (what the Social Club layout checks). Without
+ * C it is [rw, rw + size). */
+static void ios_pool_alias_extent( uint64_t pool_rx, uint64_t pool_rw, uint64_t pool_size,
+                                   uint64_t low_rx, uint64_t low_size, uint64_t *lo, uint64_t *span )
+{
+    *lo = pool_rw;
+    *span = pool_size;
+    if (low_size && low_rx < pool_rx && pool_rw >= pool_rx - low_rx)
+    {
+        *lo = pool_rw - (pool_rx - low_rx);
+        *span = pool_size + (pool_rx - low_rx);
+    }
+}
+
 /* Gives back a refused tail carve's reservation: `added` bytes taken when the
  * counter went to `mine`. Unsplit this is the old fetch-and-sub. Split, a carve
  * may have jumped the hole, so `added` is more than its size: it is given back
@@ -355,6 +462,17 @@ void ios_jit_describe_pool_addr( const void *addr, char *buf, size_t buflen )
     if (!buf || !buflen) return;
     buf[0] = 0;
     if (!ps) { snprintf( buf, buflen, "pool not initialised" ); return; }
+
+    /* madeira-bcd pool-low: region C holds FEX code buffers only */
+    if (ios_jit_low_contains( a ) || ios_jit_low_rw_contains( a ))
+    {
+        int is_rx = ios_jit_low_contains( a );
+        size_t loff = a - (is_rx ? ios_jit_low_rx_global : ios_jit_low_rw_global);
+        snprintf( buf, buflen, "%s pool-low (region C) off=0x%lx of 0x%lx, carved 0x%lx -> FEX code buffer%s",
+                  is_rx ? "RX" : "RW", (unsigned long)loff, (unsigned long)ios_jit_low_size_global,
+                  (unsigned long)ios_jit_low_reserved, loff < ios_jit_low_reserved ? "" : " (NOT CARVED YET)" );
+        return;
+    }
 
     if (rw && a >= rw && a < rw + ps)      { base = rw; which = "RW"; }
     else if (rx && a >= rx && a < rx + ps) { base = rx; which = "RX"; }
@@ -802,6 +920,16 @@ static void *ios_pool_warmer_thread( void *arg )
             {
                 for (o = 0; o < head; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rx[o]; touched++; }
                 for (o = total - tail; o < total; o += 0x4000) { if (IOS_POOL_IN_HOLE(o)) continue; sink += rx[o]; touched++; }
+            }
+            /* madeira-bcd pool-low: region C's carved part holds FEX code buffers
+             * exactly like the tail -- warm both of its aliases too. */
+            if (ios_jit_low_size_global)
+            {
+                volatile const char *lrw = (volatile const char *)ios_jit_low_rw_global;
+                volatile const char *lrx = (volatile const char *)ios_jit_low_rx_global;
+                size_t used = ios_jit_low_reserved;
+                if (used > ios_jit_low_size_global) used = ios_jit_low_size_global;
+                for (o = 0; o < used; o += 0x4000) { sink += lrw[o]; sink += lrx[o]; touched += 2; }
             }
             (void)sink;
             cycle++;
@@ -3080,6 +3208,13 @@ static volatile size_t ios_jit_tail_reserved = 0;
 #define IOS_TAIL_CARVE_MAX 256
 static struct { size_t off; size_t size; int free; } ios_tail_carves[IOS_TAIL_CARVE_MAX];
 
+/* madeira-bcd pool-low: 1 for a carve offset in region C (`off` is its wrapping
+ * distance from the pool's RX base, see ios_jit_low_rx_global). */
+static int ios_tail_carve_in_low( size_t off )
+{
+    return ios_jit_low_contains( (uintptr_t)ios_jit_rx_base_global + off );
+}
+
 /* ml557 (#74 REGRESSION): is any thread's PC currently INSIDE this tail carve?
  *
  * ml438 made a MEM_RELEASE of a live tail EC-buffer carve mark it free for reuse,
@@ -3158,7 +3293,9 @@ int ios_tail_carve_lookup_trylock( unsigned long long rx_addr, unsigned *idx_out
     unsigned i;
     int found = 0;
 
-    if (!rx_base || rx_addr < rx_base) return 0;
+    /* madeira-bcd pool-low: a carve in region C lies below the pool (its `off`
+     * wraps, rx_base + off is still its address) */
+    if (!rx_base || (rx_addr < rx_base && !ios_jit_low_contains( (uintptr_t)rx_addr ))) return 0;
     if (pthread_mutex_trylock( &ios_tail_carve_lock ) != 0) return -1;
     for (i = 0; i < ios_tail_carve_n; i++)
     {
@@ -3210,6 +3347,12 @@ void ios_pool_va_warn( const char *who, const void *addr, size_t size )
         warned++;
         dprintf( 2, "[pool-va] %s addr=%p size=0x%lx INSIDE RW pool off=0x%lx  <== foreign map/unmap\n",
                  who, addr, (unsigned long)size, (unsigned long)(a - rw) );
+    }
+    else if (ios_jit_low_overlaps( a, size ))
+    {
+        warned++;
+        dprintf( 2, "[pool-va] [pool-low] %s addr=%p size=0x%lx INSIDE region C's %s side  <== foreign map/unmap\n",
+                 who, addr, (unsigned long)size, ios_jit_low_overlaps( a, size ) == 1 ? "RX" : "RW" );
     }
 }
 
@@ -4099,8 +4242,11 @@ void ios_mono_bridge_capture( uint64_t teb, uint64_t frame, uint64_t host_pc, ui
      * from a register in a faulting thread and is not trusted. */
     if (ios_safe_read64( frame + b->off_inline_jit_block_header, &block_begin ) || !block_begin)
     { __atomic_add_fetch( &b->n_reject_bad_block, 1, __ATOMIC_RELAXED ); return; }
-    /* Must look like a JIT block, or we would hand FEX a wild pointer. */
-    if (b->code_lo && (block_begin < b->code_lo || block_begin >= b->code_hi))
+    /* Must look like a JIT block, or we would hand FEX a wild pointer. madeira-bcd
+     * pool-low: FEX's code buffers may also live in region C, outside [code_lo,
+     * code_hi) (the pool span). */
+    if (b->code_lo && (block_begin < b->code_lo || block_begin >= b->code_hi) &&
+        !ios_jit_low_contains( (uintptr_t)block_begin ))
     { __atomic_add_fetch( &b->n_reject_outside_code, 1, __ATOMIC_RELAXED ); return; }
 
     for (i = 0; i < IOS_MONO_MAX_CONTEXTS; i++)
@@ -6513,6 +6659,13 @@ static inline ULONG_PTR ios_usable_va_floor_get(void)
 {
     size_t sz = ios_jit_pool_size_global;
     if (ios_sc_layout_mode == 2) return (ULONG_PTR)0x7100000000ULL;   /* IOS_SC2_FLOOR */
+    /* madeira-bcd pool-low: the RW reservation starts with region C's alias, so the
+     * pool's own alias sits higher than 0x7000000000; the floor is where it ends. */
+    if (ios_jit_low_size_global && sz)
+    {
+        ULONG_PTR end = (ULONG_PTR)ios_jit_rw_base_global + sz;
+        if (end > (ULONG_PTR)0x7000000000ULL + sz && end < (ULONG_PTR)0x7400000000ULL) return end;
+    }
     return (ULONG_PTR)0x7000000000ULL + (ULONG_PTR)(sz ? sz : (896ULL << 20));
 }
 #define ios_usable_va_floor (ios_usable_va_floor_get())
@@ -7008,6 +7161,7 @@ static int ios_jit_pool_intersects( const void *addr, size_t size )
     if (!sz) return 0;
     if (rx && a < rx + sz && e > rx) return 1;
     if (rw && a < rw + sz && e > rw) return 1;
+    if (ios_jit_low_overlaps( (uintptr_t)a, size )) return 1;   /* madeira-bcd pool-low: region C */
     return 0;
 }
 
@@ -7333,7 +7487,8 @@ static void ios_jit_range_tripwire( const char *tag, const void *addr, size_t si
     static volatile int n;
 
     if (!ps || !addr || !size) return;
-    if (!((rx && a < rx + ps && e > rx) || (rw && a < rw + ps && e > rw))) return;
+    if (!((rx && a < rx + ps && e > rx) || (rw && a < rw + ps && e > rw) ||
+          ios_jit_low_overlaps( a, size ))) return;   /* madeira-bcd pool-low: region C too */
     if (__sync_fetch_and_add( &n, 1 ) > 300) return;
     dprintf(2, "[jit-tripwire] %s addr=%p size=0x%lx prot=%d caller=%p (pool rx=%p rw=%p)\n",
             tag, addr, (unsigned long)size, prot, retaddr, (void *)rx, (void *)rw);
@@ -11406,10 +11561,19 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
             uintptr_t rx = (uintptr_t)ios_jit_rx_base_global;
             uintptr_t rw = (uintptr_t)ios_jit_rw_base_global;
             size_t ps = ios_jit_pool_size_global;
-            uintptr_t pool_end = 0;
+            uintptr_t pool_end = 0, pool_base = 0;
+            size_t low = ps ? ios_jit_low_size_global : 0;
 
-            if (ps && rx && a + size > rx && a < rx + ps) pool_end = rx + ps;
-            else if (ps && rw && a + size > rw && a < rw + ps) pool_end = rw + ps;
+            if (ps && rx && a + size > rx && a < rx + ps) { pool_base = rx; pool_end = rx + ps; }
+            else if (ps && rw && a + size > rw && a < rw + ps) { pool_base = rw; pool_end = rw + ps; }
+            /* madeira-bcd pool-low: region C's RX side, and on the RW side the whole
+             * reservation below the pool's alias (C's alias and the PROT_NONE part
+             * after it). The RX side between C and the pool is NOT skipped: the
+             * executable window and the low images live there. */
+            else if (low && a + size > ios_jit_low_rx_global && a < ios_jit_low_rx_global + low)
+            { pool_base = ios_jit_low_rx_global; pool_end = ios_jit_low_rx_global + low; }
+            else if (low && rw > ios_jit_low_rw_global && a + size > ios_jit_low_rw_global && a < rw)
+            { pool_base = ios_jit_low_rw_global; pool_end = rw; }
             if (pool_end)
             {
                 static int skipped;
@@ -11418,7 +11582,6 @@ static void* try_map_free_area( void *base, void *end, ptrdiff_t step,
                              start, (void *)pool_end );
                 if (step < 0)
                 {
-                    uintptr_t pool_base = (pool_end == rx + ps) ? rx : rw;
                     if (pool_base < size) break;
                     start = ROUND_ADDR( (char *)(pool_base - size), (size_t)(-step) - 1 );
                 }
@@ -12900,12 +13063,21 @@ static int ios_sc_layout(void)
     if (ios_sc_layout_mode < 0)
     {
         const char *e = getenv( "MADEIRA_SC_PA_POOLS" ), *rw = getenv( "WINE_IOS_JIT_RW" );
-        const char *sz = getenv( "WINE_IOS_JIT_SIZE" );
+        const char *sz = getenv( "WINE_IOS_JIT_SIZE" ), *rx = getenv( "WINE_IOS_JIT_RX" );
+        const char *low = getenv( "WINE_IOS_JIT_TAIL_REGION" );
         unsigned long long a = rw ? strtoull( rw, NULL, 16 ) : 0, n = sz ? strtoull( sz, NULL, 16 ) : 0;
-        int m = ios_sc_layout_pick( e, a, n );
+        unsigned long long x = rx ? strtoull( rx, NULL, 16 ) : 0;
+        uint64_t lrx = 0, lsz = 0, lo = a, span = n;
+        int m;
+        /* madeira-bcd pool-low: the app's one RW reservation starts with region C's
+         * alias, at 0x7900000000 for layout 2; the pool's own alias lies above it. */
+        if (low && ios_pool_low_parse( low, x, a, n, &lrx, &lsz ))
+            ios_pool_alias_extent( x, a, n, lrx, lsz, &lo, &span );
+        m = ios_sc_layout_pick( e, lo, span );
         if (e && e[0] == '2' && m != 2)
             dprintf( 2, "[sc-cef] env.MADEIRA_SC_PA_POOLS=2 needs the JIT pool's RW alias at 0x%llx (it is at "
-                        "0x%llx, 0x%llx bytes): layout 1\n", IOS_SC2_RW_ALIAS, a, n );
+                        "0x%llx, 0x%llx bytes): layout 1\n", IOS_SC2_RW_ALIAS,
+                     (unsigned long long)lo, (unsigned long long)span );
         ios_sc_layout_mode = m;
     }
     return ios_sc_layout_mode;
@@ -13826,6 +13998,63 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                                      : want < IOS_POOL_BIG_MIN ? "smaller than 64 MB"
                                      : "larger than the run above the hole" );
                     }
+                }
+                /* madeira-bcd pool-low: region C (see ios_jit_low_rx_global). Taken only
+                 * when its RX side is mapped executable, its RW side read-write, and a
+                 * word written through the RW side reads back through the RX side --
+                 * the proof that its alias really is at the pool's RX->RW distance,
+                 * which FEX's single WriteOffset relies on. */
+                {
+                    const char *low = getenv( "WINE_IOS_JIT_TAIL_REGION" );
+                    uint64_t lrx = 0, lsz = 0;
+                    if (low && *low &&
+                        ios_pool_low_parse( low, (uint64_t)(uintptr_t)jit_rx_base, (uint64_t)(uintptr_t)jit_rw_base,
+                                            jit_pool_size, &lrx, &lsz ))
+                    {
+                        uintptr_t lrw = (uintptr_t)lrx + ((uintptr_t)jit_rw_base - (uintptr_t)jit_rx_base);
+                        mach_vm_address_t qx = (mach_vm_address_t)lrx, qw = (mach_vm_address_t)lrw;
+                        mach_vm_size_t sx = 0, sw = 0;
+                        vm_region_basic_info_data_64_t ix = { 0 }, iw = { 0 };
+                        mach_msg_type_number_t cx = VM_REGION_BASIC_INFO_COUNT_64, cw = VM_REGION_BASIC_INFO_COUNT_64;
+                        mach_port_t ox = MACH_PORT_NULL, ow = MACH_PORT_NULL;
+                        int ok = mach_vm_region( mach_task_self(), &qx, &sx, VM_REGION_BASIC_INFO_64,
+                                                 (vm_region_info_t)&ix, &cx, &ox ) == KERN_SUCCESS &&
+                                 mach_vm_region( mach_task_self(), &qw, &sw, VM_REGION_BASIC_INFO_64,
+                                                 (vm_region_info_t)&iw, &cw, &ow ) == KERN_SUCCESS &&
+                                 qx <= lrx && qw <= lrw &&
+                                 (ix.max_protection & VM_PROT_EXECUTE) &&
+                                 (iw.protection & (VM_PROT_READ | VM_PROT_WRITE)) == (VM_PROT_READ | VM_PROT_WRITE);
+                        if (ok)
+                        {
+                            volatile uint64_t *pw = (volatile uint64_t *)lrw, *px = (volatile uint64_t *)(uintptr_t)lrx;
+                            uint64_t keep = *pw, mark = 0x776f6c2d6c6f6f70ULL ^ (uint64_t)lrx;   /* "pool-low" */
+                            *pw = mark;
+                            ok = *px == mark;
+                            *pw = keep;
+                        }
+                        if (ok)
+                        {
+                            ios_jit_low_rx_global = (uintptr_t)lrx;
+                            ios_jit_low_rw_global = lrw;
+                            __sync_synchronize();
+                            ios_jit_low_size_global = (size_t)lsz;
+                            dprintf( 2, "[pool-low] madeira-bcd region C RX [0x%llx,0x%llx) RW [%p,%p) (%llu MB) at the "
+                                     "pool's RX->RW distance: FEX code buffers are carved here first, the pool "
+                                     "tail takes over when it is full; WoW64 processes keep the tail\n",
+                                     (unsigned long long)lrx, (unsigned long long)(lrx + lsz), (void *)lrw,
+                                     (void *)(lrw + (uintptr_t)lsz), (unsigned long long)(lsz >> 20) );
+                        }
+                        else
+                            dprintf( 2, "[pool-low] madeira-bcd WINE_IOS_JIT_TAIL_REGION=%s ignored: region C is not "
+                                     "mapped as expected (RX max=0x%x at 0x%llx, RW prot=0x%x at 0x%llx) or its RW "
+                                     "alias is not at the pool's distance -- code buffers stay in the pool tail\n",
+                                     low, ix.max_protection, (unsigned long long)qx, iw.protection,
+                                     (unsigned long long)qw );
+                    }
+                    else if (low && *low)
+                        dprintf( 2, "[pool-low] madeira-bcd WINE_IOS_JIT_TAIL_REGION=%s ignored: not a page-aligned "
+                                 "region of 16 MB or more below the pool [%p,+0x%lx) -- code buffers stay in the "
+                                 "pool tail\n", low, jit_rx_base, (unsigned long)jit_pool_size );
                 }
 
                 /* ml91 (task #35): dump the VA map ONCE here, unconditionally.
@@ -17237,6 +17466,7 @@ static int ios_swap_is_fexjit( uintptr_t b, size_t size )
     if (ios_fex_arena_base_unix && b < ios_fex_arena_end_unix && e > ios_fex_arena_base_unix) return 1;
     if (ps && rx && b < rx + ps && e > rx) return 1;
     if (ps && rw && b < rw + ps && e > rw) return 1;
+    if (ios_jit_low_overlaps( b, size )) return 1;   /* madeira-bcd pool-low: region C */
     return 0;
 }
 static int ios_swap_why( const void *base, size_t size, unsigned int vprot, struct file_view *view )
@@ -17568,6 +17798,7 @@ IOS_DC_INLINE int ios_dc_prepare( struct ios_dc_edge *edge, char *base, size_t s
                          (pool_rx >= p && pool_rx - p < host_page_size))) ||
             (pool_rw && ((p >= pool_rw && p - pool_rw < ios_jit_pool_size_global) ||
                          (pool_rw >= p && pool_rw - p < host_page_size)))) return 0;
+        if (ios_jit_low_overlaps( p, host_page_size )) return 0;   /* madeira-bcd pool-low: region C */
     }
     if (!ios_dc_query( edge->page, &current, &maximum )) return 0;
     edge->original = current;
@@ -21564,6 +21795,8 @@ void ios_dump_fault_region( void *addr )
     view = find_view( addr, 1 );
     if (rx && a >= rx && a < rx + sz) region = "JIT-POOL-RX (exec, RO)";
     else if (rw && a >= rw && a < rw + sz) region = "JIT-POOL-RW (alias)";
+    else if (ios_jit_low_contains( a )) region = "JIT-POOL-LOW-RX (region C, FEX code)";
+    else if (ios_jit_low_rw_contains( a )) region = "JIT-POOL-LOW-RW (region C alias)";
     dprintf( 2, "[fault-rgn] addr=%p page=%p vprot prev/this/next=%02x/%02x/%02x region=%s\n",
              addr, page, vp_prev, vp, vp_next, region );
     if (view)
@@ -25071,6 +25304,15 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         ios_jit_pool_size_global)
     {
         size_t alloc_size = (*size_ptr + 0x3FFF) & ~0x3FFFUL;
+        /* madeira-bcd pool-low: region C (ios_jit_low_rx_global) serves this carve
+         * first when it still has room; the pool's budget cap below only applies to
+         * what goes to the tail. Never for a WoW64 process: its FEX refuses an
+         * executable allocation outside the pool span. */
+        int low_ok = ios_jit_low_size_global && !ios_wow_base();
+        int low_fits = low_ok && alloc_size <= IOS_POOL_LOW_CARVE_MAX &&
+                       alloc_size <= ios_jit_low_size_global &&
+                       ios_jit_low_reserved <= ios_jit_low_size_global - alloc_size;
+        size_t tail_cap = ~(size_t)0;
         /* ml459 (#75): cap a single EC code buffer at 16MB. FEX asks for 32MB
          * once its buffers get hot, but an old generation stays pinned by any
          * thread still referencing it (see [pool-tail] PIN) — and a 32MB
@@ -25123,11 +25365,13 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 unsigned fi;
                 pthread_mutex_lock( &ios_tail_carve_lock );
                 for (fi = 0; fi < ios_tail_carve_n; fi++)
-                    if (ios_tail_carves[fi].free && ios_tail_carves[fi].size >= alloc_size) { cap = alloc_size; break; }
+                    if (ios_tail_carves[fi].free && ios_tail_carves[fi].size >= alloc_size &&
+                        (low_ok || !ios_tail_carve_in_low( ios_tail_carves[fi].off ))) { cap = alloc_size; break; }
                 pthread_mutex_unlock( &ios_tail_carve_lock );
             }
+            tail_cap = cap;
 
-            if (alloc_size > cap) {
+            if (alloc_size > cap && !low_fits) {
                 static int cap_log_n;
                 if (cap_log_n < 16) {
                     cap_log_n++;
@@ -25137,7 +25381,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 }
                 return STATUS_NO_MEMORY;
             }
-            if (alloc_size > TAIL_SMALL) {
+            if (alloc_size > TAIL_SMALL && !low_fits) {
                 static int big_log_n;
                 if (big_log_n < 16) {
                     big_log_n++;
@@ -25152,6 +25396,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             pthread_mutex_lock( &ios_tail_carve_lock );
             for (i = 0; i < ios_tail_carve_n; i++)
                 if (ios_tail_carves[i].free && ios_tail_carves[i].size >= alloc_size &&
+                    (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_tail_carves[i].size < ios_tail_carves[best].size))
                     best = i;
             if (best != ~0u)
@@ -25168,11 +25413,62 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 }
                 *ret = jit_rx;
                 *size_ptr = got;
-                dprintf(2, "[jit-pool] tail REUSE rx=%p size=0x%lx (asked 0x%lx) free_left=%u rev=ml438\n",
-                        jit_rx, (unsigned long)got, (unsigned long)alloc_size, ios_tail_carve_n);
+                dprintf(2, "[jit-pool] tail REUSE rx=%p size=0x%lx (asked 0x%lx) free_left=%u rev=ml438%s\n",
+                        jit_rx, (unsigned long)got, (unsigned long)alloc_size, ios_tail_carve_n,
+                        ios_jit_low_contains( (uintptr_t)jit_rx ) ? " [pool-low] region C" : "");
                 return STATUS_SUCCESS;
             }
             pthread_mutex_unlock( &ios_tail_carve_lock );
+        }
+        /* madeira-bcd pool-low: carve from region C's bottom. The carve goes into
+         * ios_tail_carves with `off` = its (wrapping) distance from the pool's RX
+         * base, so the free, reuse, lookup and census paths treat it like any other
+         * carve, and rw + off is its RW alias (C's alias is at the same distance). */
+        if (low_ok)
+        {
+            size_t loff;
+            if (low_fits && ios_pool_low_take( &ios_jit_low_reserved, ios_jit_low_size_global, alloc_size, &loff ))
+            {
+                void *jit_rx = (void *)(ios_jit_low_rx_global + loff);
+                volatile uint32_t *rw_words = (volatile uint32_t *)(ios_jit_low_rw_global + loff);
+                size_t w, nwords = alloc_size / sizeof(uint32_t);
+
+                for (w = 0; w < nwords; w++) rw_words[w] = 0xd503201fu;   /* NOP-prefill, as for tail carves */
+                pthread_mutex_lock( &ios_tail_carve_lock );
+                if (ios_tail_carve_n < IOS_TAIL_CARVE_MAX)
+                {
+                    ios_tail_carves[ios_tail_carve_n].off = (size_t)((uintptr_t)jit_rx - (uintptr_t)ios_jit_rx_base_global);
+                    ios_tail_carves[ios_tail_carve_n].size = alloc_size;
+                    ios_tail_carves[ios_tail_carve_n].free = 0;
+                    ios_tail_carve_n++;
+                }
+                pthread_mutex_unlock( &ios_tail_carve_lock );
+                dprintf(2, "[pool-low] EC_CODE rx=%p size=0x%lx from region C: used 0x%lx/0x%lx (pool tail_resv=0x%lx "
+                        "head_used=0x%lx/0x%lx untouched)\n",
+                        jit_rx, (unsigned long)alloc_size, (unsigned long)(loff + alloc_size),
+                        (unsigned long)ios_jit_low_size_global, (unsigned long)ios_jit_tail_reserved,
+                        (unsigned long)jit_pool_offset, (unsigned long)ios_jit_pool_size_global);
+                *ret = jit_rx;
+                *size_ptr = alloc_size;
+                return STATUS_SUCCESS;
+            }
+            if (alloc_size <= IOS_POOL_LOW_CARVE_MAX && ios_jit_low_full_logged < 4)
+            {
+                ios_jit_low_full_logged++;
+                dprintf(2, "[pool-low] region C has 0x%lx of 0x%lx left, not enough for carve 0x%lx: it goes to the "
+                        "pool tail (freed C carves are still reused first)\n",
+                        (unsigned long)(ios_jit_low_size_global - ios_jit_low_reserved),
+                        (unsigned long)ios_jit_low_size_global, (unsigned long)alloc_size);
+            }
+            /* C could not take it after all (another thread got there first):
+             * the tail's budget cap applies, as it would have without C. */
+            if (alloc_size > tail_cap)
+            {
+                dprintf(2, "[jit-pool] tail CAP: refusing 0x%lx (cap 0x%lx, tail_resv=0x%lx, region C full) so FEX "
+                        "halves down [pool-low]\n", (unsigned long)alloc_size, (unsigned long)tail_cap,
+                        (unsigned long)ios_jit_tail_reserved);
+                return STATUS_NO_MEMORY;
+            }
         }
         /* Reserve from the END of the JIT pool to avoid colliding with
          * mprotect_exec's PE-image copies which take from the start.
@@ -25265,10 +25561,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                     pthread_mutex_lock( &ios_tail_carve_lock );
                     for (ci = 0; ci < ios_tail_carve_n; ci++)
                     {
-                        dprintf(2, "[pool-tail] carve[%u] off=0x%lx size=0x%lx %s rev=ml459\n",
+                        dprintf(2, "[pool-tail] carve[%u] off=0x%lx size=0x%lx %s rev=ml459%s\n",
                                 ci, (unsigned long)ios_tail_carves[ci].off,
                                 (unsigned long)ios_tail_carves[ci].size,
-                                ios_tail_carves[ci].free ? "FREE" : "LIVE");
+                                ios_tail_carves[ci].free ? "FREE" : "LIVE",
+                                ios_tail_carve_in_low( ios_tail_carves[ci].off ) ? " [pool-low] region C" : "");
                         if (ios_tail_carves[ci].free) freed += ios_tail_carves[ci].size;
                         else live += ios_tail_carves[ci].size;
                     }
@@ -25934,9 +26231,12 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     /* ml438 (#74): a MEM_RELEASE of a live tail EC-buffer carve has no wine
      * view — before this rev it error'd (FEXCore ignored it) and the tail
      * space leaked forever. Mark the carve free for reuse and succeed. */
+    /* madeira-bcd pool-low: a carve in region C is released the same way; its
+     * `off` is the same wrapping base - rx it was recorded with. */
     if ((type & MEM_RELEASE) && ios_jit_rx_base_global && ios_jit_pool_size_global &&
-        (char *)base >= (char *)ios_jit_rx_base_global &&
-        (char *)base <  (char *)ios_jit_rx_base_global + ios_jit_pool_size_global)
+        (((char *)base >= (char *)ios_jit_rx_base_global &&
+          (char *)base <  (char *)ios_jit_rx_base_global + ios_jit_pool_size_global) ||
+         ios_jit_low_contains( (uintptr_t)base )))
     {
         unsigned i;
         size_t off = (size_t)((char *)base - (char *)ios_jit_rx_base_global);
@@ -25963,8 +26263,9 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
         pthread_mutex_unlock( &ios_tail_carve_lock );
         if (carve_size)
         {
-            dprintf(2, "[jit-pool] tail FREE rx=%p size=0x%lx -> free-list rev=ml438\n",
-                    (void *)base, (unsigned long)carve_size);
+            dprintf(2, "[jit-pool] tail FREE rx=%p size=0x%lx -> free-list rev=ml438%s\n",
+                    (void *)base, (unsigned long)carve_size,
+                    ios_jit_low_contains( (uintptr_t)base ) ? " [pool-low] region C" : "");
             *addr_ptr = base;
             *size_ptr = carve_size;
             return STATUS_SUCCESS;
