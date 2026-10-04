@@ -5611,20 +5611,55 @@ static int ios_insn_x18_role(uint32_t insn)
         if (rm == 18) return X18_ROLE_RM;
     }
 
-    /* ADD/SUB (immediate) — [31:24]=x00 10001 or x10 10001 */
-    if ((top8 & 0x5F) == 0x11)
+    /* ADD/SUB (immediate) — [31:24]=sf op S 10001. madeira-bcd: the mask was
+     * 0x5F, which kept op (bit 30) and so matched ADD only: every SUB off x18
+     * went unpatched and read the raw (zeroed) x18. 0x1F takes ADD, ADDS, SUB
+     * and SUBS, as the comment always said. */
+    if ((top8 & 0x1F) == 0x11)
     {
         if (rn == 18) return X18_ROLE_RN;
     }
 
-    /* ADD/SUB (register) — [31:24]=x00 01011 or x10 01011 */
-    if ((top8 & 0x5F) == 0x0B)
+    /* ADD/SUB (register) — [31:24]=sf op S 01011 (same mask fix as above) */
+    if ((top8 & 0x1F) == 0x0B)
     {
         if (rn == 18) return X18_ROLE_RN;
         if (rm == 18) return X18_ROLE_RM;
     }
 
     return X18_ROLE_NONE;
+}
+
+/* madeira-bcd: the destination of an ADD/SUB (immediate or register) that reads
+ * x18 once, when that destination can carry the TEB instead of x18: not x18,
+ * not 31 (SP or XZR), and not the instruction's other source. -1 otherwise.
+ *
+ * Such an instruction used to take the "via x18" trampoline (load x18 from
+ * TPIDRRO_EL0, run the instruction unchanged). If iOS preempts the thread
+ * between the load and the instruction it zeroes x18, and unlike a load or a
+ * store the ADD does not fault: it computes a small address that faults later,
+ * somewhere the handler cannot repair ([x18-decline]). Wine's debug channel
+ * buffer is get_info() = NtCurrentTeb() + 0x2000 + sizeof(TEB32), so with the
+ * TEB read as 0 its output lands at 0x3404: RockstarService.exe died that way
+ * in ntdll's printf padding loop (GTA V Enhanced build 375, 2026-10-04 09:52,
+ * `pc ntdll+0x63458 ... writing to 0x3404`, x18=0), the self-restarted
+ * Rockstar Games Launcher on 2026-10-03 23:21, and God of War's 0x3404 SEGVs.
+ * With the destination as scratch x18 is never touched. */
+static int ios_x18_arith_dest(uint32_t insn, int role)
+{
+    uint32_t top8 = insn >> 24;
+    int rd = insn & 0x1f, rn = (insn >> 5) & 0x1f, rm = (insn >> 16) & 0x1f;
+
+    if (rd == 18 || rd == 31) return -1;
+    if ((top8 & 0x1F) == 0x11)                       /* ADD/SUB (immediate) */
+        return (role == X18_ROLE_RN && rn == 18) ? rd : -1;
+    if ((top8 & 0x1F) == 0x0B)                       /* ADD/SUB (register) */
+    {
+        if (rn == 18 && rm == 18) return -1;
+        if (role == X18_ROLE_RN && rn == 18 && rm != rd) return rd;
+        if (role == X18_ROLE_RM && rm == 18 && rn != rd) return rd;
+    }
+    return -1;
 }
 
 /* Replace x18 in an instruction with a different register */
@@ -5919,6 +5954,10 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
              ((insn & 0xFFC00000) == 0xB9400000)) &&     /* ldr wT, [x18,#imm] */
             rt != 31 && rt != 18;
 
+        /* madeira-bcd: ADD/SUB off x18 with a usable destination (see
+         * ios_x18_arith_dest): same form as the LDR below. */
+        int arith_rd = (!is_mov_from_x18 && !is_int_ldr_imm) ? ios_x18_arith_dest(insn, role) : -1;
+
         if (is_mov_from_x18)
         {
             int rd = insn & 0x1f;
@@ -5956,6 +5995,28 @@ int ios_jit_patch_x18(char *text_rw, char *text_rx, size_t text_size,
             *(uint32_t *)(tramp_rw + tramp_off) = 0xF9400000 | ((slot_off / 8) << 10) | (rt << 5) | rt;
             tramp_off += 4;
             *(uint32_t *)(tramp_rw + tramp_off) = ios_insn_replace_x18(insn, role, rt);
+            tramp_off += 4;
+            ldr_scratch++;
+        }
+        else if (arith_rd >= 0)
+        {
+            /*   mrs xRd, TPIDRRO_EL0
+             *   and xRd, xRd, #~7
+             *   ldr xRd, [xRd, #slot_off]
+             *   add/sub xRd, xRd, <the other operand>   (x18 -> xRd)
+             * Counted with the destination-register forms. */
+            if (tramp_off + 20 > tramp_size)
+            {
+                ERR("x18 patcher: out of trampoline space at %d patches\n", count);
+                break;
+            }
+            *(uint32_t *)(tramp_rw + tramp_off) = 0xD53BD060 | arith_rd;
+            tramp_off += 4;
+            *(uint32_t *)(tramp_rw + tramp_off) = 0x927DF000 | (arith_rd << 5) | arith_rd;
+            tramp_off += 4;
+            *(uint32_t *)(tramp_rw + tramp_off) = 0xF9400000 | ((slot_off / 8) << 10) | (arith_rd << 5) | arith_rd;
+            tramp_off += 4;
+            *(uint32_t *)(tramp_rw + tramp_off) = ios_insn_replace_x18(insn, role, arith_rd);
             tramp_off += 4;
             ldr_scratch++;
         }
