@@ -12870,14 +12870,12 @@ static int ios_sc_current_is_helper(void)
  * logged. env.MADEIRA_SC_RENDER_HANDLER = 0 turns it off; so does
  * env.MADEIRA_SC_CEF = 0 (no --single-process then).
  *
- * The helper is mapped high (0x140000000 is the sub-floor, never a real base)
- * and, when its directory is not applied (RELOCS_STRIPPED, ml949) or the delta
- * is injected rather than relocated, its vtable slots keep the preferred-base
- * guest pointers 0x140000000 + rva, which FEX runs through the sub-floor /
- * alias; when the directory IS applied they hold the view base ptr + rva. So
- * the base the slots use is read from a slot, not assumed to be ptr, and the
- * thunk pointer is written in that same base (GTA log 2026-10-04 15:15:
- * helper at 0x143500000, slots still at 0x1400..., "vtables differ"). */
+ * The Unix view can still have preferred-base pointers in its vtables. The
+ * JIT-pool copy rebases the existing DIR64 entries, including both patched
+ * vtable slots, so the slots must be written in their current base. Read that
+ * base from a slot instead of assuming it is ptr. New pointers in the unused
+ * .data tail have no DIR64 entries: those must name the mapped view directly
+ * so the normal PE-to-JIT alias translation can resolve them. */
 #define IOS_SCH_IMAGE_BASE  0x140000000ULL /* the helper's preferred base */
 #define IOS_SCH_STAMP       0x6a86d563u
 #define IOS_SCH_SIZE        0x244000u
@@ -13085,22 +13083,28 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
      * pointer in the vtables' base (vtbase), which FEX runs through the alias. */
     memcpy( base + IOS_SCH_THUNK, ios_sch_thunk, sizeof(ios_sch_thunk) );
     memcpy( base + IOS_SCH_LOOP_INIT, ios_sch_loop_thunk, sizeof(ios_sch_loop_thunk) );
-    /* The CEF task retains one owner reference for the image lifetime. CEF's
+    /* Unlike the existing vtable slots, these new pointers have no DIR64
+     * entries in the helper. Use the mapped view, not the vtable base: the
+     * pool copy cannot rebase a new preferred-base function pointer.
+     * The CEF task retains one owner reference for the image lifetime. CEF's
      * queued references can be released at shutdown without freeing the task
      * or a loop still referenced by the helper's IPC wait thread. */
     {
-        ULONG64 task[8] = { 0x30, vtbase + IOS_SCH_TASK_ADD, vtbase + IOS_SCH_TASK_RELEASE,
-                            vtbase + IOS_SCH_TASK_ONE, vtbase + IOS_SCH_TASK_ANY,
-                            vtbase + IOS_SCH_LOOP_PUMP, 0, 1 };
+        ULONG64 callback_base = (ULONG64)(ULONG_PTR)base;
+        ULONG64 task[8] = { 0x30, callback_base + IOS_SCH_TASK_ADD, callback_base + IOS_SCH_TASK_RELEASE,
+                            callback_base + IOS_SCH_TASK_ONE, callback_base + IOS_SCH_TASK_ANY,
+                            callback_base + IOS_SCH_LOOP_PUMP, 0, 1 };
         memcpy( base + IOS_SCH_TASK, task, sizeof(task) );
     }
     ((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = vtbase + IOS_SCH_THUNK;
     ((ULONG64 *)(base + IOS_SCH_VT_RPH))[0] = vtbase + IOS_SCH_LOOP_INIT;
     dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p (vtable base 0x%llx): the browser app now hands "
                 "out its renderer app's CefRenderProcessHandler (thunk guest 0x%llx) -- the page bridge runs under "
-                "--single-process; renderer MessageLoop adapter installed (CEF task, 10 ms delay, 32-work budget) "
+                "--single-process; renderer MessageLoop adapter installed (CEF task, callback view base 0x%llx, "
+                "10 ms delay, 32-work budget) "
                 "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n",
-             base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK) );
+             base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK),
+             (unsigned long long)(ULONG_PTR)base );
 }
 
 /* Does the calling pseudo-process have socialclub.dll mapped? The table is read

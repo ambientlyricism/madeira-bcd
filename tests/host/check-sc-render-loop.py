@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Execute the production Win64 adapter against a thread-local IPC loop fixture.
 
-Also compile the actual image guard/patch, test both guest pointer bases and
-reject mismatched images without writes. No Wine or supplied binary is needed.
+Also compile the actual image guard/patch, test both vtable pointer bases and
+reject mismatched images without writes. Exercise the preferred-base case with
+DIR64 rebasing of the existing vtable slots, without relocations for the new
+task callbacks: those must already name the mapped image. No supplied binary.
 Requires x86_64 Linux, GNU binutils, Python and a C compiler.
 """
 from pathlib import Path
@@ -304,16 +306,25 @@ int main(int argc, char **argv)
     reset_image(image, view);
     *(uint64_t *)(image + IOS_SCH_VT_BROWSER + IOS_SCH_SLOT_BROWSER * 8) = 0x13370000;
     reject_without_writes(image);
+    reset_image(image, view);
+    ios_sc_render_handler_patch(image, IOS_SCH_SIZE, &nt, sections, &name);
+    task = (void *)(image + IOS_SCH_TASK);
+    assert(*(uint64_t *)(image + IOS_SCH_VT_RPH) == view + IOS_SCH_LOOP_INIT);
+    assert((uintptr_t)task->execute == view + IOS_SCH_LOOP_PUMP);
     reset_image(image, IOS_SCH_IMAGE_BASE);
     assert(!ios_sch_mismatch(image, IOS_SCH_SIZE, &nt, sections, &got) && got == IOS_SCH_IMAGE_BASE);
     ios_sc_render_handler_patch(image, IOS_SCH_SIZE, &nt, sections, &name);
     assert(*(uint64_t *)(image + IOS_SCH_VT_RPH) == IOS_SCH_IMAGE_BASE + IOS_SCH_LOOP_INIT);
     task = (void *)(image + IOS_SCH_TASK);
-    assert((uintptr_t)task->execute == IOS_SCH_IMAGE_BASE + IOS_SCH_LOOP_PUMP);
-    reset_image(image, view);
-    ios_sc_render_handler_patch(image, IOS_SCH_SIZE, &nt, sections, &name);
-    task = (void *)(image + IOS_SCH_TASK);
-    assert(*(uint64_t *)(image + IOS_SCH_VT_RPH) == view + IOS_SCH_LOOP_INIT);
+    assert((uintptr_t)task->add_ref == view + IOS_SCH_TASK_ADD);
+    assert((uintptr_t)task->release == view + IOS_SCH_TASK_RELEASE);
+    assert((uintptr_t)task->one_ref == view + IOS_SCH_TASK_ONE);
+    assert((uintptr_t)task->any_ref == view + IOS_SCH_TASK_ANY);
+    assert((uintptr_t)task->execute == view + IOS_SCH_LOOP_PUMP);
+    /* The pool's existing DIR64 entries rebase the vtable slots only. The
+     * new data-tail task has no relocation entries, as in the helper image. */
+    *(uint64_t *)(image + IOS_SCH_VT_BROWSER + IOS_SCH_SLOT_RENDERER * 8) += view - IOS_SCH_IMAGE_BASE;
+    *(uint64_t *)(image + IOS_SCH_VT_RPH) += view - IOS_SCH_IMAGE_BASE;
     assert(!memcmp(image + IOS_SCH_LOOP_INIT, ios_sch_loop_thunk, sizeof(ios_sch_loop_thunk)));
     puts("PASS: production patch accepts view/preferred bases and rejects changed code/layout/tails without writes");
 
@@ -329,7 +340,9 @@ int main(int argc, char **argv)
     struct Loop browser = {0};
     current = &browser;
     pthread_t thread;
-    assert(!pthread_create(&thread, NULL, run_renderer, image + IOS_SCH_LOOP_INIT));
+    void *initialize = (void *)(uintptr_t)*(uint64_t *)(image + IOS_SCH_VT_RPH);
+    assert(initialize == image + IOS_SCH_LOOP_INIT);
+    assert(!pthread_create(&thread, NULL, run_renderer, initialize));
     assert(!pthread_join(thread, NULL));
     assert(current == &browser); /* Renderer initialization never borrows browser TLS. */
     allocation_fail = 0;
@@ -337,7 +350,7 @@ int main(int argc, char **argv)
     ((void (ABI *)(void *))(image + IOS_SCH_LOOP_INIT))(expected_handler);
     assert(current == &browser && posts == before && constructions == 1);
     assert(!munmap(image, IOS_SCH_SIZE));
-    puts("PASS: Win64 TLS init, callback order, IPC work/timers, 32-work bound, RunState restore, refs and shutdown");
+    puts("PASS: preferred vtables + unrelocated task callbacks execute; TLS, IPC work/timers, bounds, refs and shutdown");
     return 0;
 }
 '''
