@@ -12868,7 +12868,17 @@ static int ios_sc_current_is_helper(void)
  * Applied after relocation and before the section protections, so the JIT-pool
  * copy of .text carries it. Any mismatch: nothing is written and the reason is
  * logged. env.MADEIRA_SC_RENDER_HANDLER = 0 turns it off; so does
- * env.MADEIRA_SC_CEF = 0 (no --single-process then). */
+ * env.MADEIRA_SC_CEF = 0 (no --single-process then).
+ *
+ * The helper is mapped high (0x140000000 is the sub-floor, never a real base)
+ * and, when its directory is not applied (RELOCS_STRIPPED, ml949) or the delta
+ * is injected rather than relocated, its vtable slots keep the preferred-base
+ * guest pointers 0x140000000 + rva, which FEX runs through the sub-floor /
+ * alias; when the directory IS applied they hold the view base ptr + rva. So
+ * the base the slots use is read from a slot, not assumed to be ptr, and the
+ * thunk pointer is written in that same base (GTA log 2026-10-04 15:15:
+ * helper at 0x143500000, slots still at 0x1400..., "vtables differ"). */
+#define IOS_SCH_IMAGE_BASE  0x140000000ULL /* the helper's preferred base */
 #define IOS_SCH_STAMP       0x6a86d563u
 #define IOS_SCH_SIZE        0x244000u
 #define IOS_SCH_TEXT        0x1000u      /* .text: VirtualSize 0x17f34c, raw 0x17f400 */
@@ -12916,10 +12926,12 @@ static const struct { unsigned int rva; unsigned char len; unsigned char bytes[6
     { 0x7e267, 0x06, { 0x48,0x8b,0xcb,0xff,0x50,0x20 } },
 };
 
-/* Why `base` (SocialClubHelper.exe, mapped and relocated) cannot take the
- * patch, or NULL when it can. */
+/* Why `base` (SocialClubHelper.exe, mapped) cannot take the patch, or NULL when
+ * it can; on success *vtbase is the guest base the CefApp vtables use (ptr when
+ * the directory was applied, else the preferred base), which the thunk pointer
+ * is written in. */
 static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const IMAGE_NT_HEADERS *nt,
-                                     const IMAGE_SECTION_HEADER *sec )
+                                     const IMAGE_SECTION_HEADER *sec, ULONG64 *vtbase )
 {
     const ULONG64 *vb = (const ULONG64 *)(base + IOS_SCH_VT_BROWSER);
     const ULONG64 *vr = (const ULONG64 *)(base + IOS_SCH_VT_RENDERER);
@@ -12942,9 +12954,15 @@ static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const 
     for (k = 0; k < sizeof(ios_sch_code) / sizeof(ios_sch_code[0]); k++)
         if (memcmp( base + ios_sch_code[k].rva, ios_sch_code[k].bytes, ios_sch_code[k].len ))
             return "code bytes differ";
-    if (vb[IOS_SCH_SLOT_BROWSER] != b + IOS_SCH_GET_HANDLER || vb[IOS_SCH_SLOT_RENDERER] != b + IOS_SCH_GET_NULL ||
-        vr[IOS_SCH_SLOT_BROWSER] != b + IOS_SCH_GET_NULL || vr[IOS_SCH_SLOT_RENDERER] != b + IOS_SCH_GET_HANDLER)
-        return "CefApp vtables differ (or not relocated to the view)";
+    /* The vtables carry guest pointers in one base -- ptr (directory applied)
+     * or the preferred base (ml949 / sub-floor). Read it from one slot and
+     * require the other three consistent, and the base one of the two. */
+    *vtbase = vb[IOS_SCH_SLOT_BROWSER] - IOS_SCH_GET_HANDLER;
+    if (*vtbase != b && *vtbase != IOS_SCH_IMAGE_BASE) return "CefApp vtable base is neither the view nor the preferred base";
+    if (vb[IOS_SCH_SLOT_RENDERER] != *vtbase + IOS_SCH_GET_NULL ||
+        vr[IOS_SCH_SLOT_BROWSER]  != *vtbase + IOS_SCH_GET_NULL ||
+        vr[IOS_SCH_SLOT_RENDERER] != *vtbase + IOS_SCH_GET_HANDLER)
+        return "CefApp vtables differ";
     for (k = 0; k < sizeof(ios_sch_thunk); k++)
         if (base[IOS_SCH_THUNK + k]) return ".text tail not zero";
     if (*(const ULONG64 *)(base + IOS_SCH_CACHE)) return ".data tail not zero";
@@ -12956,6 +12974,7 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
 {
     static int enabled = -1;
     const char *why;
+    ULONG64 vtbase = 0;
 
     if (enabled < 0)
     {
@@ -12964,17 +12983,20 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
     }
     if (!enabled || !nt_name || !nt_name->Buffer ||
         !ios_sc_path_is_helper( nt_name->Buffer, nt_name->Length / sizeof(WCHAR) )) return;
-    if ((why = ios_sch_mismatch( base, total_size, nt, sec )))
+    if ((why = ios_sch_mismatch( base, total_size, nt, sec, &vtbase )))
     {
         dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p not patched: %s -- its pages get no "
                     "renderer bridge under --single-process (the launcher times out loading them)\n", base, why );
         return;
     }
+    /* The thunk bytes go into the view (ptr); the slot carries the guest
+     * pointer in the vtables' base (vtbase), which FEX runs through the alias. */
     memcpy( base + IOS_SCH_THUNK, ios_sch_thunk, sizeof(ios_sch_thunk) );
-    ((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = (ULONG64)(ULONG_PTR)base + IOS_SCH_THUNK;
-    dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p: the browser app now hands out its renderer "
-                "app's CefRenderProcessHandler (thunk %p) -- the page bridge runs under --single-process "
-                "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n", base, base + IOS_SCH_THUNK );
+    ((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = vtbase + IOS_SCH_THUNK;
+    dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p (vtable base 0x%llx): the browser app now hands "
+                "out its renderer app's CefRenderProcessHandler (thunk guest 0x%llx) -- the page bridge runs under "
+                "--single-process (MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n",
+             base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK) );
 }
 
 /* Does the calling pseudo-process have socialclub.dll mapped? The table is read

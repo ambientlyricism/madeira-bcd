@@ -126,8 +126,13 @@ assert 'ios_sc_path_is_helper(' in patch, 'only SocialClubHelper.exe'
 assert patch.index('if ((why = ios_sch_mismatch(') < patch.index('memcpy( base + IOS_SCH_THUNK'), \
     'the guard runs before any write'
 assert 'memcpy( base + IOS_SCH_THUNK, ios_sch_thunk, sizeof(ios_sch_thunk) );' in patch, 'writes the thunk'
-assert '((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = (ULONG64)(ULONG_PTR)base + IOS_SCH_THUNK;' \
-    in patch, 'points the browser app slot 4 at the thunk'
+assert '((ULONG64 *)(base + IOS_SCH_VT_BROWSER))[IOS_SCH_SLOT_RENDERER] = vtbase + IOS_SCH_THUNK;' \
+    in patch, 'points the browser app slot 4 at the thunk, in the vtables\' own base'
+# the vtable base is read from a slot (the helper is mapped high but runs at its
+# preferred base through the sub-floor when its directory is not applied), and
+# accepted only as the view or the preferred base.
+assert '*vtbase = vb[IOS_SCH_SLOT_BROWSER] - IOS_SCH_GET_HANDLER;' in guard, 'derives the vtable base from a slot'
+assert "!= IOS_SCH_IMAGE_BASE" in guard and '*vtbase != b' in guard, 'base is the view or the preferred base'
 # the two writes land in zero tails past SizeOfRawData (.text raw 0x17f400, .data raw end 0x1cc000+0x1a00)
 assert THUNK >= 0x1000 + 0x17f400 - 0x1000, 'thunk past .text raw data'
 assert 0x180800 <= THUNK < 0x181000 and 0x1d0000 <= CACHE < 0x1d1000, (hex(THUNK), hex(CACHE))
