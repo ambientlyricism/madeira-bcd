@@ -12908,6 +12908,8 @@ static int ios_sc_current_is_helper(void)
 #define IOS_SCH_RUN_RESTORE 0x180a80u
 #define IOS_SCH_RUN_RING    0x1d0c40u   /* counter + 16 records (32 bytes each) */
 #define IOS_SCH_RUN_RING_SIZE 520u
+#define IOS_SCH_RENDER_DRAIN_SITE 0x48fa4u /* renderer-only call to drain helper work */
+#define IOS_SCH_RENDER_DRAIN 0x180b70u
 
 
 static const unsigned char ios_sch_thunk[112] =
@@ -12989,6 +12991,19 @@ static const unsigned char ios_sch_run_trace[365] =
     0x72,0x18,0x49,0x87,0x02,0x48,0x83,0xc4,0x20,0x5f,0x5e,0x5b,0xc3,
 };
 
+/* In --single-process, OnWebKitInitialized reaches the renderer branch of
+ * the helper's CEF task dispatcher. Its original call to 0x11be60 drains the
+ * browser's global I/O loop (0x1cea00), even while the browser thread runs it.
+ * Use the TLS loop installed by the renderer adapter instead. Only this
+ * renderer call site is redirected; the browser's original drain is intact.
+ * RunUntilIdle still executes the pending work with its normal scoped state.
+ * Source: tests/host/sc-render-drain.S. */
+static const unsigned char ios_sch_render_drain[31] =
+{
+    0x48,0x83,0xec,0x28,0xe8,0x17,0x25,0xff,0xff,0x48,0x85,0xc0,0x74,0x0c,0x48,0x89,
+    0xc1,0x48,0x83,0xc4,0x28,0xe9,0x26,0x1d,0xff,0xff,0x48,0x83,0xc4,0x28,0xc3,
+};
+
 /* The helper code the thunk and the vtable change rely on (no relocations in
  * any of these ranges). */
 static const struct { unsigned int rva; unsigned char len; unsigned char bytes[64]; } ios_sch_code[] =
@@ -13045,6 +13060,13 @@ static const struct { unsigned int rva; unsigned char len; unsigned char bytes[6
       0x48,0x89,0x41,0x40,0x48,0x8b,0x01 } },
     { 0x17412b, 0x09, { /* Run restores the prior state and caller RBX */
       0x48,0x89,0x7b,0x40,0x48,0x8b,0x5c,0x24,0x50 } },
+    { 0x48f0f, 0x12, { /* only the CEF TID_RENDERER branch reaches the patched call */
+      0xb9,0x06,0x00,0x00,0x00,0xe8,0xd7,0x0f,0x02,0x00,0x84,0xc0,0x0f,0x85,0x83,0x00,
+      0x00,0x00 } },
+    { IOS_SCH_RENDER_DRAIN_SITE, 0x05, { 0xe8,0xb7,0x2e,0x0d,0x00 } },
+    { 0x11be60, 0x11, { /* original global browser drain remains unchanged */
+      0x48,0x8b,0x0d,0x99,0x2b,0x0b,0x00,0x48,0x85,0xc9,0x0f,0x85,0x40,0x6a,0x05,0x00,
+      0xc3 } },
     { IOS_SCH_WEBKIT, 0x20, { /* original OnWebKitInitialized */
       0x40,0x53,0x55,0x41,0x55,0x41,0x57,0x48,0x81,0xec,0x28,0x01,0x00,0x00,0x4c,0x8b,
       0xe9,0x33,0xed,0x48,0x83,0xc1,0x10,0x89,0xac,0x24,0x50,0x01,0x00,0x00,0xe8,0x2d } },
@@ -13099,6 +13121,8 @@ static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const 
         if (base[IOS_SCH_RUN_INSTALL + k]) return "RunState trace .text tail not zero";
     for (k = 0; k < IOS_SCH_RUN_RING_SIZE; k++)
         if (base[IOS_SCH_RUN_RING + k]) return "RunState trace .data tail not zero";
+    for (k = 0; k < sizeof(ios_sch_render_drain); k++)
+        if (base[IOS_SCH_RENDER_DRAIN + k]) return "renderer drain .text tail not zero";
     if (*(const ULONG64 *)(base + IOS_SCH_CACHE)) return ".data tail not zero";
     return NULL;
 }
@@ -13128,6 +13152,13 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
     memcpy( base + IOS_SCH_THUNK, ios_sch_thunk, sizeof(ios_sch_thunk) );
     memcpy( base + IOS_SCH_LOOP_INIT, ios_sch_loop_thunk, sizeof(ios_sch_loop_thunk) );
     memcpy( base + IOS_SCH_RUN_INSTALL, ios_sch_run_trace, sizeof(ios_sch_run_trace) );
+    memcpy( base + IOS_SCH_RENDER_DRAIN, ios_sch_render_drain, sizeof(ios_sch_render_drain) );
+    {
+        int32_t disp = (int32_t)(IOS_SCH_RENDER_DRAIN - IOS_SCH_RENDER_DRAIN_SITE - 5);
+        /* Keep CALL so the renderer dispatcher resumes after draining work. */
+        base[IOS_SCH_RENDER_DRAIN_SITE] = (char)0xe8;
+        memcpy( base + IOS_SCH_RENDER_DRAIN_SITE + 1, &disp, sizeof(disp) );
+    }
     /* Both hooks branch within the image, so no new DIR64 pointer is needed. */
     {
         const unsigned int site[2] = { 0x174121, 0x17412b };
@@ -13161,7 +13192,8 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
     dprintf( 2, "[sc-rph] madeira-bcd: SocialClubHelper.exe at %p (vtable base 0x%llx): the browser app now hands "
                 "out its renderer app's CefRenderProcessHandler (thunk guest 0x%llx) -- the page bridge runs under "
                 "--single-process; renderer MessageLoop adapter installed (CEF task, callback view base 0x%llx, "
-                "10 ms delay, 32-work budget); bounded I/O RunState trace installed "
+                "10 ms delay, 32-work budget); bounded I/O RunState trace installed; "
+                "renderer startup drains its own TLS loop "
                 "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n",
              base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK),
              (unsigned long long)(ULONG_PTR)base );
