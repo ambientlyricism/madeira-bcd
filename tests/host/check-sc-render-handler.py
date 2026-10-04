@@ -19,9 +19,9 @@ the helper's own code (the owner's SocialClubHelper.exe is never committed):
     branches stay inside the blob; it ends in ret;
   - ios_sch_mismatch guards every byte it relies on: it requires the analysed
     TimeDateStamp and SizeOfImage, the .text/.data layout, the five code-byte
-    windows, the four CefApp vtable slots relocated to the view, and a zero
-    thunk/cache tail -- and the patch writes only the thunk and the one vtable
-    slot; both are inside their sections' zero tails (past SizeOfRawData);
+    windows, the four CefApp vtable slots in the view/preferred base, and zero
+    code/cache tails. The additional renderer-loop adapter and WebKit callback
+    are executed by check-sc-render-loop.py;
   - the guard and the writes are gated by MADEIRA_SC_RENDER_HANDLER and
     MADEIRA_SC_CEF and by the image being SocialClubHelper.exe.
 Needs only python3.
@@ -136,10 +136,12 @@ assert "!= IOS_SCH_IMAGE_BASE" in guard and '*vtbase != b' in guard, 'base is th
 # the two writes land in zero tails past SizeOfRawData (.text raw 0x17f400, .data raw end 0x1cc000+0x1a00)
 assert THUNK >= 0x1000 + 0x17f400 - 0x1000, 'thunk past .text raw data'
 assert 0x180800 <= THUNK < 0x181000 and 0x1d0000 <= CACHE < 0x1d1000, (hex(THUNK), hex(CACHE))
-# slot 4 of the browser vtable is the one changed; slot 3 and the renderer vtable are not written
+# The CefApp change is still only browser slot 4. The separate render-process
+# handler vtable's WebKit callback now initializes and pumps the renderer loop.
 assert 'VT_BROWSER))[IOS_SCH_SLOT_RENDERER]' in patch
 assert 'VT_RENDERER' not in patch.split('memcpy')[1] and 'SLOT_BROWSER]' not in patch.split('memcpy')[1], \
-    'only the browser app renderer-handler slot is written'
-print('PASS: ios_sch_mismatch guards every byte and the patch writes only the thunk and browser slot 4')
+    'CefApp browser slot 3 and the renderer app vtable are unchanged'
+assert '((ULONG64 *)(base + IOS_SCH_VT_RPH))[0] = vtbase + IOS_SCH_LOOP_INIT;' in patch
+print('PASS: guarded CefApp slot 4 change and render-process-handler WebKit callback are wired')
 
 print('PASS: [sc-rph] renderer-process-handler patch is wired, guarded and self-consistent')
