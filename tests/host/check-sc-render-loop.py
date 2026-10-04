@@ -114,7 +114,7 @@ typedef struct { uint32_t VirtualAddress; union { uint32_t VirtualSize; } Misc;
 static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); return !(e && e[0] == '0'); }
 /* Test output contains no guest payload or addresses. */
 #define dprintf(...) ((void)0)
-''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
+''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + array('ios_sch_ipc_rebind') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
 static IMAGE_NT_HEADERS nt;
 static IMAGE_SECTION_HEADER sections[2];
 static WCHAR helper_name[] = {'S','o','c','i','a','l','C','l','u','b','H','e','l','p','e','r','.','e','x','e'};
@@ -354,7 +354,9 @@ int main(int argc, char **argv)
                             IOS_SCH_TASK + 63, IOS_SCH_CACHE, IOS_SCH_VT_RPH, IOS_SCH_RUN_INSTALL,
                             IOS_SCH_RUN_INSTALL + sizeof(ios_sch_run_trace) - 1,
                             IOS_SCH_RUN_RING, IOS_SCH_RUN_RING + IOS_SCH_RUN_RING_SIZE - 1,
-                            IOS_SCH_RENDER_DRAIN, IOS_SCH_RENDER_DRAIN + sizeof(ios_sch_render_drain) - 1 };
+                            IOS_SCH_RENDER_DRAIN, IOS_SCH_RENDER_DRAIN + sizeof(ios_sch_render_drain) - 1,
+                            IOS_SCH_IPC_TRACE, IOS_SCH_IPC_TRACE + sizeof(ios_sch_ipc_rebind) - 1,
+                            IOS_SCH_IPC_COUNT, IOS_SCH_IPC_COUNT + 3 };
     for (size_t i = 0; i < sizeof(dirty) / sizeof(dirty[0]); i++) {
         reset_image(image, view); image[dirty[i]] ^= 1; reject_without_writes(image);
     }
@@ -368,6 +370,11 @@ int main(int argc, char **argv)
     memcpy(&drain_disp, image + IOS_SCH_RENDER_DRAIN_SITE + 1, sizeof(drain_disp));
     assert(IOS_SCH_RENDER_DRAIN_SITE + 5 + drain_disp == IOS_SCH_RENDER_DRAIN);
     assert(!memcmp(image + IOS_SCH_RENDER_DRAIN, ios_sch_render_drain, sizeof(ios_sch_render_drain)));
+    int32_t ipc_disp = 0;
+    assert((unsigned char)image[IOS_SCH_IPC_CONNECT] == 0xe9);
+    memcpy(&ipc_disp, image + IOS_SCH_IPC_CONNECT + 1, sizeof(ipc_disp));
+    assert(IOS_SCH_IPC_CONNECT + 5 + ipc_disp == IOS_SCH_IPC_TRACE);
+    assert(!memcmp(image + IOS_SCH_IPC_TRACE, ios_sch_ipc_rebind, sizeof(ios_sch_ipc_rebind)));
     const size_t trace_sites[] = {0x174121, 0x17412b};
     const size_t trace_entries[] = {IOS_SCH_RUN_INSTALL, IOS_SCH_RUN_RESTORE};
     const size_t trace_spans[] = {7, 9};
