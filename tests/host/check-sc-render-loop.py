@@ -98,7 +98,7 @@ typedef struct { uint32_t VirtualAddress; union { uint32_t VirtualSize; } Misc;
 static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); return !(e && e[0] == '0'); }
 /* Test output contains no guest payload or addresses. */
 #define dprintf(...) ((void)0)
-''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
+''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
 static IMAGE_NT_HEADERS nt;
 static IMAGE_SECTION_HEADER sections[2];
 static WCHAR helper_name[] = {'S','o','c','i','a','l','C','l','u','b','H','e','l','p','e','r','.','e','x','e'};
@@ -299,7 +299,9 @@ int main(int argc, char **argv)
         reset_image(image, view); image[ios_sch_code[i].rva] ^= 1; reject_without_writes(image);
     }
     const size_t dirty[] = { IOS_SCH_THUNK, IOS_SCH_LOOP_INIT, IOS_SCH_TASK,
-                            IOS_SCH_TASK + 63, IOS_SCH_CACHE, IOS_SCH_VT_RPH };
+                            IOS_SCH_TASK + 63, IOS_SCH_CACHE, IOS_SCH_VT_RPH, IOS_SCH_RUN_INSTALL,
+                            IOS_SCH_RUN_INSTALL + sizeof(ios_sch_run_trace) - 1,
+                            IOS_SCH_RUN_RING, IOS_SCH_RUN_RING + IOS_SCH_RUN_RING_SIZE - 1 };
     for (size_t i = 0; i < sizeof(dirty) / sizeof(dirty[0]); i++) {
         reset_image(image, view); image[dirty[i]] ^= 1; reject_without_writes(image);
     }
@@ -308,6 +310,18 @@ int main(int argc, char **argv)
     reject_without_writes(image);
     reset_image(image, view);
     ios_sc_render_handler_patch(image, IOS_SCH_SIZE, &nt, sections, &name);
+    const size_t trace_sites[] = {0x174121, 0x17412b};
+    const size_t trace_entries[] = {IOS_SCH_RUN_INSTALL, IOS_SCH_RUN_RESTORE};
+    const size_t trace_spans[] = {7, 9};
+    assert(!memcmp(image + IOS_SCH_RUN_INSTALL, ios_sch_run_trace, sizeof(ios_sch_run_trace)));
+    for (size_t i = 0; i < 2; i++) {
+        int32_t displacement = 0;
+        assert((unsigned char)image[trace_sites[i]] == 0xe9);
+        memcpy(&displacement, image + trace_sites[i] + 1, sizeof(displacement));
+        assert(trace_sites[i] + 5 + displacement == trace_entries[i]);
+        for (size_t j = 5; j < trace_spans[i]; j++)
+            assert((unsigned char)image[trace_sites[i] + j] == 0x90);
+    }
     task = (void *)(image + IOS_SCH_TASK);
     assert(*(uint64_t *)(image + IOS_SCH_VT_RPH) == view + IOS_SCH_LOOP_INIT);
     assert((uintptr_t)task->execute == view + IOS_SCH_LOOP_PUMP);
