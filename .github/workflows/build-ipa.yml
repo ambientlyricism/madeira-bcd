@@ -347,6 +347,12 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
+      # [dns]: every guest getaddrinfo by name, and MADEIRA_DNS_TIMEOUT_MS to
+      # bound one (Social Club's Chromium sat in three getaddrinfo calls for a
+      # minute, GTA V Enhanced build 378). Patches wine/dlls/ws2_32/unixlib.c.
+      - name: Patch wine with the DNS trace
+        run: python3 tools/patch-wine-dns-trace.py wine/dlls/ws2_32/unixlib.c
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before
