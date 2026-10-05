@@ -124,24 +124,28 @@ int main(int argc,char** argv) {
     using namespace FEXCore::Config;
     unsetenv("FEX_SMCCHECKS"); unsetenv("MADEIRA_LAUNCHER_FULL_SMC");
     for (auto name : {"Launcher.exe","LAUNCHER.EXE","launcher.exe"}) {
-      Current=CONFIG_SMC_MTRACK; Calls=0; policy(name);
-      assert(Current==CONFIG_SMC_FULL && Calls==1);
-    }
-    for (auto name : {"PlayGTAV.exe","GTA5_Enhanced.exe","SocialClubHelper.exe","RockstarService.exe","dockhost.exe","OtherLauncher.exe"}) {
       for (unsigned mode=0;mode<=2;mode++) { Current=mode; Calls=0; policy(name); assert(Current==mode && !Calls); }
     }
-    for (auto value : {"0","0-disabled"}) {
+    for (auto value : {"0","0-disabled","","1-invalid","true","2"}) {
       setenv("MADEIRA_LAUNCHER_FULL_SMC",value,1);
-      Current=CONFIG_SMC_MTRACK; Calls=0; policy("Launcher.exe"); assert(Current==CONFIG_SMC_MTRACK && !Calls);
+      for (unsigned mode=0;mode<=2;mode++) { Current=mode; Calls=0; policy("Launcher.exe"); assert(Current==mode && !Calls); }
     }
-    unsetenv("MADEIRA_LAUNCHER_FULL_SMC");
-    for (auto value : {"none","mtrack","full"}) {
+    setenv("MADEIRA_LAUNCHER_FULL_SMC","1",1);
+    for (auto name : {"Launcher.exe","LAUNCHER.EXE","launcher.exe"}) {
+      for (unsigned mode=0;mode<=2;mode++) { Current=mode; Calls=0; policy(name); assert(Current==CONFIG_SMC_FULL && Calls==1); }
+    }
+    for (auto value : {"none","mtrack","full","0","1","2"}) {
       setenv("FEX_SMCCHECKS",value,1);
-      Current=CONFIG_SMC_MTRACK; Calls=0; policy("Launcher.exe"); assert(Current==CONFIG_SMC_MTRACK && !Calls);
+      for (unsigned mode=0;mode<=2;mode++) { Current=mode; Calls=0; policy("Launcher.exe"); assert(Current==mode && !Calls); }
     }
     setenv("FEX_SMCCHECKS","",1);
     Current=CONFIG_SMC_MTRACK; Calls=0; policy("Launcher.exe"); assert(Current==CONFIG_SMC_FULL && Calls==1);
-    puts("PASS: Launcher-only FullSMC, opt-out and explicit configuration priority"); return 0;
+    for (auto name : {"PlayGTAV.exe","GTA5_Enhanced.exe","SocialClubHelper.exe","RockstarService.exe","dockhost.exe","OtherLauncher.exe"}) {
+      for (unsigned mode=0;mode<=2;mode++) { Current=mode; Calls=0; policy(name); assert(Current==mode && !Calls); }
+    }
+    unsetenv("MADEIRA_LAUNCHER_FULL_SMC");
+    Current=CONFIG_SMC_MTRACK; Calls=0; policy("Launcher.exe"); assert(Current==CONFIG_SMC_MTRACK && !Calls);
+    puts("PASS: configured SMC policy preserved by default, exact Launcher-only opt-in and explicit configuration priority"); return 0;
   }
   if (argc!=3) return 1;
   OpType op {}; op.CodeLength=std::strtoul(argv[1],nullptr,10);
