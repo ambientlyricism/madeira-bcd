@@ -2730,6 +2730,55 @@ static void ios_guest_block_dump( uint64_t block, uint64_t fault_rip, void *owne
     ios_guest_code_pair( "block-entry", tail.rip, owner );
 }
 
+/* Only a recognized, last-executed JMP [RSP+disp8]. This reads the current
+ * operand after the fault; it is not a saved value from branch execution. */
+static void ios_guest_branch_operand_dump( uint64_t source, uint64_t target, const void *frame )
+{
+    extern int ios_jit_guest_code_window( uint64_t, uint64_t *, uint64_t *, size_t * );
+    uint64_t image = 0, start = 0, rsp = 0, address, value = 0;
+    uint64_t frame_address = (uint64_t)(uintptr_t)frame;
+    size_t length = 0;
+    unsigned char code[4];
+    mach_vm_size_t got = 0;
+    int displacement;
+
+    if (!ios_jit_guest_code_window( source, &image, &start, &length ) || source < start ||
+        source - start > length || length - (source - start) < sizeof(code) ||
+        mach_vm_read_overwrite( mach_task_self(), source, sizeof(code),
+            (mach_vm_address_t)code, &got ) != KERN_SUCCESS || got != sizeof(code) ||
+        code[0] != 0xff || code[1] != 0x64 || code[2] != 0x24) return;
+
+    /* CPUState.gregs[RSP] is the pinned architectural prefix, offset0x40.
+     * Read via Mach even if the history itself was readable. */
+    got = 0;
+    if (!frame_address || frame_address > UINT64_MAX - 0x40 - sizeof(rsp) ||
+        mach_vm_read_overwrite( mach_task_self(), frame_address + 0x40, sizeof(rsp),
+            (mach_vm_address_t)&rsp, &got ) != KERN_SUCCESS || got != sizeof(rsp) ||
+        rsp < 0x10000 || rsp >= UINT64_C(0x800000000000)) goto unavailable;
+    displacement = (int8_t)code[3];
+    if (displacement < 0)
+    {
+        if (rsp < (uint64_t)-displacement) goto unavailable;
+        address = rsp - (uint64_t)-displacement;
+    }
+    else
+    {
+        if (rsp > UINT64_MAX - (unsigned)displacement) goto unavailable;
+        address = rsp + (unsigned)displacement;
+    }
+    if (address < 0x10000 || address > UINT64_C(0x800000000000) - sizeof(value)) goto unavailable;
+    got = 0;
+    if (mach_vm_read_overwrite( mach_task_self(), address, sizeof(value),
+            (mach_vm_address_t)&value, &got ) != KERN_SUCCESS || got != sizeof(value)) goto unavailable;
+    dprintf( 2, "[guest-operand] source=%#llx current-rsp=%#llx disp=%d address=%#llx value=%#llx "
+             "target=%#llx matches-target=%u (current snapshot, not historical)\n",
+             (unsigned long long)source, (unsigned long long)rsp, displacement,
+             (unsigned long long)address, (unsigned long long)value, (unsigned long long)target, value == target );
+    return;
+unavailable:
+    dprintf( 2, "[guest-operand] recognized JMP [RSP+disp8], current operand unavailable\n" );
+}
+
 static void ios_guest_branch_history_dump( const void *frame, uint64_t fault_rip, void *owner )
 {
     extern unsigned ios_fex_branch_history_offset( void );
@@ -2761,6 +2810,11 @@ static void ios_guest_branch_history_dump( const void *frame, uint64_t fault_rip
                  (unsigned long long)history.edges[slot].block, hints[history.edges[slot].hint],
                  history.edges[slot].target == fault_rip );
         ios_guest_code_pair( "branch-source", history.edges[slot].source, owner );
+        if (!i && !history.edges[slot].hint && history.edges[slot].target == fault_rip)
+        {
+            ios_guest_branch_operand_dump( history.edges[slot].source, history.edges[slot].target, frame );
+            ios_guest_block_dump( history.edges[slot].block, history.edges[slot].source, owner );
+        }
     }
 }
 
