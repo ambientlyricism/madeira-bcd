@@ -2695,9 +2695,106 @@ static void ios_guest_call_dump( uint64_t v, unsigned length, int32_t relative, 
     ios_guest_code_pair( "call-target", target, owner );
 }
 
+/* Cover a small source block without gaps between the entry/exit windows.
+ * Revalidate each chunk as registered x64 code; do not cross a data section.
+ * The bytes are current snapshots, not the decoder's original bytes. */
+static int ios_guest_block_code_dump( uint64_t rip, uint64_t size, void *owner )
+{
+    extern int ios_jit_guest_code_window( uint64_t, uint64_t *, uint64_t *, size_t * );
+    extern void *ios_jit_translate_addr_for_owner( void *, void * );
+    uint64_t image = 0, start = 0, expected_image, copy;
+    size_t window = 0, done = 0, limit = size < 256 ? size : 256;
+    unsigned char bytes[48];
+
+    if (!size || rip > UINT64_MAX - size ||
+        !ios_jit_guest_code_window( rip, &image, &start, &window ) ||
+        !window || window > sizeof(bytes) || start > rip || rip - start >= window) return 0;
+    expected_image = image;
+    dprintf( 2, "[guest-block-code] entry=%#llx guest-size=%llu selected=%zu cap=256 "
+             "(current bytes, not compile history)\n",
+             (unsigned long long)rip, (unsigned long long)size, limit );
+    while (done < limit)
+    {
+        uint64_t address = rip + done;
+        size_t chunk;
+        if (!ios_jit_guest_code_window( address, &image, &start, &window ) || image != expected_image ||
+            !window || window > sizeof(bytes) || start > address || address - start >= window)
+        {
+            dprintf( 2, "[guest-block-code] stopped at +%zu (outside registered x64 code)\n", done );
+            break;
+        }
+        chunk = window - (address - start);
+        if (chunk > limit - done) chunk = limit - done;
+        ios_guest_instruction_read( "block-code-PE", address, chunk, bytes );
+        copy = (uint64_t)(uintptr_t)ios_jit_translate_addr_for_owner( (void *)(uintptr_t)address, owner );
+        if (copy && copy != address) ios_guest_instruction_read( "block-code-COPY", copy, chunk, bytes );
+        done += chunk;
+    }
+    return 1;
+}
+
+/* The generated ARM64 body includes literal data. Read exact bounded rows,
+ * excluding the header, tail and RIP table. This does not execute the code. */
+static void ios_guest_jit_body_dump( uint64_t block, uint32_t tail_offset )
+{
+    uint32_t available, limit, done;
+    if (!block || (block & 3) || tail_offset < 4 || (tail_offset & 3) ||
+        tail_offset > (64u << 20) || block > UINT64_MAX - tail_offset) return;
+    available = tail_offset - 4;
+    limit = available < 8192 ? available : 8192;
+    dprintf( 2, "[guest-jit] block=%#llx begin=%#llx body-bytes=%u selected=%u cap=8192 "
+             "(generated ARM64 body, includes literals)\n",
+             (unsigned long long)block, (unsigned long long)(block + 4), available, limit );
+    for (done = 0; done < limit; )
+    {
+        uint32_t words[16], chunk = limit - done;
+        char line[16 * 9 + 1];
+        mach_vm_size_t got = 0;
+        unsigned i;
+        if (chunk > sizeof(words)) chunk = sizeof(words);
+        if (mach_vm_read_overwrite( mach_task_self(), block + 4 + done, chunk,
+                (mach_vm_address_t)words, &got ) != KERN_SUCCESS || got != chunk)
+        {
+            dprintf( 2, "[guest-jit] stopped at +%u (unreadable/short row)\n", done + 4 );
+            break;
+        }
+        for (i = 0; i < chunk / 4; i++) snprintf( line + i * 9, 10, "%08x ", words[i] );
+        line[chunk / 4 * 9] = 0;
+        dprintf( 2, "[guest-jit] address=%#llx words=%s\n",
+                 (unsigned long long)(block + 4 + done), line );
+        done += chunk;
+    }
+}
+
+/* Packed host-PC/guest-RIP deltas accompanying this generated block. The
+ * current guest bytes alone cannot identify its compiled instruction map. */
+static void ios_guest_jit_map_dump( uint64_t block, uint32_t tail_offset,
+                                    uint64_t total, uint32_t entries, uint32_t count )
+{
+    unsigned char bytes[48];
+    uint64_t address, available;
+    size_t done = 0, limit;
+    if (!block || !count || count > 65536 || total > (64u << 20) ||
+        total < tail_offset || entries < 40 || entries >= total - tail_offset ||
+        block > UINT64_MAX - total) return;
+    address = block + tail_offset + entries;
+    available = total - tail_offset - entries;
+    limit = available < 256 ? available : 256;
+    dprintf( 2, "[guest-jit-map] table=%#llx count=%u available=%llu selected=%zu cap=256 "
+             "(packed host-PC/guest-RIP deltas)\n",
+             (unsigned long long)address, count, (unsigned long long)available, limit );
+    while (done < limit)
+    {
+        size_t chunk = limit - done;
+        if (chunk > sizeof(bytes)) chunk = sizeof(bytes);
+        ios_guest_instruction_read( "block-rip-table", address + done, chunk, bytes );
+        done += chunk;
+    }
+}
+
 /* Read the pinned FEX JITCodeHeader/Tail layout through Mach, with no PE call.
  * The guest bytes below are current snapshots, not saved compile-time bytes. */
-static void ios_guest_block_dump( uint64_t block, uint64_t fault_rip, void *owner )
+static void ios_guest_block_dump( uint64_t block, uint64_t fault_rip, void *owner, int source_body )
 {
     uint32_t offset = 0;
     struct { uint64_t size, rip, guest_size; uint32_t count, entries, spin;
@@ -2728,6 +2825,12 @@ static void ios_guest_block_dump( uint64_t block, uint64_t fault_rip, void *owne
              (unsigned long long)tail.rip, (unsigned long long)tail.guest_size,
              tail.count, tail.single, fault_rip >= tail.rip && fault_rip - tail.rip < tail.guest_size );
     ios_guest_code_pair( "block-entry", tail.rip, owner );
+    if (source_body && fault_rip >= tail.rip && fault_rip - tail.rip < tail.guest_size &&
+        ios_guest_block_code_dump( tail.rip, tail.guest_size, owner ))
+    {
+        ios_guest_jit_body_dump( block, offset );
+        ios_guest_jit_map_dump( block, offset, tail.size, tail.entries, tail.count );
+    }
 }
 
 /* Only a recognized, last-executed JMP [RSP+disp8]. This reads the current
@@ -2813,7 +2916,7 @@ static void ios_guest_branch_history_dump( const void *frame, uint64_t fault_rip
         if (!i && !history.edges[slot].hint && history.edges[slot].target == fault_rip)
         {
             ios_guest_branch_operand_dump( history.edges[slot].source, history.edges[slot].target, frame );
-            ios_guest_block_dump( history.edges[slot].block, history.edges[slot].source, owner );
+            ios_guest_block_dump( history.edges[slot].block, history.edges[slot].source, owner, 1 );
         }
     }
 }
@@ -2922,7 +3025,7 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
                         if (rip >= 32 && ios_jit_guest_code_window( rip, &fault_image, &fault_start, &fault_length ) &&
                             ios_jit_guest_code_window( rip - 32, &image, &start, &length ) && image == fault_image)
                             ios_guest_code_pair( "before-rip", rip - 32, cur_teb->Peb );
-                        ios_guest_block_dump( fx[0], rip, cur_teb->Peb );
+                        ios_guest_block_dump( fx[0], rip, cur_teb->Peb, 0 );
                         ios_guest_branch_history_dump( fex_state, rip, cur_teb->Peb );
                     }
                     dprintf(2, "[term-stack] g0-7: %llx %llx %llx %llx %llx %llx %llx %llx\n",
