@@ -1229,6 +1229,8 @@ jobs:
               raise SystemExit('Required ARM64EC rpmalloc span8 module was not built; refusing the fallback IPA')
           if b'branch-history-v1 madeira-bcd' not in module or b'IosGuestBranchTraceLayout' not in module:
               raise SystemExit('Required ARM64EC branch-history module was not built; refusing the fallback IPA')
+          if b'launcher-smc-v1 madeira-bcd' not in module:
+              raise SystemExit('Required ARM64EC Launcher SMC module was not built; refusing the fallback IPA')
           print('ARM64EC rpmalloc: span8 build marker verified')
           PYEOF
           # The opt-in source build of dxgi.dll (tools/build-dxgi-dll.sh) is not

@@ -35,6 +35,7 @@ functions += function(process, 'static const char *ios_guest_return_kind(')
 functions += function(process, 'static void ios_guest_call_dump(')
 functions += function(process, 'static void ios_guest_block_dump(')
 functions += function(native, 'static unsigned ios_fex_branch_layout_offset(')
+functions += function(process, 'static void ios_guest_branch_operand_dump(')
 functions += function(process, 'static void ios_guest_branch_history_dump(')
 functions += function(process, 'static int ios_dump_guest_instruction(')
 loop_start = native.index('while (p < end_p)', native.index('/* ml102 FIX:'))
@@ -424,6 +425,60 @@ int main(int argc, char **argv)
         empty_success=0;
         puts("PASS: versioned DATA layout, bounded live branch ordering, child snapshots, inactive/unreadable/overflow refusal");
     }
+    else if (!strcmp(argv[1], "operand"))
+    {
+        unsigned char *frame=child+0x6000, *code=pe+0x1100;
+        uint64_t rsp=(uintptr_t)(child+0x5000), target=b+0x1800;
+        const int displacements[] = {-128,-8,0,8,127};
+        memcpy(frame+0x40,&rsp,sizeof(rsp));
+        for (unsigned i=0;i<sizeof(displacements)/sizeof(displacements[0]);i++)
+        {
+            int displacement=displacements[i];
+            code[0]=0xff; code[1]=0x64; code[2]=0x24; code[3]=(unsigned char)displacement;
+            memcpy((void *)(uintptr_t)(rsp+displacement),&target,sizeof(target));
+            reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+            assert(reads==3 && strstr(output,"matches-target=1 (current snapshot, not historical)"));
+            char expected[64]; snprintf(expected,sizeof(expected),"disp=%d address=%#llx",displacement,
+                                       (unsigned long long)(rsp+displacement));
+            assert(strstr(output,expected));
+            reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target+1,frame);
+            assert(reads==3 && strstr(output,"matches-target=0"));
+        }
+        code[1]=0x54;
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+        assert(reads==1 && !output_size);
+        code[1]=0x64; code[3]=0xf8;
+        reset_output(); ios_guest_branch_operand_dump(b+0x3000,target,frame);
+        assert(!reads && !output_size);
+        reset_output(); ios_guest_branch_operand_dump(b+0x1ffd,target,frame);
+        assert(!reads && !output_size);
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,(void *)(uintptr_t)UINT64_MAX);
+        assert(reads==1 && strstr(output,"operand unavailable"));
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,NULL);
+        assert(reads==1 && strstr(output,"operand unavailable"));
+        uint64_t invalid[] = {0,UINT64_MAX,0x10000,UINT64_C(0x800000000000),UINT64_C(0x7fffffffffff)};
+        for (unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++)
+        {
+            memcpy(frame+0x40,&invalid[i],sizeof(rsp));
+            reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+            assert(strstr(output,"operand unavailable"));
+        }
+        memcpy(frame+0x40,&rsp,sizeof(rsp));
+        assert(!mprotect(frame,page,PROT_NONE));
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+        assert(reads==2 && strstr(output,"operand unavailable"));
+        assert(!mprotect(frame,page,PROT_READ | PROT_WRITE));
+        assert(!mprotect(child+0x5000,page,PROT_NONE));
+        code[3]=0;
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+        assert(reads==3 && strstr(output,"operand unavailable"));
+        assert(!mprotect(child+0x5000,page,PROT_READ | PROT_WRITE));
+        empty_success=1;
+        reset_output(); ios_guest_branch_operand_dump((uintptr_t)code,target,frame);
+        assert(reads==1 && !output_size);
+        empty_success=0;
+        puts("PASS: stack JMP signed operand snapshots, current-value comparison and inaccessible/overflow/code-boundary refusal");
+    }
     else abort();
     assert(!munmap(pe, 0x8000) && !munmap(parent, 0x8000) && !munmap(child, 0x8000));
     return 0;
@@ -441,7 +496,7 @@ with tempfile.TemporaryDirectory(prefix='guest-instruction-') as directory:
     unit.write_text(code)
     binary = folder / 'check'
     subprocess.run([cc, *flags, str(unit), '-o', str(binary)], check=True)
-    for case in ('targets', 'snapshot', 'calls', 'block', 'edges'):
+    for case in ('targets', 'snapshot', 'calls', 'block', 'edges', 'operand'):
         subprocess.run([str(binary), case], env=env, check=True)
     legacy = 'if (!ios_jit_code_bounds( &ios_jit_mappings[i], off, &t_off, &t_sz )) return 0;'
     assert code.count(legacy) == 1
