@@ -1339,8 +1339,32 @@ void winios_window_visibility(HWND hwnd, int visible) {
     });
 }
 
+/* Parent movement does not give every child its own WindowPosChanged. Update
+ * existing layers only; retain their visibility, surface and Metal layer.
+ * All Wine queries happened on the caller's Wine thread, not this queue. */
+void winios_window_geometry(HWND hwnd, int x, int y, int w, int h,
+                            int cx, int cy, int cw, int ch) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSNumber *key = @((uintptr_t)hwnd);
+        CALayer *l = g_layers[key];
+        if (!l) return;
+        g_px_rects[key] = [NSValue valueWithCGRect:CGRectMake(x, y, w, h)];
+        if (!g_client_rects) g_client_rects = [NSMutableDictionary new];
+        g_client_rects[key] = [NSValue valueWithCGRect:CGRectMake(cx, cy, cw, ch)];
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        l.frame = winios_layer_rect(x, y, w, h);
+        winios_apply_contents_rect(key, l);
+        winios_place_metal_layer(key);
+        [CATransaction commit];
+        static unsigned n;
+        if (++n <= 64 || (n % 128) == 0)
+            fprintf(stderr, "[winios] inherited frame hwnd=%p screen=(%d,%d %dx%d)\n", hwnd, x, y, w, h);
+    });
+}
+
 /* Called from win32u's pWindowPosChanged wrapper (wine thread).
- * x/y/w/h = visible rect, cx/cy/cw/ch = client rect, desktop pixels. */
+ * x/y/w/h = visible rect, cx/cy/cw/ch = client rect, screen desktop pixels. */
 void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
                          int cx, int cy, int cw, int ch) {
     /* Here, not in the block below: the census asks win32u about the window,
