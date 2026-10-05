@@ -104,7 +104,7 @@ static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); 
 #define dprintf(...) ((void)0)
 ''' + defines + '\n' + '\n'.join(array(x) for x in (
         'ios_sch_thunk', 'ios_sch_loop_thunk', 'ios_sch_run_trace', 'ios_sch_render_drain',
-        'ios_sch_ipc_rebind', 'ios_sch_ipc_split')) + '\n' + guards + '\n' + '\n'.join(function(x) for x in (
+        'ios_sch_ipc_rebind', 'ios_sch_ipc_split', 'ios_sch_ui_trace')) + '\n' + guards + '\n' + '\n'.join(function(x) for x in (
             'static int ios_sc_path_is_helper(', 'static const char *ios_sch_mismatch(',
             'static void ios_sc_render_handler_patch(')) + r'''
 struct Client { uint16_t *channel; unsigned int active, handler; };

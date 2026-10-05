@@ -13037,6 +13037,9 @@ static int ios_sc_current_is_helper(void)
 #define IOS_SCH_IPC_DESTROY 0x180e19u
 #define IOS_SCH_IPC_DIRECT  0x180edcu
 #define IOS_SCH_IPC_CONTEXT 0x1d0e50u /* renderer manager + borrowed main command line */
+#define IOS_SCH_UI_CTOR     0xd5040u  /* message 0x20005, four-byte payload */
+#define IOS_SCH_UI_TRACE    0x180f30u
+#define IOS_SCH_UI_COUNT    0x1d0e60u
 
 
 static const unsigned char ios_sch_thunk[112] =
@@ -13207,6 +13210,22 @@ static const unsigned char ios_sch_ipc_split[661] =
     0x74,0x3d,0x25,0x75,0x00,
 };
 
+/* Record the source and caller of the early UI termination notification.
+ * Resume the original constructor with its original inputs: no notification
+ * is suppressed and its payload/delivery are unchanged. At most 16 records.
+ * Source: tests/host/sc-ui-close.S. */
+static const unsigned char ios_sch_ui_trace[125] =
+{
+    0x48,0x89,0x5c,0x24,0x10,0x51,0x52,0x48,0x83,0xec,0x38,0x83,0x3d,0x1e,0xff,0x04,
+    0x00,0x10,0x73,0x30,0xb8,0x01,0x00,0x00,0x00,0xf0,0x0f,0xc1,0x05,0x0f,0xff,0x04,
+    0x00,0x83,0xf8,0x10,0x73,0x1e,0x44,0x8b,0x02,0x49,0x89,0xd1,0x48,0x8b,0x44,0x24,
+    0x48,0x48,0x89,0x44,0x24,0x20,0x48,0x8d,0x15,0x12,0x00,0x00,0x00,0x31,0xc9,0xe8,
+    0xcc,0x03,0xf9,0xff,0x48,0x83,0xc4,0x38,0x5a,0x59,0xe9,0xc6,0x40,0xf5,0xff,0x5b,
+    0x73,0x63,0x2d,0x75,0x69,0x5d,0x20,0x6d,0x73,0x67,0x32,0x30,0x30,0x30,0x35,0x20,
+    0x76,0x61,0x6c,0x75,0x65,0x3d,0x25,0x75,0x20,0x73,0x6f,0x75,0x72,0x63,0x65,0x3d,
+    0x25,0x70,0x20,0x63,0x61,0x6c,0x6c,0x65,0x72,0x3d,0x25,0x70,0x00,
+};
+
 /* The helper code the thunk and the vtable change rely on (no relocations in
  * any of these ranges). */
 static const struct { unsigned int rva; unsigned char len; unsigned char bytes[64]; } ios_sch_code[] =
@@ -13310,6 +13329,14 @@ static const struct { unsigned int rva; unsigned char len; unsigned char bytes[6
       0x40,0x53,0x48,0x83,0xec,0x20 } },
     { 0x13e744, 0x6, { /* helper sized deallocator */
       0xe9,0x5f,0x07,0x00,0x00,0xcc } },
+    { IOS_SCH_UI_CTOR, 0x21, { /* constructor inputs; R8/R9 are set before use */
+      0x48,0x89,0x5c,0x24,0x10,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xda,0x41,0xb9,0x02,
+      0x00,0x00,0x00,0xba,0xff,0xff,0xff,0x7f,0x41,0xb8,0x05,0x00,0x02,0x00,0x48,0x8b,
+      0xf9 } },
+    { 0x12eb5, 0x5, { /* first message 0x20005 constructor call */
+      0xe8,0x86,0x21,0x0c,0x00 } },
+    { 0x320aa, 0x5, { /* second message 0x20005 constructor call */
+      0xe8,0x91,0x2f,0x0a,0x00 } },
     { IOS_SCH_WEBKIT, 0x20, { /* original OnWebKitInitialized */
       0x40,0x53,0x55,0x41,0x55,0x41,0x57,0x48,0x81,0xec,0x28,0x01,0x00,0x00,0x4c,0x8b,
       0xe9,0x33,0xed,0x48,0x83,0xc1,0x10,0x89,0xac,0x24,0x50,0x01,0x00,0x00,0xe8,0x2d } },
@@ -13373,6 +13400,9 @@ static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const 
         if (base[IOS_SCH_IPC_SPLIT + k]) return "IPC split .text tail not zero";
     for (k = 0; k < 16; k++)
         if (base[IOS_SCH_IPC_CONTEXT + k]) return "IPC split context not zero";
+    for (k = 0; k < sizeof(ios_sch_ui_trace); k++)
+        if (base[IOS_SCH_UI_TRACE + k]) return "UI notification trace .text tail not zero";
+    if (*(const unsigned int *)(base + IOS_SCH_UI_COUNT)) return "UI notification trace counter not zero";
     if (*(const ULONG64 *)(base + IOS_SCH_CACHE)) return ".data tail not zero";
     return NULL;
 }
@@ -13406,6 +13436,12 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
     memcpy( base + IOS_SCH_RUN_INSTALL, ios_sch_run_trace, sizeof(ios_sch_run_trace) );
     memcpy( base + IOS_SCH_RENDER_DRAIN, ios_sch_render_drain, sizeof(ios_sch_render_drain) );
     memcpy( base + IOS_SCH_IPC_TRACE, ios_sch_ipc_rebind, sizeof(ios_sch_ipc_rebind) );
+    memcpy( base + IOS_SCH_UI_TRACE, ios_sch_ui_trace, sizeof(ios_sch_ui_trace) );
+    {
+        int32_t disp = (int32_t)(IOS_SCH_UI_TRACE - IOS_SCH_UI_CTOR - 5);
+        base[IOS_SCH_UI_CTOR] = (char)0xe9;
+        memcpy( base + IOS_SCH_UI_CTOR + 1, &disp, sizeof(disp) );
+    }
     {
         int32_t disp = (int32_t)(IOS_SCH_IPC_TRACE - IOS_SCH_IPC_CONNECT - 5);
         base[IOS_SCH_IPC_CONNECT] = (char)0xe9;
@@ -13474,7 +13510,8 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
                 "out its renderer app's CefRenderProcessHandler (thunk guest 0x%llx) -- the page bridge runs under "
                 "--single-process; renderer MessageLoop adapter installed (CEF task, callback view base 0x%llx, "
                 "10 ms delay, 32-work budget); bounded I/O RunState trace installed; "
-                "renderer startup drains its own TLS loop; bounded IPC rebind trace installed; %s "
+                "renderer startup drains its own TLS loop; bounded IPC rebind trace installed; "
+                "bounded UI notification trace installed; %s "
                 "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n",
              base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK),
              (unsigned long long)(ULONG_PTR)base,

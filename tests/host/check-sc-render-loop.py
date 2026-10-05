@@ -115,7 +115,7 @@ typedef struct { uint32_t VirtualAddress; union { uint32_t VirtualSize; } Misc;
 static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); return !(e && e[0] == '0'); }
 /* Test output contains no guest payload or addresses. */
 #define dprintf(...) ((void)0)
-''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + array('ios_sch_ipc_rebind') + '\n' + array('ios_sch_ipc_split') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
+''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + array('ios_sch_ipc_rebind') + '\n' + array('ios_sch_ipc_split') + '\n' + array('ios_sch_ui_trace') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
 static IMAGE_NT_HEADERS nt;
 static IMAGE_SECTION_HEADER sections[2];
 static WCHAR helper_name[] = {'S','o','c','i','a','l','C','l','u','b','H','e','l','p','e','r','.','e','x','e'};
@@ -359,7 +359,9 @@ int main(int argc, char **argv)
                             IOS_SCH_IPC_TRACE, IOS_SCH_IPC_TRACE + sizeof(ios_sch_ipc_rebind) - 1,
                             IOS_SCH_IPC_COUNT, IOS_SCH_IPC_COUNT + 3,
                             IOS_SCH_IPC_SPLIT, IOS_SCH_IPC_SPLIT + sizeof(ios_sch_ipc_split) - 1,
-                            IOS_SCH_IPC_CONTEXT, IOS_SCH_IPC_CONTEXT + 15 };
+                            IOS_SCH_IPC_CONTEXT, IOS_SCH_IPC_CONTEXT + 15,
+                            IOS_SCH_UI_TRACE, IOS_SCH_UI_TRACE + sizeof(ios_sch_ui_trace) - 1,
+                            IOS_SCH_UI_COUNT, IOS_SCH_UI_COUNT + 3 };
     for (size_t i = 0; i < sizeof(dirty) / sizeof(dirty[0]); i++) {
         reset_image(image, view); image[dirty[i]] ^= 1; reject_without_writes(image);
     }
