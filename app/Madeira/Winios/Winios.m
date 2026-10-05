@@ -1172,6 +1172,9 @@ static CALayer *winios_layer_for(HWND hwnd, bool create) {
         l.anchorPoint = CGPointMake(0, 0);
         l.magnificationFilter = kCAFilterNearest;
         l.opaque = YES;
+        /* A surface or swapchain can arrive before the window's position.
+         * Stay hidden until Wine delivers the frame and visibility. */
+        l.hidden = YES;
         [g_compositor_view.layer addSublayer:l];
         g_layers[key] = l;
         fprintf(stderr, "[winios] layer created for hwnd=%p (%lu layers)\n",
@@ -1314,6 +1317,26 @@ CAMetalLayer *winios_metal_layer_for_hwnd(void *hwnd) {
     if ([NSThread isMainThread]) make();
     else dispatch_sync(dispatch_get_main_queue(), make);
     return result;
+}
+
+/* Parent show/hide: update existing child layers on the same queue as frames.
+ * A hidden child retains its surface and Metal layer for a later parent show. */
+void winios_window_visibility(HWND hwnd, int visible) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CALayer *l = g_layers[@((uintptr_t)hwnd)];
+        if (!l) return;
+        BOOL hidden = !visible || CGRectIsEmpty(l.bounds);
+        if (l.hidden == hidden) return;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        l.hidden = hidden;
+        [CATransaction commit];
+        static unsigned n;
+        if (++n <= 64 || (n % 128) == 0) {
+            fprintf(stderr, "[winios] inherited visibility hwnd=%p visible=%d\n", hwnd, !hidden);
+            fflush(stderr);
+        }
+    });
 }
 
 /* Called from win32u's pWindowPosChanged wrapper (wine thread).
