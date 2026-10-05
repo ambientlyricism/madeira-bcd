@@ -2,7 +2,10 @@
  * delivery. The guarded constructor takes only RCX=this, RDX=payload; it sets
  * R8/R9 itself before its first call and reads no incoming vector arguments.
  * Replay its RBX home store, retain both inputs across the logger, then resume
- * its original body. At most 16 scalar records per image; no URLs or tickets.
+ * its original body. For the guarded 0x32070 delegate call only, its known
+ * frame gives the parent caller and its owning window field gives the HWND.
+ * Other constructor callers carry no such frame/object assumption.
+ * At most 16 scalar records per image; no URLs or tickets.
  */
 .intel_syntax noprefix
 .text
@@ -22,6 +25,17 @@ sc_ui_close:
     mov r9, rdx                   /* which object's field supplied it */
     mov rax, qword ptr [rsp+0x48]  /* original constructor caller */
     mov qword ptr [rsp+0x20], rax
+    xor r10d, r10d
+    mov qword ptr [rsp+0x28], r10  /* unknown delegate: no parent/HWND read */
+    mov qword ptr [rsp+0x30], r10
+    lea r10, [rip+delegate_caller]
+    cmp rax, r10
+    jne log
+    mov rax, qword ptr [rsp+0x78]  /* 0x32070 pushes RBX and allocates 0x20 */
+    mov qword ptr [rsp+0x28], rax
+    mov rax, qword ptr [r9+0x188]  /* source=owner+0x10; HWND=owner+0x198 */
+    mov qword ptr [rsp+0x30], rax
+log:
     lea rdx, [rip+message]
     xor ecx, ecx
     call helper_log
@@ -31,4 +45,4 @@ done:
     pop rcx
     jmp ctor_continue
 message:
-    .asciz "[sc-ui] msg20005 value=%u source=%p caller=%p"
+    .asciz "[sc-ui] msg20005 value=%u source=%p caller=%p origin=%p hwnd=%p"

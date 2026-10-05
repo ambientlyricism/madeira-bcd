@@ -1529,7 +1529,8 @@ void winios_dump_srcbits(const void *bits, int w, int h, int stride) {
 }
 
 /* Called from winios_surface_flush (wine thread) with the surface's
- * whole DIB. Copy immediately — `bits` is only valid for this call.
+ * whole DIB and Wine's alpha mask. Copy immediately — `bits` is only valid
+ * for this call. Ordinary GDI remains opaque BGRX; per-pixel alpha is BGRA.
  *
  * ml1028: returns 0 if the snapshot could not be allocated, 1 otherwise.
  *
@@ -1561,7 +1562,7 @@ void winios_dump_srcbits(const void *bits, int w, int h, int stride) {
  * WARNING: the snapshot must OWN its bytes. Wrapping `bits` with no-copy would
  * be cheaper and wrong: it is only valid for the duration of this call. */
 int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
-                           int sw, int sh, int stride, const void *bits) {
+                           int sw, int sh, int stride, const void *bits, unsigned int alpha_mask) {
     if (sw <= 0 || sh <= 0 || !bits) return 1;   /* nothing to paint */
     winios_census_note_present(hwnd);   /* no-op unless the census is on */
     size_t snap_len = (size_t)stride * (size_t)sh;
@@ -1772,8 +1773,9 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
                     }
                 }
                 dprintf(STDERR_FILENO, "[surf-pixels] hwnd=%p #%u rect={%d,%d,%d,%d} "
-                        "samples=%u first=%08x rgb-different=%u bright=%u alpha0=%u alpha255=%u\n",
-                        hwnd, mycnt, left, top, right, bottom, samples, first, different, bright, alpha0, alpha255);
+                        "samples=%u first=%08x rgb-different=%u bright=%u alpha0=%u alpha255=%u alpha-mask=%08x\n",
+                        hwnd, mycnt, left, top, right, bottom, samples, first, different, bright, alpha0, alpha255,
+                        alpha_mask);
             }
         }
         /* ml504: bits pointer + content signature per present.
@@ -1825,12 +1827,17 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
         CALayer *l = winios_layer_for(hwnd, true);
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
-        /* GDI 32bpp DIB = BGRX little-endian, no alpha */
+        /* UpdateLayeredWindow marks premultiplied BGRA with alpha_mask.
+         * Ordinary GDI is BGRX: its unused high byte can also be zero, so
+         * only a surface explicitly marked by Wine uses per-pixel alpha. */
+        BOOL pixelAlpha = alpha_mask == 0xff000000u;
         CGImageRef img = CGImageCreate(sw, sh, 8, 32, stride, cs,
-                                       kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst,
+                                       kCGBitmapByteOrder32Little |
+                                       (pixelAlpha ? kCGImageAlphaPremultipliedFirst : kCGImageAlphaNoneSkipFirst),
                                        dp, NULL, false, kCGRenderingIntentDefault);
         if (img) {
             NSNumber *key = @((uintptr_t)hwnd);
+            l.opaque = !pixelAlpha;
             l.contents = (__bridge id)img;
             if (pending) l.hidden = YES;   /* winios_window_frame decides */
             else atomic_fetch_add_explicit(&g_surface_present_count, 1, memory_order_relaxed);
