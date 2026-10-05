@@ -3792,6 +3792,25 @@ static void *ios_pe_find_export( const unsigned char *base, const char *want )
     return NULL;
 }
 
+/* Versioned DATA from the rebuilt module. Offsets are compiler-produced;
+ * neither a guessed CpuStateFrame tail nor an EC function call is safe. */
+static unsigned ios_fex_branch_history_offset_unix;
+
+static unsigned ios_fex_branch_layout_offset( const uint64_t layout[3] )
+{
+    unsigned offset = (uint32_t)layout[1], frame_size = layout[1] >> 32;
+    if (layout[0] != UINT64_C(0x314744454742444d) ||
+        (uint32_t)layout[2] != 272 || layout[2] >> 32 != 8 ||
+        offset < 0x5c0 || (offset & 7) || frame_size > 32760 ||
+        frame_size < 272 || offset > frame_size - 272) return 0;
+    return offset;
+}
+
+unsigned ios_fex_branch_history_offset( void )
+{
+    return __atomic_load_n( &ios_fex_branch_history_offset_unix, __ATOMIC_ACQUIRE );
+}
+
 /* iOS-Madeira ml613: resolve BOTH FEX exports by walking the already-mapped
  * emulator module. Called at the END of unixcall_ios_push_jit_aliases — the
  * guaranteed initialization path — and RETRYABLE until it succeeds.
@@ -3828,6 +3847,25 @@ void ios_resolve_fex_exports( void )
 
         rip_cb = ios_pe_find_export( ios_jit_mappings[i].pe_base, "BTCpu64IosRipFromHostPC" );
         rel_cb = ios_pe_find_export( ios_jit_mappings[i].pe_base, "BTCpu64IosReleaseThreadHolds" );
+
+        {
+            const void *data = ios_pe_find_export( ios_jit_mappings[i].pe_base, "IosGuestBranchTraceLayout" );
+            uintptr_t base = (uintptr_t)ios_jit_mappings[i].pe_base, address = (uintptr_t)data;
+            size_t image_size = ios_jit_mappings[i].size;
+            uint64_t layout[3] = {0};
+            mach_vm_size_t got = 0;
+            unsigned offset;
+            if (data && image_size >= sizeof(layout) && address >= base &&
+                address - base <= image_size - sizeof(layout) &&
+                mach_vm_read_overwrite( mach_task_self(), address, sizeof(layout),
+                    (mach_vm_address_t)layout, &got ) == KERN_SUCCESS && got == sizeof(layout) &&
+                (offset = ios_fex_branch_layout_offset( layout )))
+            {
+                __atomic_store_n( &ios_fex_branch_history_offset_unix, offset, __ATOMIC_RELEASE );
+                dprintf( 2, "[fex-edges] DATA layout v1 frame-offset=%u frame-size=%u history=272 capacity=8\n",
+                         offset, (unsigned)(layout[1] >> 32) );
+            }
+        }
 
         /* Record the addresses for diagnostics. */
         if (rip_cb) ios_fex_rip_from_hostpc_cb = (void *)rip_cb;

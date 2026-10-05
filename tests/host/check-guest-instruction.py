@@ -34,6 +34,8 @@ functions += function(process, 'static int ios_guest_call_decode(')
 functions += function(process, 'static const char *ios_guest_return_kind(')
 functions += function(process, 'static void ios_guest_call_dump(')
 functions += function(process, 'static void ios_guest_block_dump(')
+functions += function(native, 'static unsigned ios_fex_branch_layout_offset(')
+functions += function(process, 'static void ios_guest_branch_history_dump(')
 functions += function(process, 'static int ios_dump_guest_instruction(')
 loop_start = native.index('while (p < end_p)', native.index('/* ml102 FIX:'))
 loop = native[loop_start:native.index('static int ml1017_said;', loop_start)]
@@ -63,6 +65,8 @@ typedef uintptr_t mach_vm_address_t;
 #define KERN_SUCCESS 0
 static char output[65536];
 static size_t output_size, reads;
+static unsigned history_offset;
+unsigned ios_fex_branch_history_offset(void) { return history_offset; }
 static int empty_success;
 static struct { uintptr_t low, high; } allowed[3], denied[4];
 static unsigned allowed_count, denied_count;
@@ -360,6 +364,66 @@ int main(int argc, char **argv)
         assert(!mprotect(child+0x7000, page, PROT_READ | PROT_WRITE));
         puts("PASS: pinned FEX tail metadata, fault containment, code-only snapshots and malformed/inaccessible refusal");
     }
+    else if (!strcmp(argv[1], "edges"))
+    {
+        uint64_t layout[3] = {UINT64_C(0x314744454742444d), 3800 | (UINT64_C(4096) << 32),
+                             272 | (UINT64_C(8) << 32)};
+        assert(ios_fex_branch_layout_offset(layout) == 3800);
+        for (unsigned i=0;i<7;i++)
+        {
+            uint64_t bad[3]; memcpy(bad,layout,sizeof(bad));
+            if (i==0) bad[0]++;
+            if (i==1) bad[1]++;
+            if (i==2) bad[1]=8 | (UINT64_C(4096)<<32);
+            if (i==3) bad[1]=4088 | (UINT64_C(4096)<<32);
+            if (i==4) bad[1]=3800 | (UINT64_C(65536)<<32);
+            if (i==5) bad[2]++;
+            if (i==6) bad[2]=272 | (UINT64_C(16)<<32);
+            assert(!ios_fex_branch_layout_offset(bad));
+        }
+        struct { uint64_t magic, serial; struct { uint64_t source,target,block,hint; } edges[8]; } history = {0};
+        unsigned char *frame = child+0x6000;
+        history_offset=3800;
+        history.magic=UINT64_C(0x314744454742444d);
+        history.serial=10;
+        for (unsigned i=0;i<8;i++)
+        {
+            history.edges[i].source=b+0x1100+i;
+            history.edges[i].target=b+0x1800+i;
+            history.edges[i].block=(uint64_t)(uintptr_t)child+0x7000;
+            history.edges[i].hint=i&3;
+        }
+        memcpy(frame+history_offset,&history,sizeof(history));
+        reset_output(); ios_guest_branch_history_dump(frame,b+0x1801,owner);
+        assert(strstr(output,"serial=10 count=8 newest-first"));
+        assert(strstr(output,"#0 source=") && strstr(output,"kind=call equals-fault=1"));
+        assert(strstr(output,"#7 source=") && !strstr(output,"#8 source="));
+        assert(strstr(output,"branch-source snapshot=MATCH"));
+        history.serial=2;
+        memcpy(frame+history_offset,&history,sizeof(history));
+        reset_output(); ios_guest_branch_history_dump(frame,0,owner);
+        assert(strstr(output,"count=2") && !strstr(output,"#2 source="));
+        history.serial=0;
+        memcpy(frame+history_offset,&history,sizeof(history));
+        reset_output(); ios_guest_branch_history_dump(frame,0,owner);
+        assert(reads==1 && strstr(output,"count=0") && !strstr(output,"#0 source="));
+        history_offset=0;
+        reset_output(); ios_guest_branch_history_dump(frame,0,owner);
+        assert(!reads && strstr(output,"history unavailable"));
+        history_offset=3800;
+        history.magic=0;
+        memcpy(frame+history_offset,&history,sizeof(history));
+        reset_output(); ios_guest_branch_history_dump(frame,0,owner);
+        assert(reads==1 && strstr(output,"history unavailable"));
+        history.magic=UINT64_C(0x314744454742444d);
+        reset_output(); ios_guest_branch_history_dump((void *)(uintptr_t)UINT64_MAX,0,owner);
+        assert(!reads && strstr(output,"history unavailable"));
+        empty_success=1;
+        reset_output(); ios_guest_branch_history_dump(frame,0,owner);
+        assert(reads==1 && strstr(output,"history unavailable"));
+        empty_success=0;
+        puts("PASS: versioned DATA layout, bounded live branch ordering, child snapshots, inactive/unreadable/overflow refusal");
+    }
     else abort();
     assert(!munmap(pe, 0x8000) && !munmap(parent, 0x8000) && !munmap(child, 0x8000));
     return 0;
@@ -377,7 +441,7 @@ with tempfile.TemporaryDirectory(prefix='guest-instruction-') as directory:
     unit.write_text(code)
     binary = folder / 'check'
     subprocess.run([cc, *flags, str(unit), '-o', str(binary)], check=True)
-    for case in ('targets', 'snapshot', 'calls', 'block'):
+    for case in ('targets', 'snapshot', 'calls', 'block', 'edges'):
         subprocess.run([str(binary), case], env=env, check=True)
     legacy = 'if (!ios_jit_code_bounds( &ios_jit_mappings[i], off, &t_off, &t_sz )) return 0;'
     assert code.count(legacy) == 1
