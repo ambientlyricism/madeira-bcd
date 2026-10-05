@@ -1747,6 +1747,35 @@ int winios_surface_present(HWND hwnd, int dx, int dy, int dw, int dh,
 
     if (mycnt <= 16 || (mycnt % 200) == 0 ||
         (sw >= 400 && sh >= 400 && mycnt <= 2000)) {
+        /* Observe the actual owned snapshot shown below. A sparse sample of
+         * the first four dirty rectangles separates blank source pixels from
+         * content lost in composition, including small layered error dialogs.
+         * No image bytes or text are dumped, and no pixel is changed. */
+        if (mycnt && mycnt <= 4 && stride >= (int64_t)sw * 4) {
+            int left = MAX(0, dx), top = MAX(0, dy);
+            int right = (int)MIN((int64_t)sw, (int64_t)dx + dw);
+            int bottom = (int)MIN((int64_t)sh, (int64_t)dy + dh);
+            if (right > left && bottom > top) {
+                const uint8_t *src = data.bytes;
+                uint32_t first = ((const uint32_t *)(src + (size_t)top * stride))[left];
+                unsigned samples = 0, different = 0, bright = 0, alpha0 = 0, alpha255 = 0;
+                int xstep = (right - left + 31) / 32, ystep = (bottom - top + 31) / 32;
+                for (int y = top; y < bottom; y += ystep) {
+                    const uint32_t *row = (const uint32_t *)(src + (size_t)y * stride);
+                    for (int x = left; x < right; x += xstep) {
+                        uint32_t px = row[x];
+                        samples++;
+                        different += (px & 0xffffff) != (first & 0xffffff);
+                        bright += (px & 255) > 96 || ((px >> 8) & 255) > 96 || ((px >> 16) & 255) > 96;
+                        alpha0 += (px >> 24) == 0;
+                        alpha255 += (px >> 24) == 255;
+                    }
+                }
+                dprintf(STDERR_FILENO, "[surf-pixels] hwnd=%p #%u rect={%d,%d,%d,%d} "
+                        "samples=%u first=%08x rgb-different=%u bright=%u alpha0=%u alpha255=%u\n",
+                        hwnd, mycnt, left, top, right, bottom, samples, first, different, bright, alpha0, alpha255);
+            }
+        }
         /* ml504: bits pointer + content signature per present.
          *
          * ml503 showed ~200k pixels changing across the WHOLE window while
