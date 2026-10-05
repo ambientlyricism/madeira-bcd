@@ -2,7 +2,8 @@
 """Check the virtual disk's Windows packets and rejection paths on a POSIX host.
 
 Uses the pinned Wine headers and production responder, including short,
-unaligned and oversized buffers. Also compile the actual server adapter
+unaligned and oversized buffers, plus real prefix-fd/drive-symlink resolution.
+Also compile the actual server adapter
 against the real server object/fd interfaces, without an iOS SDK.
 """
 from pathlib import Path
@@ -14,6 +15,7 @@ root = Path(__file__).resolve().parents[2]
 test = r'''
 #include <assert.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include "storage_device_ios.h"
 
@@ -44,6 +46,39 @@ static void fixed_reply(unsigned int code, const unsigned char *expected, size_t
     assert(request(code, NULL, 0, 128) == (unsigned int)STATUS_SUCCESS);
     assert(written == size && !memcmp(buffer + 17, expected, size));
 }
+static void prefix_capacity(void)
+{
+    assert(!mkdir("prefix", 0700));
+    assert(!mkdir("prefix/dosdevices", 0700));
+    assert(!mkdir("drive_c", 0700));
+    assert(!mkdir("unrelated", 0700));
+    assert(!symlink("../../drive_c", "prefix/dosdevices/c:"));
+    struct statvfs fs;
+    assert(!statvfs("drive_c", &fs));
+    uint64_t expected = madeira_disk_capacity(fs.f_blocks, fs.f_frsize ? fs.f_frsize : fs.f_bsize);
+    int saved_cwd = open(".", O_RDONLY | O_DIRECTORY);
+    int prefix = open("prefix", O_RDONLY | O_DIRECTORY);
+    assert(saved_cwd >= 0 && prefix >= 0);
+    assert(!chdir("unrelated"));
+    int next_fd = open("/dev/null", O_RDONLY);
+    assert(next_fd >= 0 && !close(next_fd));
+    /* Query from a different cwd; repeated calls must close only their own fd. */
+    for (int i = 0; i < 64; i++)
+        assert(madeira_disk_capacity_from_prefix(prefix) == expected);
+    int probe = open("/dev/null", O_RDONLY);
+    assert(probe == next_fd && !close(probe));
+    assert(fcntl(prefix, F_GETFD) != -1);
+    assert(madeira_disk_capacity_from_prefix(-1) == 0);
+    assert(!fchdir(saved_cwd) && !close(saved_cwd));
+    assert(!unlink("prefix/dosdevices/c:"));
+    assert(madeira_disk_capacity_from_prefix(prefix) == 0);
+    int file = open("prefix/dosdevices/c:", O_WRONLY | O_CREAT | O_EXCL, 0600);
+    assert(file >= 0 && !close(file));
+    assert(madeira_disk_capacity_from_prefix(prefix) == 0); /* not a directory */
+    assert(!close(prefix));
+    assert(madeira_disk_capacity_from_prefix(prefix) == 0);
+    puts("PASS: prefix fd survives cwd changes, c: symlink capacity, missing/non-directory drives, no fd leaks");
+}
 int main(void)
 {
     _Static_assert(sizeof(STORAGE_DEVICE_NUMBER) == 12, "Windows device number ABI");
@@ -63,6 +98,7 @@ int main(void)
     assert(!statvfs(".", &fs));
     uint64_t actual = madeira_disk_capacity(fs.f_blocks, fs.f_frsize ? fs.f_frsize : fs.f_bsize);
     assert(actual > 0 && actual <= INT64_MAX);
+    prefix_capacity();
 
     /* Serialized device identity is a virtual disk, index0/whole disk. */
     static const unsigned char number[12] = {7,0,0,0, 0,0,0,0, 0,0,0,0};
@@ -145,5 +181,5 @@ with tempfile.TemporaryDirectory(prefix='madeira-storage-device-') as tmp:
     binary = tmp / 'check'
     subprocess.run([cc, *flags, '-O1', '-g', '-fsanitize=address,undefined',
                     '-fno-omit-frame-pointer', str(source), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
+    subprocess.run([str(binary)], check=True, cwd=tmp)
 print('PASS: production wineserver adapter compiles against the pinned object/fd interfaces')

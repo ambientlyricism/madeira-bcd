@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
 #include "windef.h"
@@ -20,6 +23,23 @@ static inline uint64_t madeira_disk_capacity( uint64_t blocks, uint64_t block_si
 {
     if (!blocks || !block_size || blocks > INT64_MAX / block_size) return 0;
     return blocks * block_size;
+}
+
+/* request_ios.c already holds the prefix directory open. Resolve c: relative
+ * to that fd, even if another thread changes cwd; follow the normal drive
+ * symlink so capacity belongs to the filesystem actually backing the drive. */
+static inline uint64_t madeira_disk_capacity_from_prefix( int prefix_fd )
+{
+    struct statvfs fs;
+    uint64_t bytes = 0;
+    int fd;
+    if (prefix_fd < 0 ||
+        (fd = openat( prefix_fd, "dosdevices/c:", O_RDONLY | O_DIRECTORY | O_CLOEXEC )) == -1)
+        return 0;
+    if (!fstatvfs( fd, &fs ))
+        bytes = madeira_disk_capacity( fs.f_blocks, fs.f_frsize ? fs.f_frsize : fs.f_bsize );
+    close( fd );
+    return bytes;
 }
 
 static inline unsigned int madeira_disk_copy_reply( const void *value, size_t size,

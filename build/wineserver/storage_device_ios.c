@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/statvfs.h>
 #include "storage_device_ios.h"
 #include "winternl.h"
 #include "object.h"
@@ -156,22 +155,16 @@ void madeira_storage_device_init( void )
     struct storage_device *device;
     struct unicode_str name;
     struct object *link;
-    struct statvfs fs;
     WCHAR nameW[48];
-    char *path;
     uint64_t bytes;
     const char *opt = getenv( "MADEIRA_STORAGE_DEVICE" );
     if (opt && !strcmp( opt, "0" )) return;
-    if (asprintf( &path, "%s/dosdevices/c:", get_config_dir() ) == -1) return;
-    if (statvfs( path, &fs ))
+    bytes = madeira_disk_capacity_from_prefix( config_dir_fd );
+    if (!bytes)
     {
         fprintf( stderr, "[storage-device] v1 prefix filesystem unavailable; no disk published\n" );
-        free( path );
         return;
     }
-    free( path );
-    bytes = madeira_disk_capacity( fs.f_blocks, fs.f_frsize ? fs.f_frsize : fs.f_bsize );
-    if (!bytes) return;
     storage_name( "\\Device\\Harddisk0", nameW, &name );
     if (!(device = create_named_object( NULL, &storage_device_ops, &name,
                                         OBJ_PERMANENT | OBJ_CASE_INSENSITIVE, NULL )))
