@@ -144,8 +144,12 @@ python3 "$R/tools/patch-fex-ios-cpuid-index.py" "$R/FEX/FEXCore/Source/Interface
 python3 "$R/tools/patch-fex-ios-avx.py" "$R/FEX/$CPUF"
 python3 "$R/tools/patch-fex-ios-alias-full-quiet.py" "$R/FEX/Source/Windows/ARM64EC/IosJitAlias.cpp"
 python3 "$R/tools/patch-fex-ios-alias-retire-jit.py" "$R/FEX/Source/Windows/ARM64EC/IosJitAlias.cpp"
+# Keep the pinned allocator intact; only the patched ARM64EC rebuild uses
+# coherent 8 MiB spans. The unpatched fingerprint above retains its geometry.
+python3 "$R/tools/patch-fex-ios-rpmalloc-span8.py" "$R/FEX/External/rpmalloc/rpmalloc/rpmalloc.c"
 build
 git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp Source/Windows/ARM64EC/IosJitAlias.cpp
+git -C FEX/External/rpmalloc checkout -- rpmalloc/rpmalloc.c
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
 echo "::notice::xtajit64.dll (and xtajit64-avx.dll) built from FEX $(git -C FEX rev-parse --short HEAD) with the map-notification and IntervalsLock self-deadlock fixes, IRCapRIP out of the game's TLS, the TSD-slot TEB for the WinAPI shims, the CPUID index wrap, and the MADEIRA_FEX_AVX opt-in, and shipped"

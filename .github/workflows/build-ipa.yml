@@ -1220,6 +1220,15 @@ jobs:
             exit 1
           fi
           echo "::notice::all PE DLLs present"
+          # The ARM64EC source build permits a fallback on failure. This
+          # allocator change requires its rebuilt module before archiving.
+          python3 - <<'PYEOF'
+          from pathlib import Path
+          module = Path('app/Madeira/arm64ec-windows/xtajit64.dll').read_bytes()
+          if b'rpmalloc-span8 madeira-bcd' not in module:
+              raise SystemExit('Required ARM64EC rpmalloc span8 module was not built; refusing the fallback IPA')
+          print('ARM64EC rpmalloc: span8 build marker verified')
+          PYEOF
           # The opt-in source build of dxgi.dll (tools/build-dxgi-dll.sh) is not
           # required: without it env.MADEIRA_DXGI_SRC = 1 keeps upstream's.
           if [ -f app/Madeira/arm64ec-windows/dxgi-src.dll ]; then
