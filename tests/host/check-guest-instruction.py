@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise production x64 section classification, IAT slots and safe snapshots.
+"""Exercise production x64 classification, IAT slots and safe fault diagnostics.
 
 No guest binary is executed. A two-section image exposes the old largest-only
 classification; data and ARM64 targets must still translate to their copies.
@@ -29,7 +29,12 @@ functions = ''.join(function(native, signature) for signature in (
     'int ios_jit_guest_code_window(',
 ))
 functions += function(process, 'static uint64_t ios_guest_instruction_read(')
-functions += function(process, 'static void ios_dump_guest_instruction(')
+functions += function(process, 'static void ios_guest_code_pair(')
+functions += function(process, 'static int ios_guest_call_decode(')
+functions += function(process, 'static const char *ios_guest_return_kind(')
+functions += function(process, 'static void ios_guest_call_dump(')
+functions += function(process, 'static void ios_guest_block_dump(')
+functions += function(process, 'static int ios_dump_guest_instruction(')
 loop_start = native.index('while (p < end_p)', native.index('/* ml102 FIX:'))
 loop = native[loop_start:native.index('static int ml1017_said;', loop_start)]
 assert 'ios_dump_guest_instruction( handle, exit_code, rip, cur_teb->Peb );' in process
@@ -210,11 +215,11 @@ int main(int argc, char **argv)
         malformed.code_range_count = IOS_JIT_MAX_CODE_RANGES;
         assert(ios_jit_code_bounds(&malformed, 0x4100, &low, &high)); /* largest-field fallback */
         reset_output();
-        ios_dump_guest_instruction(NtCurrentProcess(), 161, b + 0x1100, owner);
-        ios_dump_guest_instruction((HANDLE)0x88, STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner);
+        assert(!ios_dump_guest_instruction(NtCurrentProcess(), 161, b + 0x1100, owner));
+        assert(!ios_dump_guest_instruction((HANDLE)0x88, STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner));
         assert(!reads && !output_size);
         child[0x1100] ^= 1;
-        ios_dump_guest_instruction(NtCurrentProcess(), STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner);
+        assert(ios_dump_guest_instruction(NtCurrentProcess(), STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner));
         assert(strstr(output, "rva=0x1100") && strstr(output, "opcode-offset=16"));
         assert(strstr(output, "snapshot=DIFFER") && reads == 96);
         assert(!memcmp(parent, pe, 0x8000)); /* parent copy must not supply the snapshot */
@@ -236,11 +241,124 @@ int main(int argc, char **argv)
         for (unsigned i = 0; i < 64; i++)
             ios_dump_guest_instruction(NULL, STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner);
         assert(reads == 12 * 96); /* first four reports consumed above; 16 total */
+        assert(!ios_dump_guest_instruction(NULL, STATUS_PRIVILEGED_INSTRUCTION, b + 0x1100, owner));
+        assert(reads == 12 * 96); /* extended path also disabled by the exhausted report budget */
         reset_output(); unsigned char unused[48] = {0};
         assert(!ios_guest_instruction_read("invalid", UINT64_MAX - 2, 48, unused));
         assert(!ios_guest_instruction_read("invalid", b, 49, unused));
         assert(!reads && !output_size);
         puts("PASS: clipped code-only snapshots, correct child copy, inaccessible/short reads, bounded output and no guest mutation");
+    }
+    else if (!strcmp(argv[1], "calls"))
+    {
+        unsigned n = 0; int32_t relative = 0;
+        unsigned char cb[8];
+        memset(cb, 0xcc, sizeof(cb)); cb[7] = 0xff;
+        assert(!ios_guest_call_decode(cb, &n, &relative)); /* FF at end has no ModR/M */
+        const unsigned char forms[][7] = {
+            {0xff,0xd0}, {0xff,0x50,0x7f}, {0xff,0x15,1,2,3,4},
+            {0xff,0x14,0x85,1,2,3,4}, {0xff,0x94,0x24,1,2,3,4}, {0xff,0x14,0x24}
+        };
+        const unsigned lengths[] = {2,3,6,7,7,3};
+        for (unsigned i = 0; i < 6; i++)
+        {
+            memset(cb, 0xcc, sizeof(cb));
+            memcpy(cb + 8 - lengths[i], forms[i], lengths[i]);
+            assert(ios_guest_call_decode(cb, &n, &relative) == 2 && n == lengths[i]);
+        }
+        memset(cb, 0xcc, sizeof(cb)); cb[6] = 0xff; cb[7] = 0x18; /* far CALL */
+        assert(!ios_guest_call_decode(cb, &n, &relative));
+        cb[7] = 0xe0; assert(!ios_guest_call_decode(cb, &n, &relative)); /* JMP */
+        cb[7] = 0x15; assert(!ios_guest_call_decode(cb, &n, &relative)); /* missing disp32 */
+        cb[7] = 0x14; assert(!ios_guest_call_decode(cb, &n, &relative)); /* missing SIB */
+        memset(pe + 0x1100, 0x90, 0x40);
+        uint64_t ret = b + 0x1108, target = b + 0x1400;
+        relative = (int32_t)(target - ret);
+        pe[0x1103] = 0xe8; memcpy(pe + 0x1104, &relative, 4);
+        memcpy(child, pe, 0x8000);
+        memset(parent + 0x1100, 0xcc, 0x40); /* using the parent would be DIFFER */
+        reset_output();
+        assert(!strcmp(ios_guest_return_kind(ret, &n, &relative), "CALL") && n == 5);
+        assert(relative == (int32_t)(target - ret) && reads == 1);
+        ios_guest_call_dump(ret, n, relative, 1, 0x38, target, owner);
+        assert(strstr(output, "candidate sp+038") && strstr(output, "equals-fault=1"));
+        assert(strstr(output, "call-site snapshot=MATCH") && strstr(output, "call-target snapshot=MATCH"));
+        assert(pe[0x1103] == 0xe8 && child[0x1103] == 0xe8 && parent[0x1103] == 0xcc);
+        child[0x1400] ^= 1;
+        reset_output();
+        ios_guest_call_dump(ret, 5, relative, 1, 0x38, 0, owner);
+        assert(strstr(output, "equals-fault=0") && strstr(output, "call-target snapshot=DIFFER"));
+        reset_output();
+        ios_guest_call_dump(ret, 2, 0, 0, 0x50, target, owner);
+        assert(strstr(output, "kind=FF/2") && !strstr(output, "direct-target"));
+        reset_output();
+        assert(!strcmp(ios_guest_return_kind(b + 0x3008, &n, &relative), "  ?"));
+        assert(!strcmp(ios_guest_return_kind(b + 0x1005, &n, &relative), "  ?"));
+        assert(!strcmp(ios_guest_return_kind(7, &n, &relative), "  ?") && !reads);
+        empty_success = 1;
+        assert(!strcmp(ios_guest_return_kind(ret, &n, &relative), "  ?"));
+        empty_success = 0;
+        reset_output();
+        assert(!mprotect(pe + 0x1000, page, PROT_NONE));
+        assert(!strcmp(ios_guest_return_kind(ret, &n, &relative), "  ?"));
+        assert(!mprotect(pe + 0x1000, page, PROT_READ | PROT_WRITE));
+        reset_output();
+        ios_guest_call_dump(UINT64_MAX - 2, 5, 10, 1, 0, target, owner);
+        ios_guest_call_dump(16, 5, INT32_MIN, 1, 0, target, owner);
+        assert(!strstr(output, "direct-target") && !reads); /* overflow/underflow refused */
+        reset_output();
+        m->machine_cached = 0xaa64;
+        assert(!strcmp(ios_guest_return_kind(ret, &n, &relative), "  ?") && !reads);
+        puts("PASS: near-CALL shapes, seven-byte SIB, trailing FF bounds, guarded targets, child snapshots and no mutation");
+    }
+    else if (!strcmp(argv[1], "block"))
+    {
+        uint64_t block = (uint64_t)(uintptr_t)child + 0x7000;
+        uint32_t offset = 64;
+        struct { uint64_t size, rip, guest_size; uint32_t count, entries, spin;
+                 uint8_t single, pad[3]; } tail = { .size=128, .rip=b+0x10d0,
+                     .guest_size=0x80, .count=3, .entries=40, .single=0 };
+        memcpy((void *)(uintptr_t)block, &offset, 4);
+        memcpy((void *)(uintptr_t)(block + offset), &tail, sizeof(tail));
+        reset_output();
+        ios_guest_block_dump(block, b + 0x1100, owner);
+        assert(strstr(output, "contains-fault=1") && strstr(output, "guest-size=128"));
+        assert(strstr(output, "block-entry snapshot=MATCH") && strstr(output, "not compile history"));
+        reset_output();
+        ios_guest_block_dump(block, b + 0x4000, owner);
+        assert(strstr(output, "contains-fault=0"));
+        reset_output();
+        tail.rip = b + 0x3000; /* metadata readable but guest entry is data */
+        memcpy((void *)(uintptr_t)(block + offset), &tail, sizeof(tail));
+        ios_guest_block_dump(block, tail.rip, owner);
+        assert(reads == 2 && !strstr(output, "block-entry"));
+        for (unsigned i = 0; i < 5; i++)
+        {
+            tail.rip=b+0x1100; tail.guest_size=1; tail.size=128; tail.count=3; tail.single=1;
+            if (i == 0) tail.size=80;
+            if (i == 1) tail.rip=UINT64_MAX;
+            if (i == 2) tail.guest_size=0;
+            if (i == 3) tail.count=65537;
+            if (i == 4) tail.single=2;
+            memcpy((void *)(uintptr_t)(block + offset), &tail, sizeof(tail));
+            reset_output(); ios_guest_block_dump(block, b+0x1100, owner);
+            assert(strstr(output, "tail unavailable/invalid") && reads == 2);
+        }
+        offset=UINT32_MAX; memcpy((void *)(uintptr_t)block, &offset, 4);
+        reset_output(); ios_guest_block_dump(block, b+0x1100, owner);
+        assert(strstr(output, "header unavailable/invalid") && reads == 1);
+        reset_output(); ios_guest_block_dump(0, b+0x1100, owner);
+        assert(!reads);
+        offset=64; memcpy((void *)(uintptr_t)block, &offset, 4);
+        reset_output(); empty_success=1;
+        ios_guest_block_dump(block, b+0x1100, owner);
+        assert(strstr(output, "header unavailable/invalid") && reads == 1);
+        empty_success=0;
+        assert(!mprotect(child+0x7000, page, PROT_NONE));
+        reset_output(); ios_guest_block_dump(block, b+0x1100, owner);
+        assert(strstr(output, "header unavailable/invalid"));
+        assert(!mprotect(child+0x7000, page, PROT_READ | PROT_WRITE));
+        puts("PASS: pinned FEX tail metadata, fault containment, code-only snapshots and malformed/inaccessible refusal");
     }
     else abort();
     assert(!munmap(pe, 0x8000) && !munmap(parent, 0x8000) && !munmap(child, 0x8000));
@@ -259,7 +377,7 @@ with tempfile.TemporaryDirectory(prefix='guest-instruction-') as directory:
     unit.write_text(code)
     binary = folder / 'check'
     subprocess.run([cc, *flags, str(unit), '-o', str(binary)], check=True)
-    for case in ('targets', 'snapshot'):
+    for case in ('targets', 'snapshot', 'calls', 'block'):
         subprocess.run([str(binary), case], env=env, check=True)
     legacy = 'if (!ios_jit_code_bounds( &ios_jit_mappings[i], off, &t_off, &t_sz )) return 0;'
     assert code.count(legacy) == 1
@@ -270,3 +388,10 @@ with tempfile.TemporaryDirectory(prefix='guest-instruction-') as directory:
     failed = subprocess.run([str(binary), 'targets'], env=env, capture_output=True, text=True)
     assert failed.returncode != 0 and 'sync_slots(slots, 5, owner) == 1' in failed.stderr, failed.stderr
     print('PASS: negative control rejects the original largest-only classification')
+    boundary = 'for (k = 2; k <= 7; k++)'
+    assert code.count(boundary) == 1
+    unit.write_text(code.replace(boundary, 'for (k = 1; k <= 7; k++)'))
+    subprocess.run([cc, *flags, str(unit), '-o', str(binary)], check=True)
+    failed = subprocess.run([str(binary), 'calls'], env=env, capture_output=True, text=True)
+    assert failed.returncode != 0 and 'stack-buffer-overflow' in failed.stderr, failed.stderr
+    print('PASS: negative control catches the original trailing-FF out-of-bounds probe')
