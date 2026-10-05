@@ -13749,6 +13749,14 @@ static int ios_sc_layout(void)
  * tried. */
 static int ios_sc2_classify( uint64_t size, uint64_t hint, unsigned held, int e_mine, int l_mine, int cage_mine )
 {
+    /* Oilpan asks for 32 GB with a 16 GB-aligned random hint (393 jumbo#5:
+     * 0x2be400000000). PartitionAlloc needs 32 GB alignment, so keep that
+     * rule for E/L. Only this helper's third block can use the Oilpan slot:
+     * both PA blocks belong to it and their holds have already been consumed.
+     * The reported base remains 32 GB-aligned, satisfying either request. */
+    if (size == 0x800000000ULL && hint && !(hint & (0x400000000ULL - 1)) &&
+        e_mine && l_mine && !(held & ((1u << IOS_SC2_E) | (1u << IOS_SC2_L))) &&
+        (held & (1u << IOS_SC2_OILPAN))) return IOS_SC2_OILPAN;
     if (size == 0x800000000ULL && hint && !(hint & (0x800000000ULL - 1)))
     {
         if (held & (1u << IOS_SC2_E)) return IOS_SC2_E;
