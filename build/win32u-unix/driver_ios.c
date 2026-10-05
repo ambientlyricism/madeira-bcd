@@ -398,7 +398,8 @@ int winios_drv_foreground_if_owner( HWND hwnd )
  * driver hooks below). Called on wine threads — the app side copies the
  * bits before returning and uploads on the main thread. */
 extern int winios_surface_present( HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int dirty_h,
-                                    int surf_w, int surf_h, int stride, const void *bits ) __attribute__((weak));
+                                    int surf_w, int surf_h, int stride, const void *bits,
+                                    unsigned int alpha_mask ) __attribute__((weak));
 extern void winios_window_frame( HWND hwnd, int x, int y, int w, int h, int visible,
                                  int cx, int cy, int cw, int ch ) __attribute__((weak));
 extern void winios_window_visibility( HWND hwnd, int visible ) __attribute__((weak));
@@ -654,7 +655,7 @@ static BOOL winios_surface_flush( struct window_surface *surface, const RECT *re
         if (!winios_surface_present( surface->hwnd,
                                      dirty->left, dirty->top,
                                      dirty->right - dirty->left, dirty->bottom - dirty->top,
-                                     surf_w, surf_h, surf_w * 4, color_bits ))
+                                     surf_w, surf_h, surf_w * 4, color_bits, surface->alpha_mask ))
             return FALSE;
     }
     return TRUE;
