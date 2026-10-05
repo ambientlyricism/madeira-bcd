@@ -13026,6 +13026,9 @@ static int ios_sc_current_is_helper(void)
 #define IOS_SCH_RENDER_DRAIN_SITE 0x48fa4u /* renderer-only call to drain helper work */
 #define IOS_SCH_RENDER_DRAIN 0x180b70u
 #define IOS_SCH_IPC_CONNECT 0x4ac10u
+#define IOS_SCH_RENDER_CHANNEL_REPLY 0x48593u
+#define IOS_SCH_RENDER_CHANNEL_KEEP  0x48598u
+#define IOS_SCH_RENDER_CHANNEL_THUNK 0x180400u
 #define IOS_SCH_IPC_TRACE   0x180b90u
 #define IOS_SCH_IPC_COUNT   0x1d0e48u /* immediately after the RunState ring */
 #define IOS_SCH_IPC_SPLIT   0x180c90u
@@ -13042,6 +13045,14 @@ static int ios_sc_current_is_helper(void)
 #define IOS_SCH_UI_COUNT    0x1d0e60u
 #define IOS_SCH_UI_DELEGATE_CALLER 0x320afu
 
+
+/* Source: tests/host/sc-renderer-channels.S. Preserve page channels within
+ * the embedded client's 64-slot capacity; the original reply cleanup still runs. */
+static const unsigned char ios_sch_renderer_channels[25] =
+{
+    0x83,0xb8,0x20,0x02,0x00,0x00,0x40,0x73,0x0b,0x45,0x31,0xc0,0x48,0x89,0xc1,0xe9,
+    0x8b,0x81,0xec,0xff,0xe9,0x93,0x81,0xec,0xff,
+};
 
 static const unsigned char ios_sch_thunk[112] =
 {
@@ -13302,6 +13313,20 @@ static const struct { unsigned int rva; unsigned char len; unsigned char bytes[6
     { 0x4ac5b, 0x13, { /* previous channel std::wstring, inline capacity 7 */
       0x48,0x83,0x79,0x68,0x07,0x4c,0x8d,0x41,0x50,0x48,0x8b,0x51,0x60,0x76,0x04,0x4c,
       0x8b,0x41,0x50 } },
+    { IOS_SCH_RENDER_CHANNEL_REPLY, 0x19, { /* renderer's Channel Response -> Connect(name, replace_old) */
+      0xe8,0xf8,0x2c,0x00,0x00,0x44,0x0f,0xb6,0xc3,0x48,0x8b,0xc8,0x48,0x85,0xf6,0x74,
+      0x25,0x48,0x8b,0x16,0xe8,0x64,0x26,0x00,0x00 } },
+    { 0x4add0, 0x3d, { /* Connect removes the previous named channel only when replace_old is true */
+      0x45,0x84,0xe4,0x74,0x38,0x48,0x8b,0x06,0x48,0x8d,0x54,0x24,0x20,0x48,0x83,0x7c,
+      0x24,0x38,0x0f,0x49,0x8b,0xce,0x48,0x0f,0x47,0x54,0x24,0x20,0x48,0x8b,0x58,0x18,
+      0xff,0x50,0x38,0x48,0x83,0x7c,0x24,0x38,0x0f,0x48,0x8d,0x54,0x24,0x20,0x44,0x0f,
+      0xb6,0xc0,0x49,0x8b,0xce,0x48,0x0f,0x47,0x54,0x24,0x20,0xff,0xd3 } },
+    { 0x4abf0, 0xe, { /* embedded IPC client appends a connection and increments its counts */
+      0xb0,0x01,0xff,0x86,0x88,0x00,0x00,0x00,0xff,0x86,0x8c,0x00,0x00,0x00 } },
+    { 0x4af6f, 0x2c, { /* explicit disconnect locates and closes only the named connection */
+      0xe8,0xac,0x02,0x00,0x00,0x48,0x63,0xf8,0x85,0xc0,0x0f,0x88,0x41,0x01,0x00,0x00,
+      0x3b,0xbb,0x88,0x00,0x00,0x00,0x0f,0x8d,0x35,0x01,0x00,0x00,0x4c,0x8b,0x0b,0x44,
+      0x0f,0xb6,0xc6,0x8b,0xd7,0x48,0x8b,0xcb,0x41,0xff,0x51,0x10 } },
     { 0x111340, 0x19, { /* helper's existing variadic text logger */
       0x48,0x89,0x54,0x24,0x10,0x4c,0x89,0x44,0x24,0x18,0x4c,0x89,0x4c,0x24,0x20,0x55,
       0x53,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57 } },
@@ -13394,6 +13419,8 @@ static const char *ios_sch_mismatch( const char *base, SIZE_T total_size, const 
         vr[IOS_SCH_SLOT_RENDERER] != *vtbase + IOS_SCH_GET_HANDLER)
         return "CefApp vtables differ";
     if (vh[0] != *vtbase + IOS_SCH_WEBKIT) return "renderer OnWebKitInitialized differs";
+    for (k = 0; k < sizeof(ios_sch_renderer_channels); k++)
+        if (base[IOS_SCH_RENDER_CHANNEL_THUNK + k]) return "renderer channel .text tail not zero";
     for (k = 0; k < sizeof(ios_sch_thunk); k++)
         if (base[IOS_SCH_THUNK + k]) return ".text tail not zero";
     for (k = 0; k < sizeof(ios_sch_loop_thunk); k++)
@@ -13468,6 +13495,12 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
     }
     if (ipc_split)
     {
+        /* Multiple pages share this renderer process. The helper's IPC client
+         * already owns an indexed set of connections; a Channel Response must
+         * add its channel without disconnecting the previous page's channel.
+         * Keep the browser transport, explicit disconnects and window-close
+         * notifications unchanged. The thunk also bounds the client's table;
+         * the following TEST overwrites its flags. */
         static const struct { unsigned int site, dest, span; unsigned char opcode; } hook[] =
         {
             { 0x4b290, IOS_SCH_IPC_SPLIT, 7, 0xe9 },
@@ -13478,9 +13511,12 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
             { 0x4d2fb, IOS_SCH_IPC_INITIAL_CONNECT, 5, 0xe8 },
             { 0x4a719, IOS_SCH_IPC_DESTROY, 7, 0xe9 },
             { 0x4da6c, IOS_SCH_IPC_DIRECT, 7, 0xe9 },
+            { IOS_SCH_RENDER_CHANNEL_KEEP, IOS_SCH_RENDER_CHANNEL_THUNK, 7, 0xe9 },
         };
         unsigned int k;
         memcpy( base + IOS_SCH_IPC_SPLIT, ios_sch_ipc_split, sizeof(ios_sch_ipc_split) );
+        memcpy( base + IOS_SCH_RENDER_CHANNEL_THUNK, ios_sch_renderer_channels,
+                sizeof(ios_sch_renderer_channels) );
         for (k = 0; k < ARRAY_SIZE(hook); k++)
         {
             int32_t disp = (int32_t)(hook[k].dest - hook[k].site - 5);
@@ -13528,7 +13564,7 @@ static void ios_sc_render_handler_patch( char *base, SIZE_T total_size, const IM
                 "(MADEIRA_SC_RENDER_HANDLER=0 turns it off)\n",
              base, (unsigned long long)vtbase, (unsigned long long)(vtbase + IOS_SCH_THUNK),
              (unsigned long long)(ULONG_PTR)base,
-             ipc_split ? "separate renderer IPC manager installed" : "IPC split disabled" );
+             ipc_split ? "separate renderer IPC manager installed; renderer channels retained" : "IPC split disabled" );
 }
 
 /* Does the calling pseudo-process have socialclub.dll mapped? The table is read

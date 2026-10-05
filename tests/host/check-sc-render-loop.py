@@ -115,7 +115,7 @@ typedef struct { uint32_t VirtualAddress; union { uint32_t VirtualSize; } Misc;
 static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); return !(e && e[0] == '0'); }
 /* Test output contains no guest payload or addresses. */
 #define dprintf(...) ((void)0)
-''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + array('ios_sch_ipc_rebind') + '\n' + array('ios_sch_ipc_split') + '\n' + array('ios_sch_ui_trace') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
+''' + defines + '\n' + array('ios_sch_thunk') + '\n' + array('ios_sch_loop_thunk') + '\n' + array('ios_sch_run_trace') + '\n' + array('ios_sch_render_drain') + '\n' + array('ios_sch_ipc_rebind') + '\n' + array('ios_sch_ipc_split') + '\n' + array('ios_sch_ui_trace') + '\n' + array('ios_sch_renderer_channels') + '\n' + code_table + '\n' + function('static int ios_sc_path_is_helper(') + '\n' + function('static const char *ios_sch_mismatch(') + '\n' + function('static void ios_sc_render_handler_patch(') + r'''
 static IMAGE_NT_HEADERS nt;
 static IMAGE_SECTION_HEADER sections[2];
 static WCHAR helper_name[] = {'S','o','c','i','a','l','C','l','u','b','H','e','l','p','e','r','.','e','x','e'};
@@ -352,6 +352,8 @@ int main(int argc, char **argv)
         reset_image(image, view); image[ios_sch_code[i].rva] ^= 1; reject_without_writes(image);
     }
     const size_t dirty[] = { IOS_SCH_THUNK, IOS_SCH_LOOP_INIT, IOS_SCH_TASK,
+                            IOS_SCH_RENDER_CHANNEL_THUNK,
+                            IOS_SCH_RENDER_CHANNEL_THUNK + sizeof(ios_sch_renderer_channels) - 1,
                             IOS_SCH_TASK + 63, IOS_SCH_CACHE, IOS_SCH_VT_RPH, IOS_SCH_RUN_INSTALL,
                             IOS_SCH_RUN_INSTALL + sizeof(ios_sch_run_trace) - 1,
                             IOS_SCH_RUN_RING, IOS_SCH_RUN_RING + IOS_SCH_RUN_RING_SIZE - 1,
