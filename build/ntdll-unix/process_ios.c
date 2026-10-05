@@ -63,6 +63,7 @@
 #ifdef WINE_IOS
 #include <pthread.h>
 #include <setjmp.h>
+#include <stdint.h>
 #endif
 
 #include "ntstatus.h"
@@ -2560,6 +2561,78 @@ static void ios_unwind_dump( uint64_t rip, const uint64_t *gregs, const char *ta
 #endif /* WINE_IOS */
 
 
+#ifdef WINE_IOS
+/* Fatal x64 instructions can differ from the file after self-modification.
+ * Read only registered code, never dereference guest pointers or alter SEH. */
+static uint64_t ios_guest_instruction_read( const char *view, uint64_t address, size_t length,
+                                           unsigned char bytes[48] )
+{
+    uint64_t valid = 0;
+    char line[48 * 3 + 1];
+    size_t i;
+
+    if (!length || length > 48 || address > UINT64_MAX - length) return 0;
+    for (i = 0; i < length; i++)
+    {
+        mach_vm_size_t got = 0;
+        unsigned char byte = 0;
+        if (mach_vm_read_overwrite( mach_task_self(), address + i, 1,
+                                    (mach_vm_address_t)&byte, &got ) == KERN_SUCCESS && got == 1)
+        {
+            bytes[i] = byte;
+            valid |= (uint64_t)1 << i;
+            snprintf( line + i * 3, 4, "%02x ", byte );
+        }
+        else memcpy( line + i * 3, "?? ", 3 );
+    }
+    line[length * 3] = 0;
+    dprintf( 2, "[guest-insn] %s address=%#llx valid=%#llx bytes=%s\n", view,
+             (unsigned long long)address, (unsigned long long)valid, line );
+    return valid;
+}
+
+static void ios_dump_guest_instruction( HANDLE handle, LONG exit_code, uint64_t rip, void *owner )
+{
+    extern int ios_jit_guest_code_window( uint64_t, uint64_t *, uint64_t *, size_t * );
+    extern void *ios_jit_translate_addr_for_owner( void *, void * );
+    static unsigned reports;
+    uint64_t image = 0, start = 0, copy, pe_valid, copy_valid, complete;
+    unsigned char pe_bytes[48] = {0}, copy_bytes[48] = {0};
+    size_t length = 0;
+    unsigned report;
+
+    if ((handle && handle != NtCurrentProcess()) ||
+        (exit_code != (LONG)STATUS_PRIVILEGED_INSTRUCTION &&
+         exit_code != (LONG)STATUS_ILLEGAL_INSTRUCTION)) return;
+    report = __atomic_fetch_add( &reports, 1, __ATOMIC_RELAXED );
+    if (report >= 16) return;
+    if (!ios_jit_guest_code_window( rip, &image, &start, &length ) ||
+        !length || length > 48 || start > rip || rip - start >= length)
+    {
+        dprintf( 2, "[guest-insn] #%u code=%08x rip=%#llx: no registered x64 text window\n",
+                 report + 1, (unsigned)exit_code, (unsigned long long)rip );
+        return;
+    }
+    dprintf( 2, "[guest-insn] #%u code=%08x rip=%#llx image=%#llx rva=%#llx "
+             "window=%#llx length=%zu opcode-offset=%llu owner=%p\n", report + 1,
+             (unsigned)exit_code, (unsigned long long)rip, (unsigned long long)image,
+             (unsigned long long)(rip - image), (unsigned long long)start, length,
+             (unsigned long long)(rip - start), owner );
+    pe_valid = ios_guest_instruction_read( "PE", start, length, pe_bytes );
+    copy = (uint64_t)(uintptr_t)ios_jit_translate_addr_for_owner( (void *)(uintptr_t)start, owner );
+    if (!copy || copy == start)
+    {
+        dprintf( 2, "[guest-insn] COPY: no separate mapping\n" );
+        return;
+    }
+    copy_valid = ios_guest_instruction_read( "COPY", copy, length, copy_bytes );
+    complete = ((uint64_t)1 << length) - 1;
+    dprintf( 2, "[guest-insn] PE/COPY snapshot=%s\n",
+             pe_valid != complete || copy_valid != complete ? "INCOMPLETE" :
+             memcmp( pe_bytes, copy_bytes, length ) ? "DIFFER" : "MATCH" );
+}
+#endif
+
 /******************************************************************************
  *              NtTerminateProcess  (NTDLL.@)
  */
@@ -2609,6 +2682,7 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
                     dprintf(2, "[term-stack] rip=%llx stack=[%llx..%llx]\n",
                             (unsigned long long)rip, (unsigned long long)slimit,
                             (unsigned long long)sbase);
+                    ios_dump_guest_instruction( handle, exit_code, rip, cur_teb->Peb );
                     dprintf(2, "[term-stack] g0-7: %llx %llx %llx %llx %llx %llx %llx %llx\n",
                             gregs[0], gregs[1], gregs[2], gregs[3],
                             gregs[4], gregs[5], gregs[6], gregs[7]);
