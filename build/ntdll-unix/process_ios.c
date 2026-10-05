@@ -2730,6 +2730,40 @@ static void ios_guest_block_dump( uint64_t block, uint64_t fault_rip, void *owne
     ios_guest_code_pair( "block-entry", tail.rip, owner );
 }
 
+static void ios_guest_branch_history_dump( const void *frame, uint64_t fault_rip, void *owner )
+{
+    extern unsigned ios_fex_branch_history_offset( void );
+    struct { uint64_t magic, serial; struct { uint64_t source, target, block, hint; } edges[8]; } history;
+    uint64_t address = (uint64_t)(uintptr_t)frame;
+    unsigned offset = ios_fex_branch_history_offset(), i, count;
+    mach_vm_size_t got = 0;
+    static const char *const hints[4] = { "branch", "call", "return", "check-tf" };
+    _Static_assert( sizeof(history) == 272, "FEX branch history DATA v1" );
+
+    if (!offset || !address || address > UINT64_MAX - offset - sizeof(history) ||
+        mach_vm_read_overwrite( mach_task_self(), address + offset, sizeof(history),
+            (mach_vm_address_t)&history, &got ) != KERN_SUCCESS || got != sizeof(history) ||
+        history.magic != UINT64_C(0x314744454742444d))
+    {
+        dprintf( 2, "[guest-edge] history unavailable (DATA layout or frame read)\n" );
+        return;
+    }
+    count = history.serial < 8 ? (unsigned)history.serial : 8;
+    dprintf( 2, "[guest-edge] serial=%llu count=%u newest-first (executed FEX exits; source=last mapped opcode, current bytes)\n",
+             (unsigned long long)history.serial, count );
+    for (i = 0; i < count; i++)
+    {
+        unsigned slot = (unsigned)((history.serial - 1 - i) & 7);
+        if (history.edges[slot].hint > 3) break;
+        dprintf( 2, "[guest-edge] #%u source=%#llx target=%#llx block=%#llx kind=%s equals-fault=%u\n",
+                 i, (unsigned long long)history.edges[slot].source,
+                 (unsigned long long)history.edges[slot].target,
+                 (unsigned long long)history.edges[slot].block, hints[history.edges[slot].hint],
+                 history.edges[slot].target == fault_rip );
+        ios_guest_code_pair( "branch-source", history.edges[slot].source, owner );
+    }
+}
+
 static int ios_dump_guest_instruction( HANDLE handle, LONG exit_code, uint64_t rip, void *owner )
 {
     extern int ios_jit_guest_code_window( uint64_t, uint64_t *, uint64_t *, size_t * );
@@ -2835,6 +2869,7 @@ NTSTATUS WINAPI NtTerminateProcess( HANDLE handle, LONG exit_code )
                             ios_jit_guest_code_window( rip - 32, &image, &start, &length ) && image == fault_image)
                             ios_guest_code_pair( "before-rip", rip - 32, cur_teb->Peb );
                         ios_guest_block_dump( fx[0], rip, cur_teb->Peb );
+                        ios_guest_branch_history_dump( fex_state, rip, cur_teb->Peb );
                     }
                     dprintf(2, "[term-stack] g0-7: %llx %llx %llx %llx %llx %llx %llx %llx\n",
                             gregs[0], gregs[1], gregs[2], gregs[3],
