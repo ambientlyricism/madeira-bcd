@@ -71,6 +71,21 @@ with tempfile.TemporaryDirectory(prefix='madeira-sc-split-') as name:
     assert define('IOS_SCH_IPC_SPLIT') + len(blob) <= 0x181000
     assert define('IOS_SCH_IPC_COUNT') + 4 <= define('IOS_SCH_IPC_CONTEXT')
     assert define('IOS_SCH_IPC_CONTEXT') + 16 <= define('IOS_SCH_CACHE')
+    channel_symbols = {'reply_continue': define('IOS_SCH_RENDER_CHANNEL_KEEP') + 7,
+                       'reply_cleanup': define('IOS_SCH_RENDER_CHANNEL_REPLY') + 0x19}
+    channel_linker = folder / 'channels.ld'
+    channel_linker.write_text('SECTIONS { . = %d; .text : { *(.text) } }\n' % define('IOS_SCH_RENDER_CHANNEL_THUNK') +
+                             '\n'.join('%s = %d;' % x for x in channel_symbols.items()) + '\n')
+    subprocess.run(['as', '--64', str(root / 'tests/host/sc-renderer-channels.S'),
+                    '-o', str(folder / 'channels.o')], check=True)
+    subprocess.run(['ld', '-T', str(channel_linker), str(folder / 'channels.o'),
+                    '-o', str(folder / 'channels.elf')], check=True)
+    subprocess.run(['objcopy', '-O', 'binary', '--only-section=.text',
+                    str(folder / 'channels.elf'), str(folder / 'channels.bin')], check=True)
+    channel_blob = bytes(int(x, 16) for x in re.findall(r'0x([\da-fA-F]{2})', array('ios_sch_renderer_channels')))
+    assert (folder / 'channels.bin').read_bytes() == channel_blob
+    assert 0x180400 <= define('IOS_SCH_RENDER_CHANNEL_THUNK')
+    assert define('IOS_SCH_RENDER_CHANNEL_THUNK') + len(channel_blob) <= define('IOS_SCH_THUNK')
 
     code = r'''
 #define _GNU_SOURCE
@@ -104,10 +119,16 @@ static int ios_sc_cef_enabled(void) { const char *e = getenv("MADEIRA_SC_CEF"); 
 #define dprintf(...) ((void)0)
 ''' + defines + '\n' + '\n'.join(array(x) for x in (
         'ios_sch_thunk', 'ios_sch_loop_thunk', 'ios_sch_run_trace', 'ios_sch_render_drain',
-        'ios_sch_ipc_rebind', 'ios_sch_ipc_split', 'ios_sch_ui_trace')) + '\n' + guards + '\n' + '\n'.join(function(x) for x in (
+        'ios_sch_ipc_rebind', 'ios_sch_ipc_split', 'ios_sch_ui_trace', 'ios_sch_renderer_channels')) + '\n' + guards + '\n' + '\n'.join(function(x) for x in (
             'static int ios_sc_path_is_helper(', 'static const char *ios_sch_mismatch(',
             'static void ios_sc_render_handler_patch(')) + r'''
-struct Client { uint16_t *channel; unsigned int active, handler; };
+struct Client {
+    uint16_t *channel;
+    unsigned int active, handler, channels, disconnects;
+    unsigned char count_pad[0x88 - 24];
+    unsigned int count;
+};
+_Static_assert(offsetof(struct Client, count) == 0x88, "embedded client count");
 struct Manager {
     unsigned char prefix[0x50];
     union { uint16_t inline_name[8]; uint16_t *heap; } name;
@@ -135,13 +156,17 @@ extern void ABI store_role(struct Manager *, unsigned int, void *);
 extern void ABI call_loop(struct Manager *, void *);
 extern void ABI initial_connect(struct Manager *, const uint16_t *, unsigned int, void *);
 extern struct Manager *ABI lookup_direct(void *);
+extern void ABI receive_channel(struct Manager *, const uint16_t **, unsigned int, void *);
 static _Thread_local int on_renderer;
 static unsigned int allocations, constructions, initializations, global_loops, deletes, logs, creation_logs, destroys;
 static int shutdown_complete;
+static unsigned int destroyed_channels;
+static unsigned int connect_calls;
 static atomic_int initializing, proceed;
 static int pause_init;
 static uint16_t channel0[] = {'r','g','s','c','_','i','p','c','_','c','4','_','c','h','a','n','n','e','l','_','0',0};
 static uint16_t channel1[] = {'r','g','s','c','_','i','p','c','_','c','4','_','c','h','a','n','n','e','l','_','1',0};
+static uint16_t channel2[] = {'r','g','s','c','_','i','p','c','_','c','4','_','c','h','a','n','n','e','l','_','2',0};
 static struct Manager **browser_slot(void) { return (void *)(image + 0x1cdb90); }
 static struct Manager **renderer_slot(void) { return (void *)(image + IOS_SCH_IPC_CONTEXT); }
 static int ABI currently_on(int thread)
@@ -177,7 +202,20 @@ static struct Manager *ABI construct(struct Manager *m)
 static void ABI global_loop(void) { assert(!on_renderer); global_loops++; }
 static void ABI connect_body(struct Manager *m, const uint16_t *name, unsigned int flag)
 {
-    assert(!flag && (name == channel0 || name == channel1 || name == m->name.heap));
+    assert(name == channel0 || name == channel1 || name == channel2 || name == m->name.heap);
+    /* Connect(name, replace_old) owns a set of named connections. The last
+     * channel string changes in both modes; only replacement closes its old
+     * connection. Preserve that observable distinction in this fixture. */
+    unsigned int old = m->name.heap[20] - '0', next = name[20] - '0';
+    assert(old < 3 && next < 3);
+    connect_calls++;
+    if (flag && old != next && (m->client.channels & (1u << old))) {
+        m->client.channels &= ~(1u << old);
+        m->client.disconnects++;
+        m->client.count--;
+    }
+    if (!(m->client.channels & (1u << next))) m->client.count++;
+    m->client.channels |= 1u << next;
     memcpy(m->name.heap, name, sizeof(channel0));
     m->client.channel = m->name.heap; m->client.active = 1;
 }
@@ -228,6 +266,9 @@ static void ABI finish_destroy(struct Manager *m, void *owned)
     if (m == &browser) assert(destroys == 2 && !*browser_slot());
     else assert(destroys == 1 && !*renderer_slot() && *browser_slot() == &browser);
     free(m->name.heap); free(m->owned);
+    destroyed_channels += __builtin_popcount(m->client.channels);
+    m->client.channels = 0;
+    m->client.count = 0;
     m->name.heap = NULL; m->owned = NULL; m->client.active = 0;
 }
 static void ABI delete_manager(struct Manager *m, uint64_t size)
@@ -263,9 +304,34 @@ static void *renderer_thread(void *unused)
     assert(lookup_direct(image + 0x4da6c) == m);
     m->client.handler = 2; /* renderer handler registration from OnWebKitInitialized */
     assert(config.ref.refs == 1 && m->owned != browser.owned && m->name.heap != browser.name.heap);
-    ((void (ABI *)(struct Manager *, const uint16_t *, unsigned int))(image + IOS_SCH_IPC_CONNECT))(m, channel1, 0);
+    const uint16_t *name = channel1;
+    receive_channel(m, &name, 0, image + IOS_SCH_RENDER_CHANNEL_KEEP);
     assert(browser.client.active && browser.name.heap[20] == '0' && browser.client.handler == 1);
     assert(m->client.active && m->name.heap[20] == '1' && m->client.handler == 2);
+    name = channel2;
+    receive_channel(m, &name, 1, image + IOS_SCH_RENDER_CHANNEL_KEEP);
+    /* The old instruction would close channel_1 here and notify its peer.
+     * The production patch must leave both frontend connections alive. */
+    assert(m->client.channels == ((1u << 1) | (1u << 2)));
+    assert(!m->client.disconnects && browser.client.channels == 1 && browser.client.handler == 1);
+    receive_channel(m, &name, 1, image + IOS_SCH_RENDER_CHANNEL_KEEP);
+    assert(m->client.channels == ((1u << 1) | (1u << 2)) && !m->client.disconnects);
+    assert(m->client.count == 2);
+    /* Execute both capacity branches against the exact client count offset.
+     * Reusing a connection below capacity is allowed; full/invalid counts
+     * must not call Connect or touch the connections already owned. */
+    unsigned int calls = connect_calls;
+    m->client.count = 63;
+    receive_channel(m, &name, 1, image + IOS_SCH_RENDER_CHANNEL_KEEP);
+    assert(connect_calls == calls + 1 && m->client.count == 63);
+    m->client.count = 64;
+    receive_channel(m, &name, 1, image + IOS_SCH_RENDER_CHANNEL_KEEP);
+    assert(connect_calls == calls + 1 && m->client.count == 64);
+    m->client.count = UINT32_MAX;
+    receive_channel(m, &name, 1, image + IOS_SCH_RENDER_CHANNEL_KEEP);
+    assert(connect_calls == calls + 1 && m->client.count == UINT32_MAX);
+    assert(m->client.channels == ((1u << 1) | (1u << 2)) && !m->client.disconnects);
+    m->client.count = 2;
     for (unsigned int i = 0; i < 1000; i++) assert(get_manager() == m);
     assert(allocations == 1 && constructions == 1 && initializations == 2 && global_loops == 1);
     return NULL;
@@ -279,6 +345,10 @@ __asm__(
 "call_loop: push %r14; sub $32,%rsp; mov %rcx,%r14; jmp *%rdx\n"
 "initial_connect: sub $40,%rsp; jmp *%r9\n"
 "lookup_direct: push %rbx; sub $32,%rsp; jmp *%rcx\n"
+/* Execute the actual Channel Response instruction, subsequent argument loads
+ * and relative CALL to Connect. RSI is its CefString pointer wrapper. */
+"receive_channel: push %rbx; push %rsi; sub $40,%rsp; mov %rcx,%rax; mov %rdx,%rsi;"
+"mov %r8b,%bl; jmp *%r9\n"
 "probe_get: push %rbx; push %rdi; sub $40,%rsp; mov %rcx,%rbx;"
 "mov $11,%ecx; mov $22,%edx; mov $33,%r8d; mov $44,%r9d; mov $55,%r10d; mov $66,%r11d;"
 "pcmpeqd %xmm0,%xmm0; pcmpeqd %xmm1,%xmm1; pcmpeqd %xmm2,%xmm2;"
@@ -315,13 +385,19 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < sizeof(ios_sch_ipc_split); i++) assert(!image[IOS_SCH_IPC_SPLIT+i]);
         assert((unsigned char)image[IOS_SCH_IPC_CONNECT] == 0xe9);
         assert((unsigned char)image[IOS_SCH_RENDER_DRAIN_SITE] == 0xe8);
+        assert(!memcmp(image + IOS_SCH_RENDER_CHANNEL_KEEP, "\x44\x0f\xb6\xc3", 4));
+        for (size_t i = 0; i < sizeof(ios_sch_renderer_channels); i++)
+            assert(!image[IOS_SCH_RENDER_CHANNEL_THUNK+i]);
         assert(!munmap(image, IOS_SCH_SIZE));
         puts("PASS: IPC split opt-out preserves the earlier renderer, drain and diagnostic patches");
         return 0;
     }
     assert((unsigned char)image[0x4b290] == 0xe9);
+    assert((unsigned char)image[IOS_SCH_RENDER_CHANNEL_KEEP] == 0xe9);
     if (argc > 1 && !strcmp(argv[1], "legacy"))
         memcpy(image + 0x4b290, "\x48\x8b\x05\xf9\x28\x18\x00\xc3", 8);
+    if (argc > 1 && !strcmp(argv[1], "old-rebind"))
+        memcpy(image + IOS_SCH_RENDER_CHANNEL_KEEP, "\x44\x0f\xb6\xc3\x48\x8b\xc8", 7);
     stub(0x13e708, (uintptr_t)allocate); stub(0x4a400, (uintptr_t)construct);
     image[0x4a5ca] = image[0x4bab2] = (char)0xc3;
     stub(0x4ba55, (uintptr_t)initialize); stub(0x11bb70, (uintptr_t)global_loop);
@@ -333,6 +409,8 @@ int main(int argc, char **argv)
     memcpy(image + 0x4d25a, loop_return, sizeof(loop_return));
     memcpy(image + 0x4d300, connect_return, sizeof(connect_return));
     memcpy(image + 0x4da73, direct_return, sizeof(direct_return));
+    const unsigned char reply_return[] = {0x48,0x83,0xc4,0x28,0x5e,0x5b,0xc3};
+    memcpy(image + IOS_SCH_RENDER_CHANNEL_REPLY + 0x19, reply_return, sizeof(reply_return));
     destructor_fixture();
     *(uintptr_t *)(image + 0x181af8) = (uintptr_t)currently_on;
     assert(!mprotect(image + 0x1000, 0x180000, PROT_READ | PROT_EXEC));
@@ -346,7 +424,13 @@ int main(int argc, char **argv)
     config.ref.refs++; /* same ownership as the original WinMain call */
     ((int (ABI *)(struct Manager *, struct Config **))(image + 0x4ba50))(&browser, &argument);
     assert(config.ref.refs == 1 && browser.client.active && global_loops == 1);
-    pause_init = 1;
+    /* Browser reconnection still closes its old channel when requested; only
+     * the renderer's Channel Response instruction changed. */
+    ((void (ABI *)(struct Manager *, const uint16_t *, unsigned int))(image + IOS_SCH_IPC_CONNECT))(&browser, channel1, 1);
+    assert(browser.client.channels == (1u << 1) && browser.client.disconnects == 1);
+    ((void (ABI *)(struct Manager *, const uint16_t *, unsigned int))(image + IOS_SCH_IPC_CONNECT))(&browser, channel0, 1);
+    assert(browser.client.channels == 1 && browser.client.disconnects == 2);
+    pause_init = argc == 1;
     pthread_t thread;
     assert(!pthread_create(&thread, NULL, renderer_thread, NULL));
     if (argc == 1) {
@@ -357,12 +441,14 @@ int main(int argc, char **argv)
     }
     assert(!pthread_join(thread, NULL));
     assert(get_manager() == &browser && browser.client.active && *renderer_slot());
-    assert(logs == 2 && creation_logs == 1 && config.ref.refs == 1);
+    assert(logs == 7 && creation_logs == 1 && config.ref.refs == 1);
     shutdown_complete = 1;
     ((void (ABI *)(struct Manager *))(image + 0x4a6e0))(&browser);
     assert(destroys == 2 && deletes == 1 && !*renderer_slot() && !*browser_slot());
+    assert(destroyed_channels == 3);
     assert(!munmap(image, IOS_SCH_SIZE));
-    puts("PASS: browser channel_0 and renderer channel_1 retain separate managers, handlers and owned resources");
+    puts("PASS: browser channel_0 and renderer channels_1/2 retain their managers, handlers and connections");
+    puts("PASS: repeated replies retain connections; the 64-slot bound avoids opening another transport");
     puts("PASS: Win64 scalar/vector/flags state, consumed CefRefPtr, initialization reentry and concurrent browser lookup");
     puts("PASS: renderer is destroyed and freed once after CEF shutdown, before clearing the browser singleton");
 }
@@ -378,4 +464,8 @@ int main(int argc, char **argv)
                          preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
     assert old.returncode and 'm != &browser' in old.stderr, old.stderr
     print('PASS: restoring the legacy getter reproduces the shared manager ownership failure', flush=True)
+    old_rebind = subprocess.run([str(binary), 'old-rebind'], capture_output=True, text=True, timeout=30,
+                               preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+    assert old_rebind.returncode and 'm->client.channels ==' in old_rebind.stderr, old_rebind.stderr
+    print('PASS: restoring the old Channel Response instruction closes the first frontend connection', flush=True)
     subprocess.run([str(binary), 'disabled'], check=True, env={**os.environ, 'MADEIRA_SC_IPC_SPLIT': '0'})
