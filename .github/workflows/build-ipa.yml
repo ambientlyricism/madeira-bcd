@@ -355,6 +355,12 @@ jobs:
           python3 tests/host/check-wow-guard.py
           python3 tests/host/check-lazy-windows.py
 
+      - name: Check JIT pool image placement contracts
+        run: |
+          python3 tests/host/check-pool-placement.py
+          python3 tests/host/check-pool-split.py
+          python3 tests/host/check-pool-low.py
+
       # [dns]: every guest getaddrinfo by name, and MADEIRA_DNS_TIMEOUT_MS to
       # bound one (Social Club's Chromium sat in three getaddrinfo calls for a
       # minute, GTA V Enhanced build 378). Patches wine/dlls/ws2_32/unixlib.c.

@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -225,13 +226,57 @@ static size_t ios_jit_hole_off, ios_jit_hole_end;
  * EXHAUSTED for every SocialClubHelper.exe, "SC_INIT_ERR_WEBSITE_FAILED_LOAD".
  * With the slot, the N MB right above the hole go to one image of
  * IOS_POOL_BIG_MIN or more; for everything else (smaller images, the bump, the
- * tail) the hole ends at ios_jit_hole_end_eff, above the slot. When the slot's
+ * tail) the allocator hole includes the slot, between ios_jit_hole_off_eff and
+ * ios_jit_hole_end_eff. MADEIRA_POOL_BIG_SLOT_BELOW=1 puts the same slot below
+ * the native hole instead; its default placement is still above. When the slot's
  * process dies, the slot is free again after the reuse grace. */
-static size_t ios_jit_hole_end_eff;        /* ios_jit_hole_end + the slot */
+static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff; /* native hole plus the image slot */
 static size_t ios_pool_big_off, ios_pool_big_size;
 static int ios_pool_big_taken;
 static time_t ios_pool_big_freed_at;
 #define IOS_POOL_BIG_MIN (64u * 1024 * 1024)
+static size_t ios_pool_head_reserve = 48u * 1024 * 1024;
+
+/* A slot may sit on either side of the native hole. The default is still above
+ * it; MADEIRA_POOL_BIG_SLOT_BELOW=1 opts into the lower side, leaving the upper
+ * run contiguous for a later image. Keep at least 256MB below a lower slot for
+ * the startup images. Both placements use the same ledger and reuse grace.
+ * Only allocator bounds include the slot: the warmer's native hole is unchanged. */
+static int ios_pool_big_layout( size_t total, size_t hole_off, size_t hole_end,
+                                size_t want, int below, size_t *slot_off,
+                                size_t *skip_off, size_t *skip_end )
+{
+    if (hole_end <= hole_off || hole_end > total || want < IOS_POOL_BIG_MIN ||
+        (want & 0x3fff)) return 0;
+    if (below)
+    {
+        if (want > hole_off || hole_off - want < 256u * 1024 * 1024) return 0;
+        *slot_off = *skip_off = hole_off - want;
+        *skip_end = hole_end;
+    }
+    else
+    {
+        if (want > total - hole_end) return 0;
+        *slot_off = hole_end;
+        *skip_off = hole_off;
+        *skip_end = hole_end + want;
+    }
+    return 1;
+}
+
+/* Per-game headroom for future image copies, never less than the existing
+ * 48MB guard. Larger code buffers that fit region C, and recycled buffers,
+ * still bypass the pool-tail cap. Invalid values retain the old behavior. */
+static size_t ios_pool_parse_head_reserve( const char *value )
+{
+    char *end;
+    unsigned long mb;
+
+    if (!value || *value < '0' || *value > '9') return 48u * 1024 * 1024;
+    mb = strtoul( value, &end, 10 );
+    if (*end || mb < 48 || mb > 256) return 48u * 1024 * 1024;
+    return (size_t)mb << 20;
+}
 
 /* The offset a head allocation of `size` gets with the bump cursor at `cur`:
  * `cur`, or the end of the hole when [cur, cur + size) would reach into it. */
@@ -263,6 +308,21 @@ static size_t ios_pool_hole_between( size_t total, size_t head, size_t tail,
 {
     if (hole_end <= hole_off || tail > total) return 0;
     return (head <= hole_off && total - tail >= hole_end) ? hole_end - hole_off : 0;
+}
+
+static size_t ios_pool_code_cap( size_t total, size_t head, size_t tail,
+                                 size_t hole_off, size_t hole_end, size_t reserve )
+{
+    size_t hole = ios_pool_hole_between( total, head, tail, hole_off, hole_end );
+    size_t room = 0, cap = 16u * 1024 * 1024;
+
+    /* Subtract in stages so malformed or transient cursor values cannot wrap
+     * into a generous budget. The existing 16MB minimum is unchanged. */
+    if (head <= total && tail <= total - head && hole <= total - head - tail &&
+        reserve < total - head - tail - hole)
+        room = total - head - tail - hole - reserve;
+    while (cap < 128u * 1024 * 1024 && cap * 2 <= room) cap *= 2;
+    return cap;
 }
 
 /* 1 for a pool offset inside the hole (always 0 without a split). */
@@ -2746,7 +2806,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
                 : now - ios_pool_big_freed_at < IOS_POOL_REUSE_GRACE_SEC ? "in its reuse grace" : "out of reach");
     if (pool_limit && off == (size_t)-1)
     {
-        size_t cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off, ios_jit_hole_end_eff );
+        size_t cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off_eff, ios_jit_hole_end_eff );
         bump_short = cand + alloc_size > pool_limit;
     }
     if (off == (size_t)-1 && (alloc_size >= 32u * 1024 * 1024 || bump_short))
@@ -2843,7 +2903,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
 
     /* each `continue` below has dropped or replaced entry i: pick again */
     {
-        size_t bump_cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off, ios_jit_hole_end_eff );
+        size_t bump_cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off_eff, ios_jit_hole_end_eff );
         bump_ok = bump_cand + alloc_size <= pool_limit && IOS_POOL_IN_REACH(bump_cand);
     }
     while (off == (size_t)-1 &&
@@ -2964,7 +3024,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
         /* madeira-bcd split pool: never into the hole (ios_jit_hole_off). Without
          * a split `cand` is the cursor itself and this is the old bump. */
         size_t cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size,
-                                                ios_jit_hole_off, ios_jit_hole_end_eff );
+                                                ios_jit_hole_off_eff, ios_jit_hole_end_eff );
         if (cand + alloc_size <= pool_limit
             && IOS_POOL_IN_REACH(cand))
         {
@@ -2973,7 +3033,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
                 /* The run below the hole stays usable: hand it to the freelist as
                  * a never-used range (no grace, nothing to advise), so the next
                  * image that fits there goes there. */
-                size_t below = ios_jit_hole_off > jit_pool_offset ? ios_jit_hole_off - jit_pool_offset : 0;
+                size_t below = ios_jit_hole_off_eff > jit_pool_offset ? ios_jit_hole_off_eff - jit_pool_offset : 0;
                 static int jump_n;
                 if (below >= 0x4000 && ios_pool_free_count < IOS_POOL_FREE_MAX)
                 {
@@ -2987,7 +3047,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
                     dprintf(2, "[jit-pool] split pool: head 0x%lx+0x%lx would reach the hole [0x%lx,0x%lx) "
                             "-- placed above it at 0x%lx; the 0x%lx below it stays on the freelist\n",
                             (unsigned long)jit_pool_offset, (unsigned long)alloc_size,
-                            (unsigned long)ios_jit_hole_off, (unsigned long)ios_jit_hole_end_eff,
+                            (unsigned long)ios_jit_hole_off_eff, (unsigned long)ios_jit_hole_end_eff,
                             (unsigned long)cand, (unsigned long)below);
             }
             off = cand;
@@ -14860,6 +14920,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                         {
                             ios_jit_hole_off = (size_t)h0;
                             ios_jit_hole_end = (size_t)h1;
+                            ios_jit_hole_off_eff = (size_t)h0;
                             ios_jit_hole_end_eff = (size_t)h1;
                             dprintf( 2, "[jit-pool] split pool: RX [%p,%p) + [%p,%p) as one span of 0x%lx; "
                                      "hole [0x%llx,0x%llx) (%llu MB: the main thread's stack) is never "
@@ -14873,25 +14934,42 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                                      hole, (unsigned long)jit_pool_size );
                     }
                 }
-                /* madeira-bcd: the big-image slot right above the hole (see
-                 * ios_pool_big_off). Needs the split; a slot that does not fit
-                 * in the run above the hole is ignored. */
+                /* The default big-image slot is above the hole. A game may
+                 * request the lower side; if it cannot leave 256MB for startup
+                 * images, retain the old upper placement instead. */
                 {
-                    /* N MB above the hole of a split pool for one image of 64 MB or more (Social Club's libcef.dll); off by default. */
+                    /* N MB adjacent to a split-pool hole for one image of 64 MB or more (Social Club's libcef.dll); off by default. */
                     const char *big = getenv( "MADEIRA_POOL_BIG_SLOT_MB" );
+                    /* 1 puts the existing image slot below the native hole; 0/default keeps it above. */
+                    const char *lower = getenv( "MADEIRA_POOL_BIG_SLOT_BELOW" );
                     if (big && *big && strtoul( big, NULL, 10 ))
                     {
-                        size_t want = (size_t)strtoul( big, NULL, 10 ) << 20;
-                        if (ios_jit_hole_end > ios_jit_hole_off && want >= IOS_POOL_BIG_MIN &&
-                            ios_jit_hole_end + want <= jit_pool_size)
+                        unsigned long mb = strtoul( big, NULL, 10 );
+                        size_t want = mb <= (SIZE_MAX >> 20) ? (size_t)mb << 20 : 0;
+                        int below = lower && !strcmp( lower, "1" );
+                        size_t slot, skip_off, skip_end;
+                        int fits = ios_pool_big_layout( jit_pool_size, ios_jit_hole_off,
+                                                         ios_jit_hole_end, want, below,
+                                                         &slot, &skip_off, &skip_end );
+                        if (!fits && below)
                         {
-                            ios_pool_big_off = ios_jit_hole_end;
+                            dprintf( 2, "[pool-big] lower slot unavailable with 256MB startup room; trying the default upper slot\n" );
+                            below = 0;
+                            fits = ios_pool_big_layout( jit_pool_size, ios_jit_hole_off,
+                                                       ios_jit_hole_end, want, 0,
+                                                       &slot, &skip_off, &skip_end );
+                        }
+                        if (fits)
+                        {
+                            ios_pool_big_off = slot;
                             ios_pool_big_size = want;
-                            ios_jit_hole_end_eff = ios_jit_hole_end + want;
-                            dprintf( 2, "[pool-big] madeira-bcd slot [0x%lx,0x%lx) (%lu MB) above the hole for one "
-                                     "image of %u MB or more; %lu MB above it left for the rest\n",
-                                     (unsigned long)ios_pool_big_off, (unsigned long)ios_jit_hole_end_eff,
-                                     (unsigned long)(want >> 20), IOS_POOL_BIG_MIN >> 20,
+                            ios_jit_hole_off_eff = skip_off;
+                            ios_jit_hole_end_eff = skip_end;
+                            dprintf( 2, "[pool-big] madeira-bcd slot [0x%lx,0x%lx) (%lu MB) %s the hole for one "
+                                     "image of %u MB or more; ordinary runs below=%lu MB above=%lu MB\n",
+                                     (unsigned long)slot, (unsigned long)(slot + want),
+                                     (unsigned long)(want >> 20), below ? "below" : "above", IOS_POOL_BIG_MIN >> 20,
+                                     (unsigned long)(ios_jit_hole_off_eff >> 20),
                                      (unsigned long)((jit_pool_size - ios_jit_hole_end_eff) >> 20) );
                         }
                         else
@@ -14901,6 +14979,11 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                                      : "larger than the run above the hole" );
                     }
                 }
+                /* 48 to 256 MB of image headroom in the FEX pool-tail budget;
+                 * 48/default keeps the existing policy. Region C is unchanged. */
+                ios_pool_head_reserve = ios_pool_parse_head_reserve( getenv( "MADEIRA_POOL_HEAD_RESERVE_MB" ) );
+                dprintf( 2, "[pool-head] code-buffer budget targets %lu MB of image headroom (region C and recycled buffers unchanged)\n",
+                         (unsigned long)(ios_pool_head_reserve >> 20) );
                 /* madeira-bcd pool-low: region C (see ios_jit_low_rx_global). Taken only
                  * when its RX side is mapped executable, its RW side read-write, and a
                  * word written through the RW side reads back through the RX side --
@@ -26256,17 +26339,14 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
              * 5.5M real compiles (56 % hit rate), 390 buffer rotations, and a
              * quarter of all running CPU samples inside the compiler. The cap is
              * now what the pool can actually afford: up to 128 MB (the branch
-             * range FEX itself limits a buffer to) while HEAD_RESERVE stays free
-             * between the image head and the tail. */
-            enum { TAIL_SMALL = 0x1000000, TAIL_MAX = 0x8000000, HEAD_RESERVE = 48u * 1024 * 1024 };
+             * range FEX itself limits a buffer to) with a headroom target between
+             * the image head and the tail (48MB by default). */
+            enum { TAIL_SMALL = 0x1000000 };
             size_t head_now = jit_pool_offset, tail_now = ios_jit_tail_reserved;
-            /* madeira-bcd split pool: a hole still between head and tail is not room */
-            size_t hole_now = ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
-                                                     ios_jit_hole_off, ios_jit_hole_end_eff );
-            size_t room = ios_jit_pool_size_global > head_now + tail_now + hole_now + HEAD_RESERVE
-                        ? ios_jit_pool_size_global - head_now - tail_now - hole_now - HEAD_RESERVE : 0;
-            size_t cap = TAIL_SMALL;
-            while (cap < TAIL_MAX && cap * 2 <= room) cap *= 2;
+            /* Neither the native hole nor either placement of the image slot
+             * is available to the tail. Default headroom remains 48MB. */
+            size_t cap = ios_pool_code_cap( ios_jit_pool_size_global, head_now, tail_now,
+                                            ios_jit_hole_off_eff, ios_jit_hole_end_eff, ios_pool_head_reserve );
             /* A retired generation of this size already sitting on the carve
              * free-list costs the pool nothing new: never refuse that. */
             if (alloc_size > cap)
@@ -26393,8 +26473,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             do
             {
                 cur = ios_jit_tail_reserved;
-                start = ios_pool_hole_tail_start( ios_jit_pool_size_global, cur, alloc_size,
-                                                  ios_jit_hole_off, ios_jit_hole_end_eff );
+            start = ios_pool_hole_tail_start( ios_jit_pool_size_global, cur, alloc_size,
+                                                  ios_jit_hole_off_eff, ios_jit_hole_end_eff );
             } while (!__sync_bool_compare_and_swap( &ios_jit_tail_reserved, cur, start + alloc_size ));
             reserve_offset = start;
             tail_added = start + alloc_size - cur;
@@ -26548,7 +26628,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             if (tail_added != alloc_size)
                 dprintf(2, "[jit-pool] split pool: tail carve 0x%lx would overlap the hole [0x%lx,0x%lx) -- "
                         "placed below it at off 0x%lx; 0x%lx above the hole kept as a free carve\n",
-                        (unsigned long)alloc_size, (unsigned long)ios_jit_hole_off,
+                        (unsigned long)alloc_size, (unsigned long)ios_jit_hole_off_eff,
                         (unsigned long)ios_jit_hole_end_eff, (unsigned long)pool_tail_off,
                         (unsigned long)tail_skipped);
             dprintf(2, "[jit-pool] tail EC_CODE rx=%p size=0x%lx tail_resv=0x%lx head_used=0x%lx/0x%lx\n",
