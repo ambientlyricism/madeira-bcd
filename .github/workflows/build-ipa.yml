@@ -350,6 +350,9 @@ jobs:
       - name: Check virtual storage device contracts
         run: python3 tests/host/check-storage-device.py
 
+      - name: Check paired IPA and OTA publication contracts
+        run: python3 tests/host/check-ota-variants.py
+
       - name: Check WoW window guard reservation contracts
         run: |
           python3 tests/host/check-wow-guard.py
@@ -1556,17 +1559,13 @@ jobs:
             echo "::notice::all six macdrv symbols are exported"
           fi
 
-      - name: Package unsigned IPA
-        run: |
-          mkdir -p build-out/Payload
-          cp -R build-out/Madeira.xcarchive/Products/Applications/Madeira.app build-out/Payload/
-          cd build-out && ditto -c -k --keepParent Payload Madeira-0.1.${{ github.run_number }}-unsigned.ipa
+      - name: Package Madeira and Madeira2 unsigned IPAs
+        run: python3 tools/ota-variants.py package build-out/Madeira.xcarchive/Products/Applications/Madeira.app build-out ${{ github.run_number }}
 
       # Over-the-air install: sign with the owner's certificate (kept in the
-      # owner's PRIVATE Backblaze B2 bucket, never in the repository) and put the
-      # signed IPA plus kurulum.html (7-day pre-signed links) in the same bucket.
-      # Does nothing until the secrets listed in tools/sign-and-publish-ota.sh
-      # exist; never fails the build.
+      # owner's PRIVATE bucket, never in the repository) and put both signed IPAs
+      # plus installation pages (7-day pre-signed links) in the same bucket.
+      # A signing/upload failure is caught by the private-bucket gate below.
       - name: Sign for OTA install (private bucket)
         id: ota
         continue-on-error: true
@@ -1583,7 +1582,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: bash tools/sign-and-publish-ota.sh build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa ${{ github.run_number }}
+        run: bash tools/sign-and-publish-ota.sh build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa ${{ github.run_number }} build-out/Madeira2-0.1.${{ github.run_number }}-unsigned.ipa
 
       # Update packs (tools/pack-index.py): record this build's native ABI in
       # the packs index -- metadata only, the IPA itself is not published --
