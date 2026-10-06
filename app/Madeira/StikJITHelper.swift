@@ -396,6 +396,15 @@ enum StikJITHelper {
         // madeira-bcd split pool switch (see SPLIT POOL below); the census reads it too.
         let splitValue = (MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Opt-in: keep page-sized remainders in A/B instead of discarding up to
+        // 16MB from each free run. The requested A+B budget and region C stay unchanged.
+        let pageFit = ["1", "on", "true", "yes"].contains(splitValue)
+            && ["1", "on", "true", "yes"].contains((MadeiraConfig.gameValue("pool-page-fit")
+                ?? MadeiraConfig.get("pool-page-fit") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        if pageFit {
+            LogStore.shared.log("[pool-split] page-fit=1: A/B requests fit 16KB pages within the requested \(requestedPoolSize >> 20)MB budget")
+        }
         // madeira-bcd pool-pair (below): region A's run and the size the single-region
         // pool would have had, for the check after the request.
         var pairA: (base: vm_address_t, size: vm_address_t)? = nil
@@ -452,9 +461,10 @@ enum StikJITHelper {
             // `pool-pair = 0` in the game's file or madeira.cfg turns it off.
             let pairOff = ["0", "off", "false", "no"].contains((MadeiraConfig.gameValue("pool-pair")
                 ?? MadeiraConfig.get("pool-pair") ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-            let mb16: vm_address_t = 16 << 20
             let ceiling: vm_address_t = 0x180000000           // SHARED_REGION_BASE_ARM64, as takeSecondRegion
-            let singleFit = largest < vm_address_t(poolSize) ? largest & ~(mb16 - 1) : vm_address_t(poolSize)
+            let singleFit = largest < vm_address_t(poolSize)
+                ? poolRunSize(available: largest, wanted: vm_address_t(poolSize), pageFit: pageFit)
+                : vm_address_t(poolSize)
             if ["1", "on", "true", "yes"].contains(splitValue) && windowHeld && !pairOff && singleFit < vm_address_t(poolSize) {
                 // Where the single-region request lands: first-fit, past ml1040's plugs
                 // (holes below the placeholder, only when a hole above it fits).
@@ -464,7 +474,8 @@ enum StikJITHelper {
                     var best = singleFit
                     var bestB: (base: vm_address_t, size: vm_address_t) = (base: 0, size: 0)
                     for run in holes where run.base >= exeWinBase + exeWinSize && run.base < ceiling {
-                        let aFit = min(min(run.size, ceiling - run.base) & ~(mb16 - 1), vm_address_t(poolSize))
+                        let aFit = min(poolRunSize(available: min(run.size, ceiling - run.base),
+                                                  wanted: vm_address_t(poolSize), pageFit: pageFit), vm_address_t(poolSize))
                         guard aFit >= 256 << 20, aFit < vm_address_t(poolSize) else { continue }
                         // B as takeSecondRegion picks it: the largest run in [A's end, ceiling),
                         // the rest of A's own run included.
@@ -473,8 +484,7 @@ enum StikJITHelper {
                         for h in holes where h.base > run.base && h.base < ceiling && min(h.base + h.size, ceiling) - h.base > bRun.size {
                             bRun = (base: h.base, size: min(h.base + h.size, ceiling) - h.base)
                         }
-                        let want = (vm_address_t(poolSize) - aFit + mb16 - 1) & ~(mb16 - 1)
-                        let bFit = min(bRun.size & ~(mb16 - 1), want)
+                        let bFit = poolRunSize(available: bRun.size, wanted: vm_address_t(poolSize) - aFit, pageFit: pageFit)
                         if bFit >= 64 << 20 && aFit + bFit > best {
                             best = aFit + bFit
                             pairA = (base: run.base, size: aFit)
@@ -509,7 +519,7 @@ enum StikJITHelper {
                 }
             }
             if pairA == nil && largest < vm_address_t(poolSize) {
-                let fit = Int(largest) & ~((16 << 20) - 1)
+                let fit = Int(poolRunSize(available: largest, wanted: vm_address_t(poolSize), pageFit: pageFit))
                 if fit >= 256 << 20 {
                     LogStore.shared.log("ml1036: no hole fits a \(poolSize >> 20)MB pool — SHRINKING to \(fit >> 20)MB "
                         + "(the alternative is a pool in the guest window or on top of 0x140000000, "
@@ -595,7 +605,7 @@ enum StikJITHelper {
         if let pa = pairA, let p = rxPtrOpt {
             let got = vm_address_t(bitPattern: p)
             if got == pa.base {
-                pairSecond = takeSecondRegion(above: got + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
+                pairSecond = takeSecondRegion(above: got + vm_address_t(poolSize), want: requestedPoolSize - poolSize, pageFit: pageFit,
                                               exeWindow: (exeWinBase, exeWinSize))
             }
             if let second = pairSecond {
@@ -853,8 +863,11 @@ enum StikJITHelper {
         if ["1", "on", "true", "yes"].contains(splitValue) {
             if poolSize >= requestedPoolSize {
                 LogStore.shared.log("[pool-split] the pool got its full \(poolSize >> 20)MB in one region — no split needed")
-            } else if let second = pairSecond ?? takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
+            } else if let second = pairSecond ?? takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: requestedPoolSize - poolSize, pageFit: pageFit,
                                                                   exeWindow: (exeWinBase, exeWinSize)) {
+                if pageFit {
+                    LogStore.shared.log("[pool-split] page-fit A=\(poolSize >> 10)KB B=\(second.size >> 10)KB usable=\((vm_address_t(poolSize) + second.size) >> 10)KB budget=\(requestedPoolSize >> 10)KB; native mappings retained")
+                }
                 // madeira-bcd pool-low: C, A and B in one RW reservation (C first)
                 if let low = lowRegion {
                     if let rwLow = mapLowAlias([(rx: low.base, size: low.size), (rx: rxAddrV, size: vm_address_t(poolSize)),
@@ -1035,6 +1048,21 @@ enum StikJITHelper {
         return (rx: rxPtr, rw: rwPtr, size: poolSize)
     }
 
+    /// Default A/B requests retain the 16MB rounding. The page-fit opt-in never
+    /// rounds a request up, so the two real regions cannot exceed their budget.
+    private static func poolRunSize(available: vm_address_t, wanted: vm_address_t,
+                                    pageFit: Bool) -> vm_address_t {
+        let granule: vm_address_t = pageFit ? 0x4000 : 16 << 20
+        let request: vm_address_t
+        if pageFit {
+            request = wanted & ~(granule - 1)
+        } else {
+            guard wanted <= vm_address_t.max - (granule - 1) else { return 0 }
+            request = (wanted + granule - 1) & ~(granule - 1)
+        }
+        return min(available & ~(granule - 1), request)
+    }
+
     /// madeira-bcd split pool: the free runs of at least `minSize` in [lo, hi).
     private static func freeRuns(_ lo: vm_address_t, _ hi: vm_address_t,
                                  minSize: vm_address_t) -> [(base: vm_address_t, size: vm_address_t)] {
@@ -1061,17 +1089,18 @@ enum StikJITHelper {
 
     /// madeira-bcd split pool: the second debugger region. It is the largest free
     /// run between the first region and the dyld shared region (0x180000000), at
-    /// most `want` (rounded up to 16MB) and at least 64MB. The debugger allocates
+    /// most `want` (rounded up to 16MB by default, down to 16KB with page-fit)
+    /// and at least 64MB. The debugger allocates
     /// first-fit, so every lower run that could take it is plugged for the request,
     /// as ml1040 does for the first region. The part between the two regions (the
     /// main thread's stack) gets PROT_NONE placeholders in its free gaps, so
     /// nothing else lands inside the pool's span. Returns nil, holding nothing,
     /// when no run qualifies or the region landed anywhere else.
-    private static func takeSecondRegion(above aEnd: vm_address_t, want: Int,
+    private static func takeSecondRegion(above aEnd: vm_address_t, want: Int, pageFit: Bool,
                                          exeWindow: (base: vm_address_t, size: vm_address_t))
         -> (base: vm_address_t, size: vm_address_t)? {
+        guard want > 0 else { return nil }
         let ceiling: vm_address_t = 0x180000000           // SHARED_REGION_BASE_ARM64
-        let mb16: vm_address_t = 16 << 20
         let runs = freeRuns(aEnd, ceiling, minSize: 64 << 20)
         let desc = runs.map { String(format: "0x%lx+%luMB", Int($0.base), Int($0.size >> 20)) }.joined(separator: " ")
         guard let best = runs.max(by: { $0.size < $1.size }) else {
@@ -1079,8 +1108,7 @@ enum StikJITHelper {
                 + "one region", level: .error)
             return nil
         }
-        let wanted = (vm_address_t(want) + mb16 - 1) & ~(mb16 - 1)
-        let size = min(best.size & ~(mb16 - 1), wanted)
+        let size = poolRunSize(available: best.size, wanted: vm_address_t(want), pageFit: pageFit)
         // The part between the regions must never hold the executable window:
         // the fixed-base main image would then sit inside the pool's span.
         let gapHitsWindow = aEnd < exeWindow.base + exeWindow.size && best.base > exeWindow.base

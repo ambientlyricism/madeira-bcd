@@ -357,6 +357,7 @@ jobs:
 
       - name: Check JIT pool image placement contracts
         run: |
+          python3 tests/host/check-pool-startup-budget.py --require-swift
           python3 tests/host/check-pool-placement.py
           python3 tests/host/check-pool-split.py
           python3 tests/host/check-pool-low.py

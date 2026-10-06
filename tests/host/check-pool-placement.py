@@ -95,7 +95,7 @@ static int ios_pool_execable_runs(uint64_t rx, size_t off, size_t size, ios_pool
                                  size_t *ro, size_t *rs, int max)
 { (void)rx; (void)off; (void)size; (void)fn; (void)ro; (void)rs; (void)max; return 0; }
 ''' + helpers + allocator + r'''
-static const size_t total = 0x37690000, native_lo = 560 * MB, native_hi = 0x23690000;
+static size_t total = 0x37690000, native_lo = 560 * MB, native_hi = 0x23690000;
 
 static void setup(int below)
 {
@@ -166,6 +166,28 @@ static int launch_case(int below, size_t reserve)
 static uint32_t rng = 41;
 static uint32_t next(void) { rng = rng * 1664525u + 1013904223u; return rng; }
 
+/* Start at the observed build-410 bump cursor before SHELL32. The page-fit
+ * geometry uses the census's whole-MB lower bounds, not invented exact holes.
+ * Replay the first missing image and a minimum remaining import budget; this
+ * is a capacity check, not a claim that the game's full dependency set ran. */
+static int imports_case(int page_fit, int preserve_code)
+{
+    const size_t before_shell = 0x35f40000, old_skip = 0x243d0000 - 320 * MB;
+    native_lo = (page_fit ? 571 : 560) * MB;
+    native_hi = 0x243d0000;
+    total = native_hi + (page_fit ? 316 : 304) * MB;
+    CHECK(total - (native_hi - native_lo) <= 896 * MB);
+    setup(1);
+    CHECK(ios_pool_alloc_range_ex(0xefc0000, total, (size_t)-1, 0) == ios_pool_big_off);
+    jit_pool_offset = before_shell - old_skip + ios_jit_hole_end_eff - ios_jit_hole_off_eff;
+    size_t limit = total - (preserve_code ? 0 : 16 * MB);
+    if (ios_pool_alloc_range_ex(0x984000, limit, (size_t)-1, 0) == (size_t)-1) return 0;
+    /* 31.078MB of unique missing-image requests plus 4.531MB of other later
+     * imports, less the 9.516MB SHELL32 allocation already made. */
+    size_t rest = 0x1f14000 + (0x363c8000 - before_shell) - 0x984000;
+    return ios_pool_alloc_range_ex(rest, limit, (size_t)-1, 0) != (size_t)-1;
+}
+
 int main(void)
 {
     size_t slot = 11, lo = 12, hi = 13;
@@ -232,6 +254,11 @@ int main(void)
         CHECK(tail_off >= ios_jit_hole_end_eff || tail_off + 128 * MB <= ios_jit_hole_off_eff);
     }
     puts("PASS: neither tail nor anchored requests can steal a slot; tail placement excludes both sides");
+    CHECK(!imports_case(0, 0));
+    CHECK(!imports_case(1, 0));
+    CHECK(!imports_case(0, 1));
+    CHECK(imports_case(1, 1));
+    puts("PASS: the 410-shaped import budget needs both saved code-buffer space and page-fit capacity, within 896MB");
     return 0;
 }
 '''
