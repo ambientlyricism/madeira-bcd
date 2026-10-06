@@ -131,7 +131,9 @@ assert 'MadeiraConfig.gameValue("pool-low-margin") ?? MadeiraConfig.get("pool-lo
 take = function(swift, 'private static func takeLowRegion(')
 assert 'Int(marginText) ?? 128' in take, 'the margin defaults to 128 MB'
 assert 'guard poolRx >= exeWindow.base + exeWindow.size else {' in take, 'C only with the pool above the window'
-assert 'let size = (best.size - margin) & ~(mb16 - 1)' in take and 'let target = best.base + best.size - size' in take
+assert 'let available = best.map { $0.size > margin ? $0.size - margin : 0 } ?? 0' in take
+assert 'let size = poolRunSize(available: available, wanted: available, pageFit: pageFit)' in take
+assert 'let target = best.base + best.size - size' in take
 assert 'freeRuns(0x100000000, best.base, minSize: size)' in take and 'plugs.append(' in take
 assert 'if c < lowFloor || c + size > exeWindow.base || c + size > poolRx {' in take, 'a stray placement is released'
 alias = function(swift, 'private static func mapLowAlias(')
@@ -267,6 +269,9 @@ int main( void )
     /* the env parser */
     if (!ios_pool_low_parse( "12e000000:12000000", rx, rw, size, &lrx, &lsz ) || lrx != 0x12e000000ull || lsz != 0x12000000ull)
         FAIL("a good region refused\n");
+    if (!ios_pool_low_parse( "12c800000:13800000", rx, rw, size, &lrx, &lsz ) ||
+        lrx != 0x12c800000ull || lsz != 312 * MB || lrx + lsz != 0x140000000ull)
+        FAIL("page-fitted 312MB C refused\n");
     if (ios_pool_low_parse( "12e000000:12000000", 0, rw, size, &lrx, &lsz )) FAIL("no pool\n");
     if (ios_pool_low_parse( "12e002000:12000000", rx, rw, size, &lrx, &lsz )) FAIL("unaligned base\n");
     if (ios_pool_low_parse( "12e000000:ff0000", rx, rw, size, &lrx, &lsz )) FAIL("under 16 MB\n");

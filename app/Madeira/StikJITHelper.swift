@@ -403,7 +403,7 @@ enum StikJITHelper {
                 ?? MadeiraConfig.get("pool-page-fit") ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
         if pageFit {
-            LogStore.shared.log("[pool-split] page-fit=1: A/B requests fit 16KB pages within the requested \(requestedPoolSize >> 20)MB budget")
+            LogStore.shared.log("[pool-split] page-fit=1: A/B requests fit 16KB pages within the requested \(requestedPoolSize >> 20)MB budget; C retains pool-low-margin")
         }
         // madeira-bcd pool-pair (below): region A's run and the size the single-region
         // pool would have had, for the check after the request.
@@ -817,7 +817,7 @@ enum StikJITHelper {
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var lowRegion: (base: vm_address_t, size: vm_address_t)? = nil
         if ["1", "on", "true", "yes"].contains(lowValue) {
-            lowRegion = takeLowRegion(poolRx: rxAddrV, exeWindow: (exeWinBase, exeWinSize))
+            lowRegion = takeLowRegion(poolRx: rxAddrV, exeWindow: (exeWinBase, exeWinSize), pageFit: pageFit)
         }
         // Region C is taken and its alias failed: give it back, the pool works as without it.
         func dropLowRegion(_ why: String) {
@@ -1048,8 +1048,8 @@ enum StikJITHelper {
         return (rx: rxPtr, rw: rwPtr, size: poolSize)
     }
 
-    /// Default A/B requests retain the 16MB rounding. The page-fit opt-in never
-    /// rounds a request up, so the two real regions cannot exceed their budget.
+    /// Default requests retain the 16MB rounding. The page-fit opt-in never
+    /// rounds a request up; A/B stay within their budget and C keeps its margin.
     private static func poolRunSize(available: vm_address_t, wanted: vm_address_t,
                                     pageFit: Bool) -> vm_address_t {
         let granule: vm_address_t = pageFit ? 0x4000 : 16 << 20
@@ -1160,16 +1160,17 @@ enum StikJITHelper {
     /// run in [0x119000000, the executable window) less `pool-low-margin` MB (128 by
     /// default) left free at the run's bottom, where Wine maps the children's
     /// relocatable main exes (PlayGTAV.exe 0x122c20000, Launcher.exe 0x129340000,
-    /// RockstarService.exe 0x12ac20000 in the GTA V logs), in 16MB steps and at least
-    /// 64MB; it takes the run's TOP, next to the window. The debugger allocates
+    /// RockstarService.exe 0x12ac20000 in the GTA V logs), in 16MB steps by default
+    /// or 16KB with page-fit, and at least 64MB; it takes the run's TOP, next to the
+    /// window. The debugger allocates
     /// first-fit, so the margin and every lower run that could take C are plugged for
     /// the request, as takeSecondRegion does. Only when the pool lies above the
     /// window: C must never be inside the pool's span. Returns nil, holding nothing,
     /// when no run qualifies or the region landed anywhere else.
     private static func takeLowRegion(poolRx: vm_address_t,
-                                      exeWindow: (base: vm_address_t, size: vm_address_t))
+                                      exeWindow: (base: vm_address_t, size: vm_address_t),
+                                      pageFit: Bool)
         -> (base: vm_address_t, size: vm_address_t)? {
-        let mb16: vm_address_t = 16 << 20
         let lowFloor: vm_address_t = 0x119000000            // the pool's own low bound (mode A, see above)
         let marginText = (MadeiraConfig.gameValue("pool-low-margin") ?? MadeiraConfig.get("pool-low-margin") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1182,13 +1183,14 @@ enum StikJITHelper {
         }
         let runs = freeRuns(lowFloor, exeWindow.base, minSize: 64 << 20)
         let desc = runs.map { String(format: "0x%lx+%luMB", Int($0.base), Int($0.size >> 20)) }.joined(separator: " ")
-        guard let best = runs.max(by: { $0.size < $1.size }), best.size > margin,
-              (best.size - margin) & ~(mb16 - 1) >= 64 << 20 else {
+        let best = runs.max(by: { $0.size < $1.size })
+        let available = best.map { $0.size > margin ? $0.size - margin : 0 } ?? 0
+        let size = poolRunSize(available: available, wanted: available, pageFit: pageFit)
+        guard let best = best, size >= 64 << 20 else {
             LogStore.shared.log("[pool-low] free runs below the window: \(desc.isEmpty ? "none of 64MB" : desc) -- none "
                 + "leaves 64MB after the \(marginMB)MB margin (pool-low-margin); no region C", level: .error)
             return nil
         }
-        let size = (best.size - margin) & ~(mb16 - 1)
         let target = best.base + best.size - size        // the run's top; the margin stays at its bottom
         var plugs: [(vm_address_t, vm_size_t)] = []
         var plugRuns = freeRuns(0x100000000, best.base, minSize: size)
@@ -1217,6 +1219,9 @@ enum StikJITHelper {
             + "run left free for the low images, pool-low-margin = %ld)%@",
             Int(c), Int(size >> 20), desc, Int((best.size - size) >> 20), marginMB,
             c == target ? "" : String(format: " -- not at the run's top 0x%lx, a plug failed", Int(target))))
+        if pageFit {
+            LogStore.shared.log("[pool-low] page-fit C=\(size >> 10)KB; run remainder=\((best.size - size) >> 10)KB, pool-low-margin=\(margin >> 10)KB")
+        }
         return (c, size)
     }
 

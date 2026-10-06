@@ -102,7 +102,7 @@ static void reset(void *memory)
 int main(void)
 {
     void *memory = NULL, *ret = NULL;
-    CHECK(!posix_memalign(&memory, 0x4000, 288 * MB));
+    CHECK(!posix_memalign(&memory, 0x4000, 312 * MB));
     reset(memory);
     size_t request = 0x4000;
     CHECK(allocate(&request, &ret) == STATUS_SUCCESS);
@@ -147,6 +147,44 @@ int main(void)
     CHECK(ios_jit_low_reserved == used);
     puts("PASS: full C, an exact-size retired carve and normal code-buffer requests retain the existing behavior");
 
+    /* A 440MB low run less the unchanged 128MB margin leaves 312MB. With
+     * 16MB rounding C has only 304MB: the helper's 32MB request misses by
+     * 80KB and falls through to the main tail despite the unused 8MB. */
+    for (int page_fit = 0; page_fit < 2; page_fit++)
+    {
+        reset(memory);
+        ios_jit_low_size_global = (page_fit ? 312 : 304) * MB;
+        ios_jit_pool_size_global = 896 * MB;
+        jit_pool_offset = 0x2dea8000;
+        ios_jit_hole_off_eff = 0x15ff4000;
+        ios_jit_hole_end_eff = 0x2566c000;
+        request = 128 * MB;
+        CHECK(allocate(&request, &ret) == STATUS_NO_MEMORY);
+        request = 64 * MB;
+        CHECK(allocate(&request, &ret) == STATUS_NO_MEMORY);
+        request = 32 * MB;
+        if (!page_fit)
+        {
+            CHECK(ios_jit_low_size_global - used == 32 * MB - 0x14000);
+            CHECK(allocate(&request, &ret) == FALLBACK_TAIL);
+            CHECK(ios_jit_low_reserved == used && ios_tail_carves[0].free);
+            continue;
+        }
+        CHECK(allocate(&request, &ret) == STATUS_SUCCESS);
+        CHECK(request == 32 * MB && (uintptr_t)ret == ios_jit_low_rx_global + used);
+        CHECK(ios_jit_low_reserved == used + 32 * MB && !ios_jit_tail_reserved);
+        request = 0x4000;
+        CHECK(allocate(&request, &ret) == STATUS_SUCCESS);
+        CHECK(request == 0x4000 && ios_tail_carves[0].free);
+        CHECK(ios_jit_low_reserved == used + 32 * MB + 0x4000);
+        request = 16 * MB;
+        CHECK(allocate(&request, &ret) == STATUS_SUCCESS);
+        CHECK(request == 16 * MB && (uintptr_t)ret == ios_jit_low_rx_global + 2 * MB);
+        CHECK(!ios_tail_carves[0].free && !ios_jit_tail_reserved);
+        CHECK(jit_pool_offset == 0x2dea8000);
+    }
+    puts("PASS: fitting C to 312MB keeps the helper's 32MB buffer and game startup allocations outside the main pool; 304MB reproduces the fallback");
+
     reset(memory);
     wow = 1;
     request = 0x4000;
@@ -177,13 +215,17 @@ assert 'let ceiling: vm_address_t = 0x180000000' in take
 assert 'b + size > ceiling' in take and 'gapHitsWindow' in take
 assert 'VM_FLAGS_OVERWRITE' not in take
 low = function(swift, 'private static func takeLowRegion(', '\n    }')
-assert 'Int(marginText) ?? 128' in low and 'let size = (best.size - margin) & ~(mb16 - 1)' in low
+assert 'Int(marginText) ?? 128' in low
+assert 'let available = best.map { $0.size > margin ? $0.size - margin : 0 } ?? 0' in low
+assert 'let size = poolRunSize(available: available, wanted: available, pageFit: pageFit)' in low
+assert 'guard let best = best, size >= 64 << 20' in low
+assert 'exeWindow: (exeWinBase, exeWinSize), pageFit: pageFit)' in swift
 allocator = (root / 'app/Madeira/JITAllocator.c').read_text()
 prepare = function(allocator, 'void *jit26_prepare_region(')
 assert 'register size_t x1 __asm__("x1") = len;' in prepare
 script = (root / 'app/Madeira/madeira-jit.js').read_text()
 assert 'let prepResp = prepare_memory_region(addr, x1);' in script
-print('PASS: page-fit requires pool-split, reaches both B requests and leaves region-C margin and native mapping guards intact')
+print('PASS: page-fit requires pool-split, reaches B and C requests and preserves region-C margin and native mapping guards')
 
 size_helper = function(swift, 'private static func poolRunSize(', '\n    }')
 swift_fixture = 'typealias vm_address_t = UInt\n' + 'enum Production {\n' + size_helper + r'''
@@ -202,6 +244,15 @@ swift_fixture = 'typealias vm_address_t = UInt\n' + 'enum Production {\n' + size
         precondition(poolRunSize(available: UInt.max, wanted: UInt.max, pageFit: true) == UInt.max & ~UInt(0x3fff))
         precondition(poolRunSize(available: 0x3fff, wanted: budget, pageFit: true) == 0)
         precondition(poolRunSize(available: budget, wanted: 0x4001, pageFit: true) == 0x4000)
+        let lowFree: UInt = 440 * mb, margin: UInt = 128 * mb
+        let oldC = poolRunSize(available: lowFree - margin, wanted: lowFree - margin, pageFit: false)
+        let c = poolRunSize(available: lowFree - margin, wanted: lowFree - margin, pageFit: true)
+        precondition(oldC == 304 * mb && c == 312 * mb)
+        precondition(UInt(0x140000000) - c == UInt(0x12c800000))
+        precondition(lowFree - oldC == 136 * mb && lowFree - c == margin)
+        let used: UInt = 272 * mb + 0x14000
+        precondition(oldC - used == 32 * mb - 0x14000 && c - used >= 32 * mb)
+        precondition(poolRunSize(available: 64 * mb - 1, wanted: 64 * mb - 1, pageFit: true) < 64 * mb)
         var state: UInt64 = 411
         for _ in 0..<10000 {
             state = state &* 6364136223846793005 &+ 1
@@ -214,8 +265,16 @@ swift_fixture = 'typealias vm_address_t = UInt\n' + 'enum Production {\n' + size
             precondition(fitted <= available && fitted <= wanted && fitted & 0x3fff == 0)
             let second = poolRunSize(available: 316 * mb, wanted: budget - fitted, pageFit: true)
             precondition(fitted + second <= budget)
+            let lowMargin = UInt(state % 4097) * mb
+            let lowAvailable = available > lowMargin ? available - lowMargin : 0
+            let lowDefault = poolRunSize(available: lowAvailable, wanted: lowAvailable, pageFit: false)
+            let lowFitted = poolRunSize(available: lowAvailable, wanted: lowAvailable, pageFit: true)
+            precondition(lowDefault == lowAvailable & ~(16 * mb - 1))
+            precondition(lowFitted <= lowAvailable && lowFitted & 0x3fff == 0)
+            if lowFitted >= 64 * mb { precondition(available - lowFitted >= lowMargin) }
         }
         print("PASS: production Swift page fitting recovers 23MB in a 410-shaped layout; 10,000 default/budget comparisons and boundary cases")
+        print("PASS: production Swift sizing recovers C's 8MB rounding loss in a 411-shaped layout without reducing its 128MB margin")
     }
 }
 Production.run()
