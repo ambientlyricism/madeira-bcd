@@ -50,6 +50,9 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           clang --version
 
+      - name: Check generated settings catalog
+        run: python3 tests/host/check-config-catalog.py
+
       # --- UNVERIFIED: exact configure invocation for the wine fork's
       # iOS/arm64 cross target isn't documented anywhere in the repo.
       # This is a best guess and will likely need correcting once we see
