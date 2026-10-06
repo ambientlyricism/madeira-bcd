@@ -43,6 +43,8 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_IMAGE_PATCH_TRACE": {"category": "Debugging / logs", "title": "DLL code patch trace", "kind": "toggle", "default": "0",
+                "note": "1 logs up to 64 successful 1–16 byte executable-image protection requests and their PE/pool bytes. Read-only, owner-aware diagnostics; does not alter hooks or code."},
     "env.MADEIRA_DLL_LOCAL": {"category": "Wine core (ntdll)", "title": "App-local DLL reads", "kind": "text", "default": "",
                 "note": "Optional semicolon-separated DLL filenames, including .dll. Read-only opens and attribute queries "
                         "prefer those files next to the current guest executable, even for explicit paths. Missing local files, "
