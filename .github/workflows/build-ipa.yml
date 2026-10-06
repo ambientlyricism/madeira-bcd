@@ -50,6 +50,9 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           clang --version
 
+      - name: Check generated settings catalog
+        run: python3 tests/host/check-config-catalog.py
+
       # --- UNVERIFIED: exact configure invocation for the wine fork's
       # iOS/arm64 cross target isn't documented anywhere in the repo.
       # This is a best guess and will likely need correcting once we see
@@ -339,7 +342,9 @@ jobs:
       # Patches wine/dlls/ntdll/unix/file.c in place; the submodule pin and the
       # cache keys (wine revision) do not change. MADEIRA_GUEST_LOG=all|0.
       - name: Patch wine with the game text-log mirror
-        run: python3 tools/patch-wine-guest-log.py wine/dlls/ntdll/unix/file.c
+        run: |
+          python3 tests/host/check-guest-log.py
+          python3 tools/patch-wine-guest-log.py wine/dlls/ntdll/unix/file.c
 
       # [file-trace]: every guest open / attribute query with its status when
       # MADEIRA_FILE_TRACE=1 (GTA V Enhanced's "incomplete installation"
@@ -351,6 +356,11 @@ jobs:
         run: |
           python3 tests/host/check-app-local-dll.py
           python3 tools/patch-wine-app-local-dll.py wine/dlls/ntdll/unix/file.c
+
+      - name: Check read-only image patch diagnostics
+        run: |
+          python3 tests/host/check-image-patch-trace.py
+          python3 tests/host/check-iat-sync-owner.py
 
       - name: Check virtual storage device contracts
         run: python3 tests/host/check-storage-device.py
