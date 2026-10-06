@@ -95,18 +95,18 @@ with tempfile.TemporaryDirectory(prefix="rpmalloc-span8-") as directory:
             subprocess.run([str(binary), "12", mode, "late_pressure"], env=env, check=True)
             for gib in ("4", "8", "16"):
                 subprocess.run([str(binary), gib, mode, "geometry"], env=env, check=True)
-        if name == 'span4':
-            # macOS has no MAP_FIXED_NOREPLACE; exercise its fresh-mapping,
-            # alignment-and-trim path on Linux as well.
-            portable = temp / 'portable'
-            subprocess.run([
-                cc, '-std=gnu11', '-O1', '-g', '-DFEX_IOS_HOST', '-DRPMALLOC_TEST_PORTABLE_MAP',
-                '-DRPMALLOC_FIRST_CLASS_HEAPS=1', '-DENABLE_DECOMMIT=1', '-DENABLE_OVERRIDE=0',
-                '-DENABLE_ASSERTS=1', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                '-Wno-unused-function', '-I', str(temp),
-                str(root / 'tests/host/rpmalloc-span8-fixture.c'), '-pthread', '-o', str(portable),
-            ], check=True)
-            subprocess.run([str(portable), '12', mode, 'geometry'], env=env, check=True)
+        # Exercise macOS's fresh-mapping/alignment path and Apple Silicon's
+        # 16 KiB allocation-page size on Linux too, including the old baseline.
+        portable = temp / f'{name}-portable-16k'
+        subprocess.run([
+            cc, '-std=gnu11', '-O1', '-g', '-DFEX_IOS_HOST', '-DRPMALLOC_TEST_PORTABLE_MAP',
+            '-DRPMALLOC_TEST_PAGE_SIZE=16384',
+            '-DRPMALLOC_FIRST_CLASS_HEAPS=1', '-DENABLE_DECOMMIT=1', '-DENABLE_OVERRIDE=0',
+            '-DENABLE_ASSERTS=1', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
+            '-Wno-unused-function', '-I', str(temp),
+            str(root / 'tests/host/rpmalloc-span8-fixture.c'), '-pthread', '-o', str(portable),
+        ], check=True)
+        subprocess.run([str(portable), '12', mode, 'geometry'], env=env, check=True)
     assert source.read_text() == original, "host tests must not edit the pinned submodule"
 
 print("PASS: strict/idempotent overlay, actual allocator boundaries and arena pressure, non-iOS geometry preserved")

@@ -76,33 +76,45 @@ static void *map_view(size_t size, size_t alignment, size_t *offset, size_t *map
     return NULL;
 }
 
-static void commit_view(void *p, size_t size)
+static void require_owned_pages(void *p, size_t size)
 {
-    assert(p && (unsigned char *)p >= arena && (unsigned char *)p + size <= arena + CAPACITY);
-    assert(((uintptr_t)p & 4095) == 0);
+    uintptr_t address = (uintptr_t)p, base = (uintptr_t)arena;
+    assert(p && size && address >= base && size <= CAPACITY && address - base <= CAPACITY - size);
+    assert(global_config.page_size && address % global_config.page_size == 0);
+    assert(size % global_config.page_size == 0);
     size_t first = ((unsigned char *)p - arena) / UNIT;
     size_t last = ((unsigned char *)p + size - 1 - arena) / UNIT;
     for (size_t i = first; i <= last; ++i) assert(busy[i]);
+}
+
+static void commit_view(void *p, size_t size)
+{
+    require_owned_pages(p, size);
     assert(mprotect(p, size, PROT_READ | PROT_WRITE) == 0);
 }
 
 static void decommit_view(void *p, size_t size)
 {
-    assert(madvise(p, size, MADV_DONTNEED) == 0);
-    assert(mprotect(p, size, PROT_NONE) == 0);
+    require_owned_pages(p, size);
+    /* Windows decommit/recommit and fresh reservations yield zeroed pages.
+     * Darwin's MADV_DONTNEED can retain the previous span header. Replace
+     * only this fixture-owned range with fresh anonymous, inaccessible pages;
+     * the arena stays reserved and adjacent live views are untouched. */
+    assert(mmap(p, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == p);
 }
 
 static void unmap_view(void *p, size_t offset, size_t size)
 {
     assert(offset == 0 && size % UNIT == 0);
+    assert((uintptr_t)p >= (uintptr_t)arena && ((uintptr_t)p - (uintptr_t)arena) % UNIT == 0);
     size_t start = ((unsigned char *)p - arena) / UNIT;
     size_t count = size / UNIT;
     assert(start + count <= UNITS);
     pthread_mutex_lock(&map_lock);
     for (size_t i = 0; i < count; ++i) assert(busy[start + i]);
+    decommit_view(p, size);
     memset(busy + start, 0, count);
     mapped_live -= size;
-    decommit_view(p, size);
     pthread_mutex_unlock(&map_lock);
 }
 
@@ -114,7 +126,7 @@ static rpmalloc_interface_t memory_interface = {
 static void init(unsigned advertised_gib)
 {
     /* ASan's high application region on Linux. On macOS let the kernel pick
-     * a fresh range and trim its alignment padding; never replace a mapping. */
+     * a fresh range and trim its alignment padding. */
 #if defined(__linux__) && !defined(RPMALLOC_TEST_PORTABLE_MAP)
     arena = mmap((void *)0x400000000000ULL, CAPACITY, PROT_NONE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
@@ -131,8 +143,12 @@ static void init(unsigned advertised_gib)
 #endif
     ios_fex_band_base = (uintptr_t)arena;
     ios_fex_band_end = (uintptr_t)arena + advertised_gib * GiB - 1;
-    rpmalloc_config_t cfg = {.page_size = 4096, .disable_decommit = 0, .unmap_on_finalize = 1};
+#ifndef RPMALLOC_TEST_PAGE_SIZE
+#define RPMALLOC_TEST_PAGE_SIZE 4096
+#endif
+    rpmalloc_config_t cfg = {.page_size = RPMALLOC_TEST_PAGE_SIZE, .disable_decommit = 0, .unmap_on_finalize = 1};
     assert(rpmalloc_initialize_config(&memory_interface, &cfg) == 0);
+    assert(global_config.page_size <= UNIT && UNIT % global_config.page_size == 0);
 }
 
 static void done(void)
@@ -155,6 +171,52 @@ static void check(void *p, size_t size, uint64_t value)
     memcpy(&a, p, sizeof(a));
     memcpy(&b, (char *)p + size - sizeof(b), sizeof(b));
     assert(a == value && b == value);
+}
+
+static void expect_bytes(const void *p, size_t size, unsigned char value)
+{
+    const unsigned char *bytes = p;
+    for (size_t i = 0; i < size; ++i) assert(bytes[i] == value);
+}
+
+static void memory_contract(void)
+{
+    size_t offset, left_size, middle_size, right_size, before = mapped_live;
+    unsigned char *left = map_view(UNIT, UNIT, &offset, &left_size);
+    unsigned char *middle = map_view(2 * UNIT, UNIT, &offset, &middle_size);
+    unsigned char *right = map_view(UNIT, UNIT, &offset, &right_size);
+    assert(left && middle && right && middle == left + UNIT && right == middle + 2 * UNIT);
+    commit_view(left, left_size);
+    commit_view(middle, middle_size);
+    commit_view(right, right_size);
+    expect_bytes(middle, middle_size, 0);
+    memset(left, 0x51, left_size);
+    memset(middle, 0xa5, middle_size);
+    memset(right, 0x73, right_size);
+
+    /* Partial decommit clears only the requested pages, including when
+     * emulating the Apple Silicon runner's 16 KiB allocation-page size. */
+    size_t page = global_config.page_size;
+    decommit_view(middle + page, page);
+    commit_view(middle + page, page);
+    expect_bytes(middle, page, 0xa5);
+    expect_bytes(middle + page, page, 0);
+    expect_bytes(middle + 2 * page, middle_size - 2 * page, 0xa5);
+
+    /* Reusing the same address must not retain allocator metadata or payload. */
+    unmap_view(middle, 0, middle_size);
+    size_t reused_size;
+    unsigned char *reused = map_view(2 * UNIT, UNIT, &offset, &reused_size);
+    assert(reused == middle && reused_size == middle_size);
+    commit_view(reused, reused_size);
+    expect_bytes(reused, reused_size, 0);
+    expect_bytes(left, left_size, 0x51);
+    expect_bytes(right, right_size, 0x73);
+    unmap_view(left, 0, left_size);
+    unmap_view(reused, 0, reused_size);
+    unmap_view(right, 0, right_size);
+    assert(mapped_live == before);
+    printf("PASS: fresh/recommitted pages zeroed, same-address reuse, adjacent views preserved (%zu-byte pages)\n", page);
 }
 
 static void geometry(unsigned span_mb)
@@ -374,6 +436,7 @@ int main(int argc, char **argv)
     unsigned gib = (unsigned)strtoul(argv[1], NULL, 10);
     unsigned span_mb = atoi(argv[2]) == 0 ? 16 : atoi(argv[2]) == 1 ? 8 : 4;
     init(gib);
+    memory_contract();
     if (!strcmp(argv[3], "pressure")) pressure(span_mb);
     else if (!strcmp(argv[3], "late_pressure")) late_pressure(span_mb);
     else { geometry(span_mb); cross_thread(); puts("PASS: geometry, span boundaries, aligned/huge allocations and remote frees"); }
