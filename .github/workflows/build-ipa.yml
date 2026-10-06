@@ -350,6 +350,11 @@ jobs:
       - name: Check virtual storage device contracts
         run: python3 tests/host/check-storage-device.py
 
+      - name: Check WoW window guard reservation contracts
+        run: |
+          python3 tests/host/check-wow-guard.py
+          python3 tests/host/check-lazy-windows.py
+
       # [dns]: every guest getaddrinfo by name, and MADEIRA_DNS_TIMEOUT_MS to
       # bound one (Social Club's Chromium sat in three getaddrinfo calls for a
       # minute, GTA V Enhanced build 378). Patches wine/dlls/ws2_32/unixlib.c.
