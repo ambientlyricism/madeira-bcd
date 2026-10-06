@@ -46,8 +46,10 @@ OVERLAY = {
     "env.MADEIRA_IMAGE_PATCH_TRACE": {"category": "Debugging / logs", "title": "DLL code patch trace", "kind": "bool", "default": "0",
                 "note": "1 logs up to 64 successful 1–16 byte executable-image protection requests and their PE/pool bytes. Read-only, owner-aware diagnostics; does not alter hooks or code."},
     "env.MADEIRA_DLL_LOCAL": {"category": "Wine core (ntdll)", "title": "App-local DLL reads", "kind": "text", "default": "",
-                "note": "Optional semicolon-separated DLL filenames, including .dll. Read-only opens and attribute queries "
-                        "prefer those files next to the current guest executable, even for explicit paths. Missing local files, "
+                "note": "Optional semicolon-separated DLL filenames, including .dll. A source.dll=proxy.dll entry "
+                        "redirects requests outside the executable's directory to that local proxy, preserving initial "
+                        "loads from the executable's own directory. Bare filenames prefer the same local DLL. "
+                        "Only read-only opens and attribute queries are redirected. Missing local files, "
                         "writes, create/delete operations, relative paths and non-file devices keep the normal path. "
                         "Off by default; set only in the game's own file."},
     "swap-mb": { "note": "Moves game data to a file on this device's storage when memory runs short, up to this size. Off by default; read at launch.", "category": "Memory & JIT pool","title": "Swap tier size", "kind": "choice",

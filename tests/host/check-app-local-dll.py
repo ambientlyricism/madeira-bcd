@@ -137,6 +137,12 @@ static void resolve(const char *request, const char *expected, ACCESS_MASK acces
         /* Reading this after the helper returned also tests name ownership. */
         assert(strstr(debugstr_us(&nt), "\\games\\a\\") || strstr(debugstr_us(&nt), "\\Games\\A\\") ||
                strstr(debugstr_us(&nt), "\\games\\b\\"));
+        const char *filename = strrchr(expected, '/') + 1;
+        size_t length = strlen(filename), nt_length = nt.Length / sizeof(WCHAR);
+        assert(nt_length >= length + 4 && nt.Buffer[0] == '\\' && nt.Buffer[1] == '?' &&
+               nt.Buffer[2] == '?' && nt.Buffer[3] == '\\');
+        for (size_t i = 0; i < length; i++)
+            assert(madeira_dll_path_char(nt.Buffer[nt_length - length + i]) == filename[i]);
     }
     struct stat a, b;
     assert(!stat(unix_name, &a) && !stat(expected, &b));
@@ -144,7 +150,9 @@ static void resolve(const char *request, const char *expected, ACCESS_MASK acces
     FILE *f = fopen(unix_name, "rb"); assert(f);
     char contents[32] = {0}; assert(fread(contents, 1, sizeof(contents) - 1, f));
     assert(!fclose(f));
-    if (strstr(expected, "/games/a/")) assert(!strcmp(contents, "local-a"));
+    if (strstr(expected, "/games/a/proxy.dll")) assert(!strcmp(contents, "proxy-a"));
+    else if (strstr(expected, "/games/b/proxy.dll")) assert(!strcmp(contents, "proxy-b"));
+    else if (strstr(expected, "/games/a/")) assert(!strcmp(contents, "local-a"));
     else if (strstr(expected, "/games/b/")) assert(!strcmp(contents, "local-b"));
     else assert(!strcmp(contents, "installed"));
     free(nt.Buffer); free(unix_name);
@@ -161,6 +169,7 @@ int main(void)
     assert(!mkdir("drive_c/games/b", 0700));
     put("drive_c/installed/widget.dll", "installed");
     put("drive_c/games/a/widget.dll", "local-a"); put("drive_c/games/b/widget.dll", "local-b");
+    put("drive_c/games/a/proxy.dll", "proxy-a"); put("drive_c/games/b/proxy.dll", "proxy-b");
     put("drive_c/installed/missing.dll", "installed");
     put("drive_c/installed/folder.dll", "installed"); assert(!mkdir("drive_c/games/a/folder.dll", 0700));
     unsetenv("MADEIRA_DLL_LOCAL");
@@ -191,6 +200,75 @@ int main(void)
     params.ImagePathName = wide("C:\\games\\b\\game.exe", image, ARRAY_SIZE(image));
     resolve(installed, "drive_c/games/b/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
     params.ImagePathName = wide("C:\\games\\a\\game.exe", image, ARRAY_SIZE(image));
+
+    /* A proxy is a different loaded image, not another copy of the initial SDK.
+     * Keep that initial app-local load while redirecting later external paths. */
+    const char *alias = "widget.dll=proxy.dll";
+    setenv("MADEIRA_DLL_LOCAL", alias, 1);
+    resolve(installed, "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    resolve("C:\\installed\\WIDGET.DLL", "drive_c/games/a/proxy.dll", FILE_READ_ATTRIBUTES, FILE_OPEN, 0, NULL, 1);
+    resolve("\\??\\C:\\games\\a\\widget.dll", "drive_c/games/a/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    resolve("C:/Games/A/WIDGET.DLL", "drive_c/games/a/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    resolve("\\??\\C:\\games\\a\\proxy.dll", "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    owned_translation = 1;
+    resolve(installed, "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    owned_translation = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(writes); i++)
+        resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ | writes[i], FILE_OPEN, 0, NULL, 0);
+    for (ULONG disp = FILE_SUPERSEDE; disp <= FILE_OVERWRITE_IF; disp++)
+        if (disp != FILE_OPEN) resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, disp, 0, NULL, 0);
+    for (size_t i = 0; i < ARRAY_SIZE(options); i++)
+        resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, options[i], NULL, 0);
+    resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, (HANDLE)1, 0);
+    fail_helper_malloc = 1;
+    resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    fail_helper_malloc = 0;
+    setenv("MADEIRA_DLL_LOCAL", "widget.dll=missing.dll", 1);
+    resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    setenv("MADEIRA_DLL_LOCAL", "widget.dll=folder.dll", 1);
+    resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    setenv("MADEIRA_DLL_LOCAL", "unrelated.dll; WIDGET.DLL = PROXY.DLL ; other.dll", 1);
+    resolve(installed, "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    params.ImagePathName = wide("\\??\\C:\\games\\b\\game.exe", image, ARRAY_SIZE(image));
+    resolve(installed, "drive_c/games/b/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    resolve("C:\\games\\b\\widget.dll", "drive_c/games/b/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    params.ImagePathName = wide("C:\\Games\\A\\game.exe", image, ARRAY_SIZE(image));
+    resolve("\\??\\C:\\games\\a\\widget.dll", "drive_c/games/a/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    resolve(installed, "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    params.ImagePathName = wide("C:\\games\\a\\game.exe", image, ARRAY_SIZE(image));
+
+    UNICODE_STRING alias_req = wide(installed, request, ARRAY_SIZE(request));
+    unsigned int alias_n = madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output));
+    assert(alias_n && !madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, alias_n));
+    assert(!madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, alias_n - 1));
+    const char *bad_alias[] = {"widget.dll=", "widget.dll=proxy", "widget.dll=../proxy.dll", "widget.dll=..\\proxy.dll",
+                              "widget.dll=C:\\proxy.dll", "widget.dll=\\\\server\\proxy.dll", "widget.dll=*.dll",
+                              "widget.dll=pro?xy.dll", "widget.dll=proxy.dll=other.dll", "widget.dll=pro xy.dll"};
+    for (size_t i = 0; i < ARRAY_SIZE(bad_alias); i++)
+    {
+        assert(!madeira_dll_local_path(bad_alias[i], &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+        setenv("MADEIRA_DLL_LOCAL", bad_alias[i], 1);
+        resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
+    }
+    setenv("MADEIRA_DLL_LOCAL", "widget.dll=../proxy.dll;widget.dll=proxy.dll", 1);
+    resolve(installed, "drive_c/games/a/proxy.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 1);
+    const char *ambiguous[] = {"C:\\games\\a\\.\\widget.dll", "C:\\games\\a\\..\\a\\widget.dll",
+                               "C:\\games\\a\\\\widget.dll", "C:\\installed\\..\\installed\\widget.dll"};
+    for (size_t i = 0; i < ARRAY_SIZE(ambiguous); i++)
+    {
+        alias_req = wide(ambiguous[i], request, ARRAY_SIZE(request));
+        assert(!madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+    }
+    alias_req = wide(installed, request, ARRAY_SIZE(request));
+    params.ImagePathName = wide("C:\\games\\a\\.\\game.exe", image, ARRAY_SIZE(image));
+    assert(!madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+    params.ImagePathName = wide("C:\\games\\a\\game.exe", image, ARRAY_SIZE(image));
+    alias_req.Length--;
+    assert(!madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+    alias_req.Length++; request[7] = 0;
+    assert(!madeira_dll_local_path(alias, &alias_req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+    setenv("MADEIRA_DLL_LOCAL", "widget.dll;missing.dll;folder.dll", 1);
+
     UNICODE_STRING req = wide(installed, request, ARRAY_SIZE(request));
     unsigned int n = madeira_dll_local_path("widget.dll", &req, &params.ImagePathName, output, ARRAY_SIZE(output));
     assert(n && !madeira_dll_local_path("widget.dll", &req, &params.ImagePathName, output, n));
@@ -201,6 +279,7 @@ int main(void)
     {
         req = wide(bad[i], request, ARRAY_SIZE(request));
         assert(!madeira_dll_local_path("widget.dll", &req, &params.ImagePathName, output, ARRAY_SIZE(output)));
+        assert(!madeira_dll_local_path(alias, &req, &params.ImagePathName, output, ARRAY_SIZE(output)));
     }
     req = wide(installed, request, ARRAY_SIZE(request));
     for (const char **p = (const char *[]) {"*", "widget", "C:\\widget.dll", "xwidget.dll", "widget.dllx", NULL}; *p; p++)
@@ -215,7 +294,7 @@ int main(void)
     resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
     current_teb = &teb; teb.Peb = &peb; peb.ProcessParameters = NULL;
     resolve(installed, "drive_c/installed/widget.dll", GENERIC_READ, FILE_OPEN, 0, NULL, 0);
-    puts("PASS: default, selected local inode/content, owned names, per-process image, missing/non-file/OOM fallback, mutation/device/path refusals");
+    puts("PASS: default and bare-name behavior; proxy inode/content with initial local SDK preserved; owned names, per-process image, missing/non-file/OOM fallback, mutation/device/path refusals");
     return 0;
 }
 '''
