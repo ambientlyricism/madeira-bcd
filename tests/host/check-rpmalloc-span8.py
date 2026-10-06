@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[2]
@@ -61,7 +62,10 @@ with tempfile.TemporaryDirectory(prefix="rpmalloc-span8-") as directory:
     temp = Path(directory)
     for name in ("rpmalloc.h", "malloc.c"):
         (temp / name).write_bytes(source.with_name(name).read_bytes())
-    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1", UBSAN_OPTIONS="halt_on_error=1")
+    # Apple's compiler-rt may not support LeakSanitizer. ASan/UBSan and the
+    # allocator's own zero-live-mappings assertion still run on every host.
+    leaks = '0' if sys.platform == 'darwin' else '1'
+    env = dict(os.environ, ASAN_OPTIONS=f"detect_leaks={leaks}", UBSAN_OPTIONS="halt_on_error=1")
     cc = os.environ.get("CC", "cc")
     for name, text in (("original", original), ("span8", patched), ("span4", span4)):
         unit = temp / "rpmalloc.c"
