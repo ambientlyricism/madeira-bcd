@@ -1187,6 +1187,12 @@ jobs:
         continue-on-error: true
         run: bash tools/build-wine-extra-dlls.sh "$GITHUB_WORKSPACE/wine/build-native"
 
+      # Launcher error117 in406: WMVCORE.DLL was never packaged. Its genuine
+      # Wine reader imports winegstreamer; both must build despite the optional
+      # handling of unrelated extra DLLs above. Do not ship another missing farm.
+      - name: Verify Wine media reader DLLs
+        run: python3 tools/check-wine-media-dlls.py app/Madeira/arm64ec-windows
+
       - name: Save wine arm64ec build
         if: steps.wineeccache.outputs.cache-hit != 'true' && hashFiles('wine/build-arm64ec/dlls/msvcr80/arm64ec-windows/msvcr80.dll') != ''
         continue-on-error: true
