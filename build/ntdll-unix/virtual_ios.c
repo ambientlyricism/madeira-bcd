@@ -3278,6 +3278,14 @@ static int ios_tail_carve_in_low( size_t off )
     return ios_jit_low_contains( (uintptr_t)ios_jit_rx_base_global + off );
 }
 
+/* A tiny dispatcher allocation must not consume a whole retired code buffer
+ * while region C can serve the tiny request. Keep the large buffer intact for
+ * the next code-cache allocation; no live carve is split or migrated. */
+static int ios_pool_preserve_code_carve( size_t available, size_t want, int low_fits )
+{
+    return low_fits && want <= 0x10000 && available >= 0x100000 && available / 4 >= want;
+}
+
 /* ml557 (#74 REGRESSION): is any thread's PC currently INSIDE this tail carve?
  *
  * ml438 made a MEM_RELEASE of a live tail EC-buffer carve mark it free for reuse,
@@ -26304,6 +26312,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         int low_fits = low_ok && alloc_size <= IOS_POOL_LOW_CARVE_MAX &&
                        alloc_size <= ios_jit_low_size_global &&
                        ios_jit_low_reserved <= ios_jit_low_size_global - alloc_size;
+        int kept_large_carve = 0, reuse_all_carves = 0;
         size_t tail_cap = ~(size_t)0;
         /* ml459 (#75): cap a single EC code buffer at 16MB. FEX asks for 32MB
          * once its buffers get hot, but an old generation stays pinned by any
@@ -26380,6 +26389,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             }
         }
         /* ml438 (#74): serve from the free-list first — see ios_tail_carves. */
+retry_code_carve_reuse:
         {
             unsigned i, best = ~0u;
             pthread_mutex_lock( &ios_tail_carve_lock );
@@ -26388,6 +26398,12 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                     (low_ok || !ios_tail_carve_in_low( ios_tail_carves[i].off )) &&   /* madeira-bcd pool-low */
                     (best == ~0u || ios_tail_carves[i].size < ios_tail_carves[best].size))
                     best = i;
+            if (best != ~0u && !reuse_all_carves &&
+                ios_pool_preserve_code_carve( ios_tail_carves[best].size, alloc_size, low_fits ))
+            {
+                kept_large_carve = 1;
+                best = ~0u;
+            }
             if (best != ~0u)
             {
                 void *jit_rx = (char *)ios_jit_rx_base_global + ios_tail_carves[best].off;
@@ -26440,6 +26456,15 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
                 *ret = jit_rx;
                 *size_ptr = alloc_size;
                 return STATUS_SUCCESS;
+            }
+            /* Another thread may have consumed C after the budget snapshot.
+             * Retry the original freelist policy once, rather than leaking a
+             * new tail carve or refusing an allocation that used to work. */
+            if (kept_large_carve && !reuse_all_carves)
+            {
+                reuse_all_carves = 1;
+                low_fits = 0;
+                goto retry_code_carve_reuse;
             }
             if (alloc_size <= IOS_POOL_LOW_CARVE_MAX && ios_jit_low_full_logged < 4)
             {
