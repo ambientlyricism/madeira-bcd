@@ -43,6 +43,13 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_PIN_GRAPHICS_DLLS": {"category": "Memory & JIT pool", "title": "Keep graphics DLLs loaded",
+                "kind": "bool", "default": "0",
+                "note": "Default off. On a D3D12 device/probe call, pins already loaded D3D12, DXGI and Wine Metal "
+                        "DLLs until normal process shutdown, preventing repeated unload/reload copies. Keeps DLL "
+                        "data live; does not recycle executable ranges or change GPU capabilities. Restart the "
+                        "session after changing it.",
+                "sources": ["madeira-d3d12/src/pe/madeira_d3d12.c"]},
     "env.MADEIRA_POOL_RECYCLE_IMAGES": {"category": "Memory & JIT pool", "title": "Images in retired code-buffer space",
                 "kind": "bool", "default": "0",
                 "note": "Default off. If other image allocations fail, retired region-C code buffers up to 64 MB "
