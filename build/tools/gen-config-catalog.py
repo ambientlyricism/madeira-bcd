@@ -117,8 +117,8 @@ OVERLAY = {
     "pool-page-fit": {"category": "Memory & JIT pool", "title": "Fit split pool regions to memory pages",
                 "kind": "bool", "default": "0",
                 "note": "With pool-split on: fit regions A/B to 16 KB pages instead of 16 MB steps, retaining small "
-                        "remainders in free runs without increasing the requested pool budget. Region C and its "
-                        "margin are unchanged. Costs the additional pages in memory. Off by default; read at "
+                        "remainders in free runs without increasing the requested pool budget. With pool-low on, "
+                        "also fit region C to pages while preserving pool-low-margin. Costs the additional pages in memory. Off by default; read at "
                         "launch, the game's own file wins. Restart Madeira and enable JIT again after changing it."},
     "pool-pair": {"category": "Memory & JIT pool", "title": "Split JIT pool: prefer two runs above the window",
                 "kind": "bool", "default": "1",

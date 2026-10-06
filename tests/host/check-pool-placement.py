@@ -188,6 +188,27 @@ static int imports_case(int page_fit, int preserve_code)
     return ios_pool_alloc_range_ex(rest, limit, (size_t)-1, 0) != (size_t)-1;
 }
 
+/* Keep the exact A/B geometry from the 411 log. Recovering C's unused 8MB
+ * holds the helper's 32MB code buffer outside this pool. Replay RPCRT4 and
+ * the observed minimum remaining image demand; unknown future imports are
+ * intentionally not inferred from a successful capacity check. */
+static int imports_411_case(int fit_c)
+{
+    total = 0x38000000;
+    native_lo = 0x24ff4000;
+    native_hi = 0x2566c000;
+    setup(1);
+    CHECK(ios_pool_big_off == 0x15ff4000);
+    CHECK(ios_pool_alloc_range_ex(0xefc0000, total, (size_t)-1, 0) == ios_pool_big_off);
+    jit_pool_offset = 0x35f78000;
+    size_t limit = total - (fit_c ? 0 : 32 * MB);
+    if (ios_pool_alloc_range_ex(0xf4000, limit, (size_t)-1, 0) == (size_t)-1) return 0;
+    /* Unique failed-image requests (22.703125MB), plus later successful
+     * head bytes (0.515625MB), less the RPCRT4 request already made. */
+    size_t rest = 0x16b4000 + (0x35ffc000 - 0x35f78000) - 0xf4000;
+    return ios_pool_alloc_range_ex(rest, limit, (size_t)-1, 0) != (size_t)-1;
+}
+
 int main(void)
 {
     size_t slot = 11, lo = 12, hi = 13;
@@ -259,6 +280,9 @@ int main(void)
     CHECK(!imports_case(0, 1));
     CHECK(imports_case(1, 1));
     puts("PASS: the 410-shaped import budget needs both saved code-buffer space and page-fit capacity, within 896MB");
+    CHECK(!imports_411_case(0));
+    CHECK(imports_411_case(1));
+    puts("PASS: the 411-shaped RPCRT4 refusal and minimum remaining import budget fit when C preserves 32MB of main-pool capacity");
     return 0;
 }
 '''
