@@ -43,6 +43,11 @@ INT_READERS = {"madeira_cfg_int", "mad_cfg_int_pe"}
 # Titles, kinds and fixed choices for options with a dedicated Settings row.
 # "choices" are (value, label); the empty value means "remove the key".
 OVERLAY = {
+    "env.MADEIRA_POOL_RECYCLE_IMAGES": {"category": "Memory & JIT pool", "title": "Images in retired code-buffer space",
+                "kind": "bool", "default": "0",
+                "note": "Default off. If other image allocations fail, retired region-C code buffers up to 64 MB "
+                        "may enter the image freelist after a 3-second grace, executable-page and thread-PC checks. "
+                        "Requires pool-low; 64-bit processes only. Live buffers and the pool-low-margin stay unchanged."},
     "env.MADEIRA_POOL_LOW_IMAGES": {"category": "Memory & JIT pool", "title": "Small images in spare code-buffer space",
                 "kind": "bool", "default": "0",
                 "note": "Default off. If the normal JIT image allocation fails, copies up to 16 MB may use "

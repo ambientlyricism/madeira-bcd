@@ -65,7 +65,7 @@ static size_t ios_jit_hole_off_eff, ios_jit_hole_end_eff;
 static int ios_jit_low_full_logged, wow, lose_race;
 static unsigned ios_tail_carve_n;
 static pthread_mutex_t ios_tail_carve_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct { size_t off, size; int free; } ios_tail_carves[IOS_TAIL_CARVE_MAX];
+static struct { size_t off, size; int free; time_t freed_at; } ios_tail_carves[IOS_TAIL_CARVE_MAX];
 static uintptr_t ios_wow_base(void) { return wow; }
 ''' + helpers + r'''
 static int racing_low_take(volatile size_t *used, size_t total, size_t want, size_t *off)
