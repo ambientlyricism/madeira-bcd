@@ -340,9 +340,11 @@ static size_t ios_pool_code_cap( size_t total, size_t head, size_t tail,
  * debugger region, region C, outside the span, and maps its RW alias at the SAME
  * RX->RW distance as the pool (one reservation [C's RW, pool RW + size), the
  * part in between PROT_NONE), because FEX applies one DualMap::WriteOffset to
- * every code buffer. Only the EC_CODE carves (FEX code buffers) come from C, first,
- * and the pool tail takes over when C is full; image copies and anon RWX stay in
- * the pool. C carves live in ios_tail_carves like any other carve, their `off` the
+ * every code buffer. EC_CODE carves (FEX code buffers) come from C first,
+ * and the pool tail takes over when C is full. Image copies stay in the main
+ * pool by default; MADEIRA_POOL_LOW_IMAGES opts small failed copies into spare
+ * C space. Anonymous RWX stays in the main pool. C carves live in ios_tail_carves
+ * like any other carve, their `off` the
  * (wrapping) distance from the pool's RX base, so rx + off and rw + off hold for
  * them too. What still has to know about C is everything that asks "is this
  * address in the pool?" for code: the signal and Mach handlers, NtContinue's
@@ -2750,6 +2752,14 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
     time_t now = time( NULL );
     int i, bump_ok;
 
+    /* Reclaimed image ranges can also live in region C. WoW64's emulator
+     * accepts executable storage only inside the main pool span. */
+    if (ios_jit_low_size_global && ios_wow_base() && anchor_off == (size_t)-1)
+    {
+        anchor_off = 0;
+        max_dist = ios_jit_pool_size_global;
+    }
+
 #define IOS_POOL_IN_REACH(o) \
     (anchor_off == (size_t)-1 || \
      ((o) > anchor_off ? (o) + alloc_size - anchor_off : anchor_off - (o)) <= max_dist)
@@ -3205,6 +3215,58 @@ static size_t ios_pool_alloc_range( size_t alloc_size, size_t pool_limit )
      * this came off the freelist or the virgin bump, which is exactly the discriminator. */
     if (off != (size_t)-1)
         ios_pool_check_range_exec( off, alloc_size, ios_pool_last_alloc_reused );
+    return off;
+}
+
+/* Default-off overflow for small image copies. EC_CODE and images reserve
+ * from the same atomic region-C cursor, so neither can overwrite the other.
+ * Live code buffers, the low-VA margin and existing reuse grace are untouched. */
+static size_t ios_pool_low_image_range( size_t alloc_size )
+{
+    const size_t reserve = 4u * 1024 * 1024;
+    const char *env = getenv( "MADEIRA_POOL_LOW_IMAGES" );
+    size_t off = (size_t)-1, cur = 0;
+    void *peb;
+
+    if (!env || strcmp( env, "1" ) || ios_wow_base() ||
+        !ios_jit_low_size_global || !ios_jit_rx_base_global || !ios_jit_low_rw_global ||
+        !alloc_size || (alloc_size & 0x3fff) || alloc_size > 16u * 1024 * 1024 ||
+        ios_jit_low_size_global < reserve) return off;
+
+    peb = ios_jit_current_peb();
+    pthread_mutex_lock( &ios_pool_lock );
+    if (ios_pool_ledger_count < IOS_POOL_LEDGER_MAX)
+    {
+        for (;;)
+        {
+            cur = ios_jit_low_reserved;
+            if (alloc_size > ios_jit_low_size_global - reserve ||
+                cur > ios_jit_low_size_global - reserve - alloc_size) break;
+            off = (size_t)(ios_jit_low_rx_global + cur - (uintptr_t)ios_jit_rx_base_global);
+            if (!ios_pool_range_clean( off, alloc_size ))
+            {
+                off = (size_t)-1;
+                break;
+            }
+            if (__sync_bool_compare_and_swap( &ios_jit_low_reserved, cur, cur + alloc_size )) break;
+            off = (size_t)-1;
+        }
+        if (off != (size_t)-1)
+        {
+            ios_pool_ledger[ios_pool_ledger_count].off = off;
+            ios_pool_ledger[ios_pool_ledger_count].size = alloc_size;
+            ios_pool_ledger[ios_pool_ledger_count].peb = peb;
+            ios_pool_ledger_count++;
+            ios_pool_last_alloc_reused = 0;
+        }
+    }
+    pthread_mutex_unlock( &ios_pool_lock );
+    if (off != (size_t)-1)
+        dprintf( 2, "[pool-low] IMAGE rx=%p size=0x%lx peb=%p used=0x%lx/0x%lx "
+                    "code_reserve=0x%lx head_used=0x%lx unchanged\n",
+                 (void *)(ios_jit_low_rx_global + cur), (unsigned long)alloc_size, peb,
+                 (unsigned long)(cur + alloc_size), (unsigned long)ios_jit_low_size_global,
+                 (unsigned long)reserve, (unsigned long)jit_pool_offset );
     return off;
 }
 
@@ -15931,6 +15993,7 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                             (unsigned long)(image_alloc + tramp_prealloc));
                 reload_jit = NULL;
                 offset = ios_pool_alloc_range(alloc_size, jit_pool_size - ios_jit_tail_reserved);
+                if (offset == (size_t)-1) offset = ios_pool_low_image_range( alloc_size );
             }
             if (!reload_jit && offset != (size_t)-1 && data_delta)
             {
@@ -15975,10 +16038,14 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
             /* Record mapping for the entire image */
             ios_jit_add_mapping(image_base, (char *)jit_rx_base + offset, image_size);
 
+            int image_in_low = ios_jit_low_contains( (uintptr_t)jit_rx_base + offset );
+            size_t image_used = image_in_low ? ios_jit_low_reserved : offset + alloc_size;
+            size_t image_budget = image_in_low ? ios_jit_low_size_global : jit_pool_size;
+
             ERR("iOS JIT: copied image %p+0x%lx → pool %p (offset 0x%lx, used 0x%lx/0x%lx)\n",
                 image_base, (unsigned long)image_size, (char *)jit_rx_base + offset,
                 (unsigned long)offset,
-                (unsigned long)(offset + alloc_size), (unsigned long)jit_pool_size);
+                (unsigned long)image_used, (unsigned long)image_budget);
             /* ml670: PHASE trigger for the fast sampler. ml668 only sped up
              * once a sample READ >=2800MB, which is unreachable here -- the last
              * observed value was 2481MB and the burst reached jetsam inside one
@@ -15990,11 +16057,11 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                 if (mn && (strstr(mn, "d3d11") || strstr(mn, "D3D11")))
                     ios_fast_footprint = 1;
             }
-            dprintf(2, "[jit-pool] image %p+0x%lx (%s) → pool %p used=0x%lx/0x%lx tramp+0x%lx\n",
+            dprintf(2, "[jit-pool] image %p+0x%lx (%s) → pool %p used=0x%lx/0x%lx tramp+0x%lx%s\n",
                     image_base, (unsigned long)image_size,
                     ios_pe_module_name( image_base, image_size ), (char *)jit_rx_base + offset,
-                    (unsigned long)(offset + alloc_size), (unsigned long)jit_pool_size,
-                    (unsigned long)tramp_prealloc);
+                    (unsigned long)image_used, (unsigned long)image_budget,
+                    (unsigned long)tramp_prealloc, image_in_low ? " [pool-low] region C" : "");
 
             ios_jit_verify_text_exec( ios_pe_module_name( image_base, image_size ),
                                       (char *)jit_rx_base + offset, image_size );
