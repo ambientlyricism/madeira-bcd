@@ -62,6 +62,11 @@ OVERLAY = {
                         "image, as 32-bit programs already do, and its executable protections are applied without "
                         "EXEC. Frees the pool for hybrid DLL copies and code buffers. Hybrid images keep their "
                         "copy. Set it in the game's own file; restart the session after changing it."},
+    "env.MADEIRA_EC_HOOK_TRACE": {"category": "Debugging / logs", "title": "Log code patches the emulated copy misses",
+                "kind": "bool", "default": "1",
+                "note": "Default on, logging only. [ec-hook] lines report a program writing over the code of an "
+                        "image that runs from its JIT-pool copy (an overlay hooking DXGI Present, for example): "
+                        "where, the bytes written, the copy's bytes and where a jump leads. 0 turns the lines off."},
     "env.MADEIRA_POOL_LOW_IMAGES": {"category": "Memory & JIT pool", "title": "Small images in spare code-buffer space",
                 "kind": "bool", "default": "0",
                 "note": "Default off. If the normal JIT image allocation fails, copies up to 16 MB may use "

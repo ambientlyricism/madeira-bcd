@@ -28728,6 +28728,84 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
     return status;
 }
 
+#ifdef WINE_IOS
+/* madeira-bcd: [ec-hook] -- a program's inline patch of a pool-copied image's code.
+ *
+ * An overlay (GTA V Enhanced's SocialClubD3D12Renderer.dll) hooks IDXGISwapChain::Present
+ * by writing a jump over the function's first bytes (VirtualProtect RWX, write, restore).
+ * For an image with a JIT-pool copy (dxgi.dll is ARM64EC) the write lands in the PE view,
+ * while the code runs from the copy, and the restore's sync below skips .text on purpose:
+ * the patch never reaches the code that runs, so the hook is never called. This reports
+ * each such patch when the protection is restored: where it is, the bytes the program
+ * wrote and the copy's bytes, and where a jump in it leads. Logging only, nothing changes;
+ * first 32 per session, regions up to 1 MB. MADEIRA_EC_HOOK_TRACE=0 turns it off. */
+static void ios_ec_hook_report( int idx, const unsigned char *pe, const unsigned char *copy, size_t len )
+{
+    static int lines, on = -1;
+    size_t i = 0;
+    int runs = 0;
+
+    if (on < 0)
+    {
+        const char *e = getenv( "MADEIRA_EC_HOOK_TRACE" );   /* madeira-bcd: 0 = no [ec-hook] lines */
+        on = !(e && e[0] == '0');
+    }
+    if (!on || len > 0x100000) return;
+    while (i < len && lines < 32 && runs < 4)
+    {
+        size_t start, end, k;
+        const unsigned char *at;
+        unsigned long long target = 0;
+        char sec[160], tsec[160], pb[3 * 16 + 1], cb[3 * 16 + 1], tb[3 * 16 + 1];
+
+        if (pe[i] == copy[i]) { i++; continue; }
+        start = i;
+        end = i;
+        while (end < len && end - start < 64 && (pe[end] != copy[end] || (end + 1 < len && pe[end + 1] != copy[end + 1])))
+            end++;
+        i = end;
+        runs++;
+        lines++;
+        at = pe + start;
+        for (k = 0; k < 16 && start + k < len; k++)
+        {
+            snprintf( pb + 3 * k, 4, "%02x ", at[k] );
+            snprintf( cb + 3 * k, 4, "%02x ", copy[start + k] );
+        }
+        pb[3 * k] = cb[3 * k] = 0;
+        /* jmp rel32 / jmp [rip+disp32] / mov rax, imm64 + jmp rax */
+        if (at[0] == 0xe9 && start + 5 <= len)
+            target = (uintptr_t)at + 5 + *(const int32_t *)(at + 1);
+        else if (at[0] == 0xff && at[1] == 0x25 && start + 6 <= len)
+        {
+            const unsigned char *slot = at + 6 + *(const int32_t *)(at + 2);
+            if (virtual_check_buffer_for_read( slot, 8 )) target = *(const unsigned long long *)slot;
+        }
+        else if (at[0] == 0x48 && at[1] == 0xb8 && start + 12 <= len && at[10] == 0xff && at[11] == 0xe0)
+            target = *(const unsigned long long *)(at + 2);
+        if (!ios_image_section_describe( (uintptr_t)at, sec, sizeof(sec), NULL ))
+            snprintf( sec, sizeof(sec), "?" );
+        tb[0] = 0;
+        tsec[0] = 0;
+        if (target)
+        {
+            if (!ios_image_section_describe( target, tsec, sizeof(tsec), NULL ))
+                snprintf( tsec, sizeof(tsec), "no pool copy" );
+            if (virtual_check_buffer_for_read( (const void *)(uintptr_t)target, 16 ))
+            {
+                const unsigned char *t = (const unsigned char *)(uintptr_t)target;
+                for (k = 0; k < 16; k++) snprintf( tb + 3 * k, 4, "%02x ", t[k] );
+            }
+        }
+        dprintf( 2, "[ec-hook] #%d tid=%04x image %p (pool copy %p) %p+%#lx: %s | wrote: %s| copy runs: %s| "
+                    "jump -> %#llx (%s) bytes there: %s\n",
+                 lines, (unsigned)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread,
+                 ios_jit_mappings[idx].pe_base, ios_jit_mappings[idx].jit_base, (const void *)at,
+                 (unsigned long)(end - start), sec, pb, cb, target, target ? tsec : "-", tb[0] ? tb : "-" );
+    }
+}
+#endif
+
 
 /***********************************************************************
  *             NtProtectVirtualMemory   (NTDLL.@)
@@ -29147,6 +29225,11 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
                         ERR("iOS JIT IAT sync: partial copy %p+0x%lx → JIT (skipping text [0x%lx-0x%lx])\n",
                             base, (unsigned long)size,
                             (unsigned long)overlap_start, (unsigned long)overlap_end);
+                        /* madeira-bcd: [ec-hook] -- did the program patch the code it skips? */
+                        if (overlap_end > overlap_start)
+                            ios_ec_hook_report( idx, (const unsigned char *)base + overlap_start,
+                                                (const unsigned char *)jit_rw_dest + overlap_start,
+                                                overlap_end - overlap_start );
                     }
 
                     /* Re-apply DIR64 relocations within the synced region.
