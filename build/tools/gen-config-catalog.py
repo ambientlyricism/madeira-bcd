@@ -70,9 +70,10 @@ OVERLAY = {
     "env.MADEIRA_X64_GRAPHICS_ENTRY": {"category": "Direct3D 12 (Madeira)", "title": "Patchable x64 graphics method entries",
                 "kind": "bool", "default": "0",
                 "note": "Default off. 1 exposes typed x64 ARM64EC entries for swapchain Present/Present1, "
-                        "ResizeBuffers/ResizeBuffers1 and queue ExecuteCommandLists/GetTimestampFrequency/GetClockCalibration. "
+                        "ResizeBuffers/ResizeBuffers1 and queue ExecuteCommandLists/GetTimestampFrequency/GetClockCalibration/GetDesc. "
                         "With MADEIRA_DXGI_SRC=1, "
                         "also selects the factory's patchable MakeWindowAssociation and swapchain-creation entries. "
+                        "The x64 entries use the loader's PE addresses so code patches and nearby allocations agree. "
                         "Existing native implementations remain behind the entries. Restart the game session."},
     "env.MADEIRA_POOL_LOW_IMAGES": {"category": "Memory & JIT pool", "title": "Small images in spare code-buffer space",
                 "kind": "bool", "default": "0",
