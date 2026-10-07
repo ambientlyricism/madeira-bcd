@@ -77,9 +77,48 @@ assert 'ios_jit_copy_refused' not in block, 'a dropped bit is not a refusal'
 assert '!ios_in_mach_exc' in block, 'silent on the Mach exception thread (ml374)'
 
 helper = function(native, 'static int ios_x64_image_is_host_data(')
-assert 'ios_x64_image_nocopy_enabled()' in helper and 'find_view( base, size )' in helper
-assert 'view->protect & VPROT_X64DATA' in helper
+assert 'ios_x64_image_nocopy_enabled()' in helper
+# build 423: a host-page rounded request for the last section runs past a 4 KB
+# aligned SizeOfImage; the view must be found by its start, not by the range
+assert 'find_view( base, 0 )' in helper and 'find_view( base, size )' not in helper
+assert 'view->protect & VPROT_X64DATA' in helper and 'ios_x64_image_view_covers(' in helper
 print('PASS: mprotect_exec drops EXEC for a marked view and copies nothing')
+
+# --- the host-page tail, compiled ---------------------------------------------
+covers = native[native.index('#define IOS_X64_IMAGE_HOST_PAGE'):]
+covers = covers[:covers.index('\n}', covers.index('static int ios_x64_image_view_covers(')) + 2] + '\n'
+tail_prog = r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <stddef.h>
+''' + covers + r'''
+int main(void)
+{
+    const uintptr_t vb = 0x72d4840000u;      /* GTA5_Enhanced.exe, build 423 */
+    const size_t vs = 0x5b46000u;            /* SizeOfImage, 4 KB aligned */
+    int bad = 0;
+#define T(b, s, want) do { int got = ios_x64_image_view_covers( vb, vs, (b), (s) ); \
+        if (got != (want)) { printf("FAIL %#lx+%#lx -> %d\n", (unsigned long)(b), (unsigned long)(s), got); bad = 1; } } while (0)
+    T( 0x72d9964000u, 0xa24000u, 1 );        /* the logged last-section request, 8 KB past the view */
+    T( 0x72d4840000u, 0x4000u, 1 );          /* the header page */
+    T( 0x72d4841000u, 0x2479400u, 1 );       /* a section inside */
+    T( 0x72da384000u, 0x4000u, 1 );          /* the last host page alone */
+    T( 0x72da384000u, 0x8000u, 0 );          /* one host page past the view's last one */
+    T( 0x72da386000u, 0x2000u, 0 );          /* starts at the view's end */
+    T( 0x72d483c000u, 0x8000u, 0 );          /* starts below the view */
+    T( 0x72d9964000u, (size_t)-1, 0 );       /* overflow */
+    return bad;
+}
+'''
+with tempfile.TemporaryDirectory() as d:
+    src = Path(d) / 'tail.c'
+    src.write_text(tail_prog)
+    exe = Path(d) / 'tail'
+    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fsanitize=undefined', '-o', str(exe), str(src)],
+                   check=True)
+    r = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+print('PASS: a last-section request that ends inside the view\'s last 16 KB host page counts as the view')
 
 # --- the switch, compiled -----------------------------------------------------
 enabled = function(native, 'static int ios_x64_image_nocopy_enabled(')
