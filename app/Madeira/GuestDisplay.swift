@@ -200,7 +200,7 @@ enum ResolutionChoices {
     ]
     static let defaultBudget = 1
     static let widescreen = [(960, 540), (1280, 720), (1600, 900), (1920, 1080), (2560, 1440)]
-    static let classic = [(640, 480), (800, 600), (1024, 768), (1280, 960)]
+    static let classic = [(640, 480), (800, 600), (1024, 768), (1280, 960), (1600, 1200), (2732, 2048)]
 
     static func aspect(_ s: Screen) -> Double {
         s.points.height > 0 ? Double(s.points.width / s.points.height) : 16.0 / 9
