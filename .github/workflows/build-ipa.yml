@@ -1452,6 +1452,17 @@ jobs:
           done
           echo "::notice::native ABI $ABI, shader cache identity ${SCID:-none}"
 
+      # Upstream's prebuilt StikJIT.xcframework (Built-in StikJIT, read by the
+      # MadeiraJITHelper extension) was built with Swift 6.4; its interface
+      # names types with module selectors (Swift::String) that the runners'
+      # Swift 6.3 cannot parse. Rewrite them into the dotted form in this
+      # checkout (valid for every Swift); the framework binary is unchanged.
+      - name: StikJIT interface for the runner's Swift
+        shell: bash
+        run: |
+          echo "::notice::$(xcrun swift --version 2>&1 | grep -m1 'Swift version')"
+          python3 tools/stikjit-interface-compat.py app/Frameworks/StikJIT.xcframework
+
       - name: Archive (unsigned)
         shell: bash
         run: |
