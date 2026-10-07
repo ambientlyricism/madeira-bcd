@@ -15018,14 +15018,37 @@ static int ios_x64_image_nocopy_enabled(void)
     return cached;
 }
 
+/* The request is host-page rounded (16 KB) while SizeOfImage is only 4 KB
+ * aligned, so a last section's request ends up to 12 KB past the view: GTA V
+ * Enhanced build 423 (2026-10-07 09:18), GTA5_Enhanced.exe 0x72d4840000+
+ * 0x5b46000, last section request 0x72d9964000+0xa24000 ends 0x72da388000, 8 KB
+ * past the view. find_view( base, size ) refused it, the ml348 "OUTSIDE nearest
+ * image" path gave the 10 MB section an anonymous-RWX pool alias, its PE VA was
+ * remapped onto blessed pool pages, and the game's TLS callback, which decrypts
+ * that section byte by byte, took one emulated store fault per byte
+ * ([fault-class] stride=1, 2 million hits, 2 MB done in a minute). So look the
+ * view up by its start and accept a tail that stays inside the view's last host
+ * page; views start on 64 KB boundaries, so no other view shares that page. */
+#define IOS_X64_IMAGE_HOST_PAGE 0x4000u
+static int ios_x64_image_view_covers( uintptr_t view_base, size_t view_size, uintptr_t base, size_t size )
+{
+    uintptr_t view_end = view_base + view_size;
+    uintptr_t host_end = (view_end + IOS_X64_IMAGE_HOST_PAGE - 1) & ~(uintptr_t)(IOS_X64_IMAGE_HOST_PAGE - 1);
+
+    if (base < view_base || base >= view_end) return 0;
+    if (base + size < base) return 0;
+    return base + size <= host_end;
+}
+
 static int ios_x64_image_is_host_data( const void *base, size_t size )
 {
 #ifdef WINE_IOS
     struct file_view *view;
 
     if (!ios_x64_image_nocopy_enabled()) return 0;
-    if (!(view = find_view( base, size ))) return 0;
-    return (view->protect & VPROT_X64DATA) != 0;
+    if (!(view = find_view( base, 0 ))) return 0;
+    if (!(view->protect & VPROT_X64DATA)) return 0;
+    return ios_x64_image_view_covers( (uintptr_t)view->base, view->size, (uintptr_t)base, size );
 #else
     return 0;
 #endif
