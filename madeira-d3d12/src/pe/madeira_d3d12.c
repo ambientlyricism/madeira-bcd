@@ -7485,6 +7485,14 @@ static HRESULT STDMETHODCALLTYPE queue_Signal(ID3D12CommandQueue *This, ID3D12Fe
     }
     return mad_signal_run(q, fence, value);
 }
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_Signal(ID3D12CommandQueue *This, ID3D12Fence *fence, UINT64 value) {
+    return queue_Signal(This, fence, value);
+}
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_Wait(ID3D12CommandQueue *This, ID3D12Fence *fence, UINT64 value) {
+    return queue_Wait(This, fence, value);
+}
 static HRESULT mad_signal_run(struct mad_queue *q, ID3D12Fence *fence, UINT64 value) {
     if (g_sd_state < 0) mad_sync_diag_load();       /* madeira-bcd */
     mad_queue_flush(q);                              /* ml884: commit the batch this signal covers */
@@ -14945,6 +14953,10 @@ static void build_vtables(void) {
             mad_x64_graphics_entry_pe((const void *)mad_x64_GetClockCalibration, &__ImageBase);
         g_queue_vtbl.GetDesc = (__typeof__(g_queue_vtbl.GetDesc))
             mad_x64_graphics_entry_pe((const void *)mad_x64_GetDesc, &__ImageBase);
+        g_queue_vtbl.Signal = (__typeof__(g_queue_vtbl.Signal))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_Signal, &__ImageBase);
+        g_queue_vtbl.Wait = (__typeof__(g_queue_vtbl.Wait))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_Wait, &__ImageBase);
     }
 
     madeira_fill_ID3D12CommandAllocator(&g_alloc_vtbl);
@@ -15914,11 +15926,12 @@ static void mad_swap_fill_vtbl(void) {
             mad_x64_graphics_entry_pe((const void *)mad_x64_ResizeBuffers1, &__ImageBase);
         d3d12_log("[graphics-entry] x64 patchable Present=%p Present1=%p ResizeBuffers=%p "
                   "ResizeBuffers1=%p ExecuteCommandLists=%p GetTimestampFrequency=%p "
-                  "GetClockCalibration=%p GetDesc=%p image=%p\n", (void *)g_swap_vtbl.Present,
+                  "GetClockCalibration=%p GetDesc=%p Signal=%p Wait=%p image=%p\n", (void *)g_swap_vtbl.Present,
                   (void *)g_swap_vtbl.Present1, (void *)g_swap_vtbl.ResizeBuffers,
                   (void *)g_swap_vtbl.ResizeBuffers1, (void *)g_queue_vtbl.ExecuteCommandLists,
                   (void *)g_queue_vtbl.GetTimestampFrequency, (void *)g_queue_vtbl.GetClockCalibration,
-                  (void *)g_queue_vtbl.GetDesc, (void *)&__ImageBase);
+                  (void *)g_queue_vtbl.GetDesc, (void *)g_queue_vtbl.Signal,
+                  (void *)g_queue_vtbl.Wait, (void *)&__ImageBase);
     }
 }
 
