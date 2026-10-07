@@ -9244,6 +9244,10 @@ static D3D12_COMMAND_QUEUE_DESC * STDMETHODCALLTYPE queue_GetDesc(ID3D12CommandQ
     ret->Type = ((struct mad_queue *)This)->type;
     return ret;
 }
+MAD_X64_GRAPHICS_ENTRY D3D12_COMMAND_QUEUE_DESC * STDMETHODCALLTYPE
+mad_x64_GetDesc(ID3D12CommandQueue *This, D3D12_COMMAND_QUEUE_DESC *ret) {
+    return queue_GetDesc(This, ret);
+}
 
 /* ---- resource ------------------------------------------------------------ */
 static ID3D12Resource2Vtbl g_res_vtbl;
@@ -14933,9 +14937,14 @@ static void build_vtables(void) {
     g_queue_vtbl.UpdateTileMappings     = queue_UpdateTileMappings;   /* madeira-bcd: d3d12-tiled-resources */
     g_queue_vtbl.CopyTileMappings       = queue_CopyTileMappings;
     if (mad_x64_graphics_entry_enabled()) {
-        g_queue_vtbl.ExecuteCommandLists = mad_x64_ExecuteCommandLists;
-        g_queue_vtbl.GetTimestampFrequency = mad_x64_GetTimestampFrequency;
-        g_queue_vtbl.GetClockCalibration = mad_x64_GetClockCalibration;
+        g_queue_vtbl.ExecuteCommandLists = (__typeof__(g_queue_vtbl.ExecuteCommandLists))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_ExecuteCommandLists, &__ImageBase);
+        g_queue_vtbl.GetTimestampFrequency = (__typeof__(g_queue_vtbl.GetTimestampFrequency))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_GetTimestampFrequency, &__ImageBase);
+        g_queue_vtbl.GetClockCalibration = (__typeof__(g_queue_vtbl.GetClockCalibration))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_GetClockCalibration, &__ImageBase);
+        g_queue_vtbl.GetDesc = (__typeof__(g_queue_vtbl.GetDesc))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_GetDesc, &__ImageBase);
     }
 
     madeira_fill_ID3D12CommandAllocator(&g_alloc_vtbl);
@@ -15895,16 +15904,21 @@ static void mad_swap_fill_vtbl(void) {
     g_swap_vtbl.GetCurrentBackBufferIndex = swap_GetCurrentBackBufferIndex; g_swap_vtbl.CheckColorSpaceSupport = swap_CheckColorSpaceSupport;
     g_swap_vtbl.SetColorSpace1 = swap_SetColorSpace1; g_swap_vtbl.ResizeBuffers1 = swap_ResizeBuffers1; g_swap_vtbl.SetHDRMetaData = swap_SetHDRMetaData;
     if (mad_x64_graphics_entry_enabled()) {
-        g_swap_vtbl.Present = mad_x64_Present;
-        g_swap_vtbl.Present1 = mad_x64_Present1;
-        g_swap_vtbl.ResizeBuffers = mad_x64_ResizeBuffers;
-        g_swap_vtbl.ResizeBuffers1 = mad_x64_ResizeBuffers1;
+        g_swap_vtbl.Present = (__typeof__(g_swap_vtbl.Present))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_Present, &__ImageBase);
+        g_swap_vtbl.Present1 = (__typeof__(g_swap_vtbl.Present1))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_Present1, &__ImageBase);
+        g_swap_vtbl.ResizeBuffers = (__typeof__(g_swap_vtbl.ResizeBuffers))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_ResizeBuffers, &__ImageBase);
+        g_swap_vtbl.ResizeBuffers1 = (__typeof__(g_swap_vtbl.ResizeBuffers1))
+            mad_x64_graphics_entry_pe((const void *)mad_x64_ResizeBuffers1, &__ImageBase);
         d3d12_log("[graphics-entry] x64 patchable Present=%p Present1=%p ResizeBuffers=%p "
                   "ResizeBuffers1=%p ExecuteCommandLists=%p GetTimestampFrequency=%p "
-                  "GetClockCalibration=%p\n", (void *)g_swap_vtbl.Present,
+                  "GetClockCalibration=%p GetDesc=%p image=%p\n", (void *)g_swap_vtbl.Present,
                   (void *)g_swap_vtbl.Present1, (void *)g_swap_vtbl.ResizeBuffers,
                   (void *)g_swap_vtbl.ResizeBuffers1, (void *)g_queue_vtbl.ExecuteCommandLists,
-                  (void *)g_queue_vtbl.GetTimestampFrequency, (void *)g_queue_vtbl.GetClockCalibration);
+                  (void *)g_queue_vtbl.GetTimestampFrequency, (void *)g_queue_vtbl.GetClockCalibration,
+                  (void *)g_queue_vtbl.GetDesc, (void *)&__ImageBase);
     }
 }
 

@@ -16,6 +16,13 @@ FACTORY = r'''
 class MTLDXGIHookFactory : public MTLDXGIFactory {
 public:
   explicit MTLDXGIHookFactory(UINT flags) : MTLDXGIFactory(flags) {}
+  void InitializeEntries() {
+    void **original, **replacement = entry_vtable_ + 2;
+    void *com_object = static_cast<IDXGIFactory7 *>(this);
+    __builtin_memcpy(&original, com_object, sizeof(original));
+    mad_x64_graphics_factory_table(original, entry_vtable_, &__ImageBase);
+    __builtin_memcpy(com_object, &replacement, sizeof(replacement));
+  }
   MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
   MakeWindowAssociation(HWND window, UINT flags) override;
   MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
@@ -32,6 +39,8 @@ public:
   MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
   CreateSwapChainForComposition(IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
       IDXGIOutput *restrict_output, IDXGISwapChain1 **out) override;
+private:
+  void *entry_vtable_[36];
 };
 
 HRESULT STDMETHODCALLTYPE
@@ -87,12 +96,17 @@ def patch(src):
     if src.count(allocate) != 1:
         raise ValueError('factory allocation anchor missing or ambiguous')
     src = src.replace(allocate, '''const bool patchable = mad_x64_graphics_entry_enabled();
-    MTLDXGIFactory* factory = patchable
-        ? static_cast<MTLDXGIFactory*>(new MTLDXGIHookFactory(Flags))
-        : new MTLDXGIFactory(Flags);
+    MTLDXGIFactory* factory;
+    if (patchable) {
+      auto* hook_factory = new MTLDXGIHookFactory(Flags);
+      hook_factory->InitializeEntries();
+      factory = hook_factory;
+    } else {
+      factory = new MTLDXGIFactory(Flags);
+    }
     static std::atomic<bool> noted{false};
     if (patchable && !noted.exchange(true))
-      Logger::info("[graphics-entry] x64 patchable DXGI factory methods enabled");''')
+      Logger::info("[graphics-entry] x64 patchable DXGI factory methods enabled (PE entries)");''')
     return src
 
 
