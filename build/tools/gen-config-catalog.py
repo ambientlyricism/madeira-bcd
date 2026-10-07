@@ -55,6 +55,13 @@ OVERLAY = {
                 "note": "Default off. If other image allocations fail, retired region-C code buffers up to 64 MB "
                         "may enter the image freelist after a 3-second grace, executable-page and thread-PC checks. "
                         "Requires pool-low; 64-bit processes only. Live buffers and the pool-low-margin stay unchanged."},
+    "env.MADEIRA_X64_IMAGE_NOCOPY": {"category": "Memory & JIT pool", "title": "Pure-x64 images without a JIT-pool copy",
+                "kind": "bool", "default": "0",
+                "note": "Default off. 1: an x64-only image (not ARM64EC hybrid, not a Wine builtin) in a 64-bit "
+                        "process is not copied into the JIT pool; the emulator runs its code from the loaded "
+                        "image, as 32-bit programs already do, and its executable protections are applied without "
+                        "EXEC. Frees the pool for hybrid DLL copies and code buffers. Hybrid images keep their "
+                        "copy. Set it in the game's own file; restart the session after changing it."},
     "env.MADEIRA_POOL_LOW_IMAGES": {"category": "Memory & JIT pool", "title": "Small images in spare code-buffer space",
                 "kind": "bool", "default": "0",
                 "note": "Default off. If the normal JIT image allocation fails, copies up to 16 MB may use "
