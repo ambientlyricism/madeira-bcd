@@ -16,24 +16,22 @@ jobs:
   probe:
     # madeira-bcd: runs only in the owner's repository; a fork's run is skipped.
     if: github.repository == 'bahacan16/madeira-bcd'
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    runs-on: ${{ matrix.image }}
     timeout-minutes: 10
     steps:
-      - name: Select newest Xcode
+      # Which Xcodes (and Swift compilers) each runner image carries: the
+      # prebuilt StikJIT.xcframework's interface needs Swift 6.4.
+      - name: Installed Xcodes
         shell: bash
         run: |
-          NEWEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$NEWEST" ] && sudo xcode-select -s "$NEWEST/Contents/Developer"
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-      - name: MetalFX headers
-        shell: bash
-        run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          H="$SDK/System/Library/Frameworks/MetalFX.framework/Headers"
-          ls -la "$H"
-          for f in "$H"/*.h; do
-            case "$f" in *Interpolat*|*MTLFXFrame*) echo "=================== $f"; cat "$f";; esac
+          sw_vers
+          for X in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V); do
+            V=$(DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version 2>/dev/null | tr '\n' ' ')
+            S=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun swift --version 2>/dev/null | head -1)
+            SDK=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun --sdk iphoneos --show-sdk-version 2>/dev/null)
+            echo "::notice::${{ matrix.image }} $X | $V| iOS SDK $SDK | $S"
           done
-          echo "=================== grep"
-          grep -n -i "interpolat" "$H"/*.h | head -80
