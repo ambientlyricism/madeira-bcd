@@ -2749,26 +2749,16 @@ struct ContentView: View {
         launchShortcut(exe)
     }
 
-    /// A Home Screen shortcut starts a game by its Windows path. madeira-bcd: the
-    /// library entry for a shortcut's exe, added first when the library does not
-    /// have it yet (as the + button would) -- the madeira-bcd home screen copies
-    /// links for drive_c games that are not library entries. Only an existing
-    /// .exe under drive_c is ever added (LibraryModel.inspect).
+    /// A Home Screen shortcut starts a library game by its Windows path. Only a
+    /// game already in the library starts (owner's decision 2026-10-07, as
+    /// upstream): a game outside it is added by hand first.
     private func launchShortcut(_ exe: String) {
         let key = exe.lowercased()
         if let entry = library.entries.first(where: { $0.desktop != true && $0.windowsPath.lowercased() == key }) {
             launchLibraryEntry(entry); return
         }
-        guard key.hasPrefix("c:\\"),
-              var entry = try? LibraryModel.inspect(LibraryModel.drive.appendingPathComponent(
-                String(exe.dropFirst(3)).replacingOccurrences(of: "\\", with: "/"))) else {
-            LogStore.shared.log("[shortcut] \(exe) is not in drive_c", level: .error)
-            library.error = "The shortcut's game was not found: \(exe)"
-            return
-        }
-        entry.title = exe.split(separator: "\\").dropLast().last.map(String.init) ?? entry.title
-        library.save(entry)
-        launchLibraryEntry(entry)
+        LogStore.shared.log("[shortcut] \(exe) is not in the library: not started", level: .error)
+        library.error = "This shortcut's game is not in the library. Add it to the library, then use the shortcut again."
     }
 
     /// Play in the library (Library.swift): checks that a session can start,
