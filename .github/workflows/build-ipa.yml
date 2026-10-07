@@ -1449,6 +1449,18 @@ jobs:
           start until the VC++ runtime DLLs are added -- see tools/fetch-vcruntime.md"
           fi
 
+      # Upstream's Built-in StikJIT pairs with the device itself (app/Madeira/
+      # JITPairing.swift, the MadeiraJITHelper extension); the app target links
+      # this Rust static library. Dependencies come from crates.io at the
+      # versions in Cargo.lock; the step regenerates the bundled licence notices.
+      - name: Build libmadeira_rppairing.a (Built-in StikJIT pairing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v rustup >/dev/null || { echo "::error::rustup is not available on this runner"; exit 1; }
+          rustup target add aarch64-apple-ios
+          bash build/rppairing-ios/build.sh
+
       # Fail here with a clear list rather than deep inside a linker error.
       - name: Verify all linked archives exist
         shell: bash
@@ -1457,7 +1469,7 @@ jobs:
           MISSING=""
           for a in libgmp.a libgnutls.a libhogweed.a libnettle.a \
                    libntdll_unix.a libwin32u_unix.a libwineserver.a \
-                   libdxmt_combined.a; do
+                   libdxmt_combined.a libmadeira_rppairing.a; do
             [ -f "app/Madeira/$a" ] || MISSING="$MISSING app/Madeira/$a"
           done
           for a in FEXCore/Source/libFEXCore.a FEXCore/Source/libFEXCore_Base.a \
@@ -1470,7 +1482,7 @@ jobs:
             echo "::error::archives missing before archive step ::$MISSING"
             exit 1
           fi
-          echo "::notice::all 15 linked archives present"
+          echo "::notice::all 16 linked archives present"
 
       # The Xcode build phase fails when the bundled licence copies are stale.
       - name: Stage licence copies
