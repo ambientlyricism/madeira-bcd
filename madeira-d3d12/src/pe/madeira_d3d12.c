@@ -35,6 +35,7 @@
 
 #include "madeira_d3d12_stubs.h"
 #include "madeira_ir_abi.h"
+#include "madeira_graphics_entry.h"
 
 /* madeira-bcd: MAD_PACK_ID names the CI run that built this DLL ("ipa 215" or
  * "pack 7 (abc1234)"), so a log says which runtime ran -- the IPA's own or one
@@ -7674,6 +7675,13 @@ static void mad_list_wait_idle(struct mad_list *l) {
 
 
 static ID3D12Device10Vtbl g_device_vtbl;
+/* Keep the normal implementation, including submission ordering, behind a
+ * typed compiler-generated x64 entry when an x64 overlay needs to patch it. */
+MAD_X64_GRAPHICS_ENTRY void STDMETHODCALLTYPE
+mad_x64_ExecuteCommandLists(ID3D12CommandQueue *This, UINT count, ID3D12CommandList *const *lists) {
+    queue_ExecuteCommandLists(This, count, lists);
+}
+
 static ID3D12CommandQueueVtbl g_queue_vtbl;
 static ID3D12CommandAllocatorVtbl g_alloc_vtbl;
 static ID3D12GraphicsCommandList7Vtbl g_list_vtbl;
@@ -14909,6 +14917,8 @@ static void build_vtables(void) {
     g_queue_vtbl.AddRef                 = queue_AddRef;
     g_queue_vtbl.Release                = queue_Release;
     g_queue_vtbl.ExecuteCommandLists    = queue_ExecuteCommandLists;
+    if (mad_x64_graphics_entry_enabled())
+        g_queue_vtbl.ExecuteCommandLists = mad_x64_ExecuteCommandLists;
     g_queue_vtbl.Signal                 = queue_Signal;
     g_queue_vtbl.Wait                   = queue_Wait;
     g_queue_vtbl.GetTimestampFrequency  = queue_GetTimestampFrequency;
@@ -15836,6 +15846,24 @@ static HRESULT mad_queue_dxgi_tearoff(struct mad_queue *q, void **out) {
     return S_OK;
 }
 
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_Present(IDXGISwapChain4 *T, UINT sync, UINT flags) {
+    return swap_Present(T, sync, flags);
+}
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_Present1(IDXGISwapChain4 *T, UINT sync, UINT flags, const DXGI_PRESENT_PARAMETERS *p) {
+    return swap_Present1(T, sync, flags, p);
+}
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_ResizeBuffers(IDXGISwapChain4 *T, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
+    return swap_ResizeBuffers(T, count, w, h, fmt, flags);
+}
+MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+mad_x64_ResizeBuffers1(IDXGISwapChain4 *T, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags,
+                      const UINT *node_masks, IUnknown *const *queues) {
+    return swap_ResizeBuffers1(T, count, w, h, fmt, flags, node_masks, queues);
+}
+
 static void mad_swap_fill_vtbl(void) {
     g_swap_vtbl.QueryInterface = swap_QI; g_swap_vtbl.AddRef = swap_AddRef; g_swap_vtbl.Release = swap_Release;
     g_swap_vtbl.SetPrivateData = swap_SetPrivateData; g_swap_vtbl.SetPrivateDataInterface = swap_SetPrivateDataInterface;
@@ -15855,6 +15883,16 @@ static void mad_swap_fill_vtbl(void) {
     g_swap_vtbl.SetMatrixTransform = swap_SetMatrixTransform; g_swap_vtbl.GetMatrixTransform = swap_GetMatrixTransform;
     g_swap_vtbl.GetCurrentBackBufferIndex = swap_GetCurrentBackBufferIndex; g_swap_vtbl.CheckColorSpaceSupport = swap_CheckColorSpaceSupport;
     g_swap_vtbl.SetColorSpace1 = swap_SetColorSpace1; g_swap_vtbl.ResizeBuffers1 = swap_ResizeBuffers1; g_swap_vtbl.SetHDRMetaData = swap_SetHDRMetaData;
+    if (mad_x64_graphics_entry_enabled()) {
+        g_swap_vtbl.Present = mad_x64_Present;
+        g_swap_vtbl.Present1 = mad_x64_Present1;
+        g_swap_vtbl.ResizeBuffers = mad_x64_ResizeBuffers;
+        g_swap_vtbl.ResizeBuffers1 = mad_x64_ResizeBuffers1;
+        d3d12_log("[graphics-entry] x64 patchable Present=%p Present1=%p ResizeBuffers=%p "
+                  "ResizeBuffers1=%p ExecuteCommandLists=%p\n", (void *)g_swap_vtbl.Present,
+                  (void *)g_swap_vtbl.Present1, (void *)g_swap_vtbl.ResizeBuffers,
+                  (void *)g_swap_vtbl.ResizeBuffers1, (void *)g_queue_vtbl.ExecuteCommandLists);
+    }
 }
 
 /* ---- test presentation bridge -------------------------------------------
