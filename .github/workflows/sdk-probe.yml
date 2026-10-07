@@ -29,9 +29,11 @@ jobs:
         shell: bash
         run: |
           sw_vers
+          ALL=""
           for X in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V); do
-            V=$(DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version 2>/dev/null | tr '\n' ' ')
-            S=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun swift --version 2>/dev/null | head -1)
-            SDK=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun --sdk iphoneos --show-sdk-version 2>/dev/null)
-            echo "::notice::${{ matrix.image }} $X | $V| iOS SDK $SDK | $S"
+            V=$(DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version 2>/dev/null | head -1 | sed 's/Xcode //')
+            S=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun swift --version 2>/dev/null | head -1 | sed -E 's/.*Swift version ([0-9.]+).*/\1/')
+            echo "$X Xcode $V Swift $S"
+            ALL="$ALL ${X#/Applications/}=$V/$S;"
           done
+          echo "::notice::${{ matrix.image }}:$ALL"
