@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 D3D12_METHODS = ('ExecuteCommandLists', 'GetTimestampFrequency', 'GetClockCalibration',
-                 'GetDesc', 'Present', 'Present1', 'ResizeBuffers', 'ResizeBuffers1')
+                 'GetDesc', 'Signal', 'Wait', 'Present', 'Present1', 'ResizeBuffers', 'ResizeBuffers1')
 FACTORY_METHODS = {8: 'MakeWindowAssociation', 10: 'CreateSwapChain',
                    15: 'CreateSwapChainForHwnd', 16: 'CreateSwapChainForCoreWindow',
                    24: 'CreateSwapChainForComposition'}
@@ -170,7 +170,7 @@ IMAGE_DOS_HEADER __ImageBase;
 static unsigned module_lookups;
 static int module_failure, module_null;
 static uintptr_t module_base = UINT64_C(0x73abbc0000);
-typedef struct obj { int unused; } IDXGISwapChain4, ID3D12CommandQueue, ID3D12CommandList, IUnknown;
+typedef struct obj { int unused; } IDXGISwapChain4, ID3D12CommandQueue, ID3D12CommandList, ID3D12Fence, IUnknown;
 typedef struct params { int unused; } DXGI_PRESENT_PARAMETERS;
 typedef struct { int Type, Priority; unsigned Flags, NodeMask; } D3D12_COMMAND_QUEUE_DESC;
 static DWORD last_error = 123;
@@ -192,6 +192,7 @@ static int GetModuleHandleExA(DWORD flags, LPCSTR address, HMODULE *out) {
 #include "madeira_graphics_entry.h"
 static IDXGISwapChain4 swap;
 static ID3D12CommandQueue queue;
+static ID3D12Fence fence;
 static ID3D12CommandList *lists[2];
 static DXGI_PRESENT_PARAMETERS params;
 static UINT masks[2]; static IUnknown *queues[2];
@@ -214,7 +215,16 @@ static D3D12_COMMAND_QUEUE_DESC *queue_GetDesc(ID3D12CommandQueue *p, D3D12_COMM
     assert(p == &queue); calls++;
     *out = (D3D12_COMMAND_QUEUE_DESC){7, -1, 4, 32}; return out;
 }
-static void queue_Signal(void) {} static void queue_Wait(void) {}
+static HRESULT queue_Signal(ID3D12CommandQueue *p, ID3D12Fence *f, UINT64 v) {
+    assert(p == &queue && v == UINT64_C(0xfedcba9876543210)); calls++;
+    if (!f) return (HRESULT)0x80070057;
+    assert(f == &fence); return (HRESULT)0x887a0020;
+}
+static HRESULT queue_Wait(ID3D12CommandQueue *p, ID3D12Fence *f, UINT64 v) {
+    assert(p == &queue && v == UINT64_C(0x123456789abcdef0)); calls++;
+    if (!f) return (HRESULT)0x80070057;
+    assert(f == &fence); return (HRESULT)0x887a0021;
+}
 static void queue_UpdateTileMappings(void) {}
 static void queue_CopyTileMappings(void) {}
 static struct {
@@ -222,7 +232,9 @@ static struct {
     HRESULT (*GetTimestampFrequency)(ID3D12CommandQueue *, UINT64 *);
     HRESULT (*GetClockCalibration)(ID3D12CommandQueue *, UINT64 *, UINT64 *);
     D3D12_COMMAND_QUEUE_DESC *(*GetDesc)(ID3D12CommandQueue *, D3D12_COMMAND_QUEUE_DESC *);
-    void (*Signal)(void), (*Wait)(void), (*UpdateTileMappings)(void), (*CopyTileMappings)(void);
+    HRESULT (*Signal)(ID3D12CommandQueue *, ID3D12Fence *, UINT64);
+    HRESULT (*Wait)(ID3D12CommandQueue *, ID3D12Fence *, UINT64);
+    void (*UpdateTileMappings)(void), (*CopyTileMappings)(void);
 } g_queue_vtbl;
 static HRESULT swap_Present(IDXGISwapChain4 *p, UINT sync, UINT flags) {
     assert(p == &swap && sync == 3 && flags == 8); calls++; return (HRESULT)0x887a0001;
@@ -250,6 +262,8 @@ int main(void) {
         assert(g_queue_vtbl.GetTimestampFrequency == (i == 8 ? mad_x64_GetTimestampFrequency : queue_GetTimestampFrequency));
         assert(g_queue_vtbl.GetClockCalibration == (i == 8 ? mad_x64_GetClockCalibration : queue_GetClockCalibration));
         assert(g_queue_vtbl.GetDesc == (i == 8 ? mad_x64_GetDesc : queue_GetDesc));
+        assert(g_queue_vtbl.Signal == (i == 8 ? mad_x64_Signal : queue_Signal));
+        assert(g_queue_vtbl.Wait == (i == 8 ? mad_x64_Wait : queue_Wait));
     }
     mad_x64_ExecuteCommandLists(&queue, 2, lists);
     assert(mad_x64_Present(&swap, 3, 8) == (HRESULT)0x887a0001);
@@ -273,6 +287,11 @@ int main(void) {
     assert(g_queue_vtbl.GetDesc(&queue, &desc) == &desc);
     assert(desc.Type == 7 && desc.Priority == -1 && desc.Flags == 4 && desc.NodeMask == 32);
     assert(calls == 12);
+    assert(g_queue_vtbl.Signal(&queue, &fence, UINT64_C(0xfedcba9876543210)) == (HRESULT)0x887a0020);
+    assert(g_queue_vtbl.Wait(&queue, &fence, UINT64_C(0x123456789abcdef0)) == (HRESULT)0x887a0021);
+    assert(g_queue_vtbl.Signal(&queue, 0, UINT64_C(0xfedcba9876543210)) == (HRESULT)0x80070057);
+    assert(g_queue_vtbl.Wait(&queue, 0, UINT64_C(0x123456789abcdef0)) == (HRESULT)0x80070057);
+    assert(calls == 16);
 
     /* One module-relative offset, two views: the native pool entry becomes a
      * PE entry without taking a module reference or losing LastError. */
@@ -397,10 +416,11 @@ int main() {
                         '-I' + str(ROOT / 'madeira-d3d12/src/pe'), str(cxx_source), '-o', str(cxx_exe)], check=True)
         subprocess.run([str(cxx_exe)], check=True)
     print('PASS production switch: default off, exact 1, LastError preserved')
-    print('PASS production queue vtable: native when off, all four typed entries when on')
+    print('PASS production queue vtable: native when off, all six typed entries when on')
     print('PASS production wrappers: all arguments and error HRESULTs preserved')
     print('PASS queue clock wrappers: 64-bit outputs and nullable arguments forwarded')
     print('PASS queue descriptor wrapper: explicit COM output buffer and returned pointer preserved')
+    print('PASS queue fence wrappers: 64-bit Signal/Wait values, null fences and error HRESULTs preserved')
     print('PASS PE entry addresses: correct offset, unchanged on failed lookup, LastError/refcount preserved')
     print('PASS factory instance table: all native/RTTI/destructor slots preserved, five PE entries selected')
     print('PASS production C++ factory: typed virtual calls, RTTI and Release/destruction for two independent tables')
