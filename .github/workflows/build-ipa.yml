@@ -389,6 +389,7 @@ jobs:
         run: |
           python3 tests/host/check-pool-low-images.py
           python3 tests/host/check-x64-image-nocopy.py
+          python3 tests/host/check-ec-hook.py
           python3 tests/host/check-pool-startup-budget.py --require-swift
           python3 tests/host/check-pool-placement.py
           python3 tests/host/check-pool-split.py
