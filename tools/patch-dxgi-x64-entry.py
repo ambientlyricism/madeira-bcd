@@ -2,7 +2,7 @@
 """Add opt-in, typed x64 patchable entries to a copy of DXMT's factory.
 
 The original factory is still instantiated unless MADEIRA_X64_GRAPHICS_ENTRY=1.
-Only the three overridden methods get clang's ARM64EC hybrid_patchable entries;
+Only the overridden methods get clang's ARM64EC hybrid_patchable entries;
 the adapter lookup, capabilities and all method implementations are preserved.
 """
 from pathlib import Path
@@ -25,6 +25,13 @@ public:
   CreateSwapChainForHwnd(IUnknown *device, HWND window,
       const DXGI_SWAP_CHAIN_DESC1 *desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *fs,
       IDXGIOutput *restrict_output, IDXGISwapChain1 **out) override;
+  MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+  CreateSwapChainForCoreWindow(IUnknown *device, IUnknown *window,
+      const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *restrict_output,
+      IDXGISwapChain1 **out) override;
+  MAD_X64_GRAPHICS_ENTRY HRESULT STDMETHODCALLTYPE
+  CreateSwapChainForComposition(IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
+      IDXGIOutput *restrict_output, IDXGISwapChain1 **out) override;
 };
 
 HRESULT STDMETHODCALLTYPE
@@ -42,6 +49,18 @@ MTLDXGIHookFactory::CreateSwapChainForHwnd(IUnknown *device, HWND window,
     IDXGIOutput *restrict_output, IDXGISwapChain1 **out) {
   return MTLDXGIFactory::CreateSwapChainForHwnd(device, window, desc, fs, restrict_output, out);
 }
+HRESULT STDMETHODCALLTYPE
+MTLDXGIHookFactory::CreateSwapChainForCoreWindow(IUnknown *device, IUnknown *window,
+    const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *restrict_output,
+    IDXGISwapChain1 **out) {
+  return MTLDXGIFactory::CreateSwapChainForCoreWindow(device, window, desc, restrict_output, out);
+}
+HRESULT STDMETHODCALLTYPE
+MTLDXGIHookFactory::CreateSwapChainForComposition(IUnknown *device,
+    const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *restrict_output,
+    IDXGISwapChain1 **out) {
+  return MTLDXGIFactory::CreateSwapChainForComposition(device, desc, restrict_output, out);
+}
 /* madeira x64 graphics factory end */
 
 '''
@@ -54,7 +73,8 @@ def patch(src):
     if src.count(include) != 1:
         raise ValueError('factory include anchor missing or ambiguous')
     src = src.replace(include, include + '#include "madeira_graphics_entry.h"\n')
-    for method in ('MakeWindowAssociation', 'CreateSwapChain', 'CreateSwapChainForHwnd'):
+    for method in ('MakeWindowAssociation', 'CreateSwapChain', 'CreateSwapChainForHwnd',
+                   'CreateSwapChainForCoreWindow', 'CreateSwapChainForComposition'):
         pattern = rf'(\b{method}\s*\([^{{;]*?\))\s+final\s*\{{'
         src, count = re.subn(pattern, r'\1 override {', src)
         if count != 1:

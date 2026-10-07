@@ -17,8 +17,9 @@ def check(cond, what):
         failures.append(what)
 
 
-start = native.index('static void ios_ec_hook_report(')
-report = native[start:native.index('\n}', start) + 2] + '\n'
+start = native.index('static size_t ios_ec_hook_jump_target(')
+report_start = native.index('static void ios_ec_hook_report(', start)
+report = native[start:native.index('\n}', report_start) + 2] + '\n'
 
 sync = native.index('/* Compare code before any copy overwrites .hexpthk changes.')
 copy = native.index('memcpy(jit_rw_dest, base, size);', sync)
@@ -84,6 +85,18 @@ int main(int argc, char **argv)
     memcpy(pe, cp, sizeof pe);
     pe[0x500] = 0xe9; { int32_t rel = 0x1000 - 0x505; memcpy(pe + 0x501, &rel, 4); }
     ios_ec_hook_report(0, pe, cp, sizeof pe);
+    memcpy(pe, cp, sizeof pe);
+    pe[0x800] = cp[0x800] = 0x48;
+    pe[0x801] = 0x8b; cp[0x801] = 0xb8;
+    { unsigned long long t = (uintptr_t)tgt; memcpy(cp + 0x802, &t, 8); }
+    cp[0x80a] = 0xff; cp[0x80b] = 0xe0;
+    module_name = "d3d12.dll";
+    ios_ec_hook_report(0, pe, cp, sizeof pe);
+    memcpy(cp, pe, sizeof pe);
+    cp[0x900] = 0xe9; { int32_t rel = 0x1000 - 0x905; memcpy(cp + 0x901, &rel, 4); }
+    ios_jit_mappings[0].jit_base = cp + 0x4000;  /* RX and RW addresses differ */
+    printf("expected-pool-target=%#llx\n", (unsigned long long)(uintptr_t)(cp + 0x5000));
+    ios_ec_hook_report(0, pe, cp, sizeof pe);
     return 0;
 }
 '''
@@ -95,14 +108,22 @@ with tempfile.TemporaryDirectory() as tmp:
     r = subprocess.run([cc, '-Wall', '-Werror', '-Wno-unused-function', '-o', exe, src], capture_output=True, text=True)
     check(r.returncode == 0, 'report compiles against stubs' + ('' if r.returncode == 0 else ': ' + r.stderr[:400]))
     if r.returncode == 0:
-        out = subprocess.run([exe], capture_output=True, text=True).stderr.splitlines()
-        check(len(out) == 2, 'two patches reported, the unpatched range silent (%d lines)' % len(out))
-        if len(out) == 2:
-            check('rva 0xce8' in out[0] and 'wrote: ff 25 00 00 00 00' in out[0] and 'copy before sync: 1f 1f' in out[0],
+        result = subprocess.run([exe], capture_output=True, text=True)
+        check(result.returncode == 0, 'production decoder and reporting harness completes')
+        out = result.stderr.splitlines()
+        check(len(out) == 4, 'four patches reported, the unpatched range silent (%d lines)' % len(out))
+        if len(out) == 4:
+            check('rva 0xce8' in out[0] and 'PE bytes: ff 25 00 00 00 00' in out[0] and 'pool before sync: 1f 1f' in out[0],
                   'jmp [rip+0] patch: place, written bytes and copy bytes')
             check('bytes there: ff 25' in out[0] and '(rva ' in out[0], 'jmp [rip+0] patch: the slot target is followed')
-            check('rva 0x500' in out[1] and 'wrote: e9 fb 0a 00 00' in out[1] and 'rva 0x1000' in out[1],
+            check('rva 0x500' in out[1] and 'PE bytes: e9 fb 0a 00 00' in out[1] and 'rva 0x1000' in out[1],
                   'jmp rel32 patch: target pe+0x1000')
+            check('rva 0x800' in out[2] and 'view=pool' in out[2] and 'scope=graphics-jump' in out[2]
+                  and 'pool before sync: 48 b8' in out[2],
+                  'pool-only patch with a shared 48 opcode prefix is recognized')
+            expected = result.stdout.strip().split('=', 1)[1]
+            check('rva 0x900' in out[3] and 'view=pool' in out[3] and f'jump -> {expected} ' in out[3],
+                  'pool-relative jump uses the RX address, not the PE or RW view')
         env = dict(os.environ, MADEIRA_EC_HOOK_TRACE='0')
         out = subprocess.run([exe], capture_output=True, text=True, env=env).stderr.splitlines()
         check(out == [], 'MADEIRA_EC_HOOK_TRACE=0 prints nothing')

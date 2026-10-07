@@ -14,6 +14,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+D3D12_METHODS = ('ExecuteCommandLists', 'GetTimestampFrequency', 'GetClockCalibration',
+                 'Present', 'Present1', 'ResizeBuffers', 'ResizeBuffers1')
+FACTORY_METHODS = {8: 'MakeWindowAssociation', 10: 'CreateSwapChain',
+                   15: 'CreateSwapChainForHwnd', 16: 'CreateSwapChainForCoreWindow',
+                   24: 'CreateSwapChainForComposition'}
 
 
 class PE:
@@ -105,7 +110,7 @@ class PE:
                     assert rva == entry, f'{cls}: wrong entry in COM slot {slot}'
                 else:
                     assert self.kind(rva) == 1, f'{cls}: default slot {slot} must remain native'
-            print(f'PASS {cls}: COM slots 8, 10 and 15 preserve the selected ABI')
+            print(f'PASS {cls}: COM slots {", ".join(map(str, entries))} preserve the selected ABI')
 
 
 def host_checks():
@@ -125,16 +130,20 @@ def host_checks():
 
     native = (ROOT / 'madeira-d3d12/src/pe/madeira_d3d12.c').read_text()
     wrappers = []
-    for method in ['ExecuteCommandLists', 'Present', 'Present1', 'ResizeBuffers', 'ResizeBuffers1']:
+    for method in D3D12_METHODS:
         at = native.index('mad_x64_' + method + '(')
         begin = native.rfind('MAD_X64_GRAPHICS_ENTRY', 0, at)
         end = native.index('\n}', at) + 2
         wrappers.append(native[begin:end])
+    begin = native.index('    g_queue_vtbl.ExecuteCommandLists    = queue_ExecuteCommandLists;')
+    end = native.index('\n\n    madeira_fill_ID3D12CommandAllocator', begin)
+    queue_select = native[begin:end]
     code = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
 typedef unsigned DWORD; typedef unsigned UINT; typedef int32_t HRESULT;
+typedef uint64_t UINT64;
 typedef int DXGI_FORMAT;
 #define STDMETHODCALLTYPE
 typedef struct obj { int unused; } IDXGISwapChain4, ID3D12CommandQueue, ID3D12CommandList, IUnknown;
@@ -159,6 +168,26 @@ static unsigned calls;
 static void queue_ExecuteCommandLists(ID3D12CommandQueue *p, UINT n, ID3D12CommandList *const *l) {
     assert(p == &queue && n == 2 && l == lists); calls++;
 }
+static HRESULT queue_GetTimestampFrequency(ID3D12CommandQueue *p, UINT64 *f) {
+    assert(p == &queue); calls++;
+    if (!f) return (HRESULT)0x80070057;
+    *f = UINT64_C(1000000000); return (HRESULT)0x887a0003;
+}
+static HRESULT queue_GetClockCalibration(ID3D12CommandQueue *p, UINT64 *g, UINT64 *c) {
+    assert(p == &queue); calls++;
+    if (g) *g = UINT64_C(0x1122334455667788);
+    if (c) *c = UINT64_C(0xfedcba9876543210);
+    return (HRESULT)0x887a0004;
+}
+static void queue_Signal(void) {} static void queue_Wait(void) {}
+static void queue_GetDesc(void) {} static void queue_UpdateTileMappings(void) {}
+static void queue_CopyTileMappings(void) {}
+static struct {
+    void (*ExecuteCommandLists)(ID3D12CommandQueue *, UINT, ID3D12CommandList *const *);
+    HRESULT (*GetTimestampFrequency)(ID3D12CommandQueue *, UINT64 *);
+    HRESULT (*GetClockCalibration)(ID3D12CommandQueue *, UINT64 *, UINT64 *);
+    void (*Signal)(void), (*Wait)(void), (*GetDesc)(void), (*UpdateTileMappings)(void), (*CopyTileMappings)(void);
+} g_queue_vtbl;
 static HRESULT swap_Present(IDXGISwapChain4 *p, UINT sync, UINT flags) {
     assert(p == &swap && sync == 3 && flags == 8); calls++; return (HRESULT)0x887a0001;
 }
@@ -173,12 +202,17 @@ static HRESULT swap_ResizeBuffers1(IDXGISwapChain4 *p, UINT n, UINT w, UINT h, D
                                   const UINT *m, IUnknown *const *q) {
     assert(m == masks && q == queues); return swap_ResizeBuffers(p, n, w, h, f, flags);
 }
-''' + '\n'.join(wrappers) + r'''
+''' + '\n'.join(wrappers) + '\nstatic void select_queue(void) {\n' + queue_select + '\n}\n' + r'''
 int main(void) {
+    UINT64 freq = 0, gpu = 0, cpu = 0;
     const char *values[] = {0, "", "0", "true", "on", "yes", "10", "1 ", "1"};
     for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
         setting = values[i]; last_error = 123;
         assert(mad_x64_graphics_entry_enabled() == (i == 8)); assert(last_error == 123);
+        select_queue(); assert(last_error == 123);
+        assert(g_queue_vtbl.ExecuteCommandLists == (i == 8 ? mad_x64_ExecuteCommandLists : queue_ExecuteCommandLists));
+        assert(g_queue_vtbl.GetTimestampFrequency == (i == 8 ? mad_x64_GetTimestampFrequency : queue_GetTimestampFrequency));
+        assert(g_queue_vtbl.GetClockCalibration == (i == 8 ? mad_x64_GetClockCalibration : queue_GetClockCalibration));
     }
     mad_x64_ExecuteCommandLists(&queue, 2, lists);
     assert(mad_x64_Present(&swap, 3, 8) == (HRESULT)0x887a0001);
@@ -186,6 +220,18 @@ int main(void) {
     assert(mad_x64_ResizeBuffers(&swap, 3, 1920, 1080, 87, 0x800) == (HRESULT)0x887a0002);
     assert(mad_x64_ResizeBuffers1(&swap, 3, 1920, 1080, 87, 0x800, masks, queues) == (HRESULT)0x887a0002);
     assert(calls == 5);
+    assert(g_queue_vtbl.GetTimestampFrequency(&queue, &freq) == (HRESULT)0x887a0003);
+    assert(freq == UINT64_C(1000000000));
+    assert(g_queue_vtbl.GetTimestampFrequency(&queue, 0) == (HRESULT)0x80070057);
+    assert(g_queue_vtbl.GetClockCalibration(&queue, &gpu, &cpu) == (HRESULT)0x887a0004);
+    assert(gpu == UINT64_C(0x1122334455667788) && cpu == UINT64_C(0xfedcba9876543210));
+    gpu = cpu = 0;
+    assert(g_queue_vtbl.GetClockCalibration(&queue, &gpu, 0) == (HRESULT)0x887a0004);
+    assert(gpu == UINT64_C(0x1122334455667788) && cpu == 0);
+    assert(g_queue_vtbl.GetClockCalibration(&queue, 0, &cpu) == (HRESULT)0x887a0004);
+    assert(cpu == UINT64_C(0xfedcba9876543210));
+    assert(g_queue_vtbl.GetClockCalibration(&queue, 0, 0) == (HRESULT)0x887a0004);
+    assert(calls == 11);
 }
 '''
     with tempfile.TemporaryDirectory() as tmp:
@@ -195,7 +241,9 @@ int main(void) {
                         '-I' + str(ROOT / 'madeira-d3d12/src/pe'), str(src), '-o', str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
     print('PASS production switch: default off, exact 1, LastError preserved')
+    print('PASS production queue vtable: native when off, all three typed entries when on')
     print('PASS production wrappers: all arguments and error HRESULTs preserved')
+    print('PASS queue clock wrappers: 64-bit outputs and nullable arguments forwarded')
 
 
 if __name__ == '__main__':
@@ -206,10 +254,8 @@ if __name__ == '__main__':
     host_checks()
     if ns.factory:
         pe = PE(ns.factory)
-        pe.factory_slots({8: pe.entry('MakeWindowAssociation', True),
-                          10: pe.entry('CreateSwapChain', True),
-                          15: pe.entry('CreateSwapChainForHwnd', True)})
+        pe.factory_slots({slot: pe.entry(method, True) for slot, method in FACTORY_METHODS.items()})
     if ns.d3d12:
         pe = PE(ns.d3d12)
-        for name in ['ExecuteCommandLists', 'Present', 'Present1', 'ResizeBuffers', 'ResizeBuffers1']:
+        for name in D3D12_METHODS:
             pe.entry(name)
