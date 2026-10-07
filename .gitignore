@@ -157,8 +157,8 @@ app/Madeira/licenses/LICENSE-MADEIRA-GPL-3.0.txt
 app/Madeira/licenses/LICENSE-MADEIRA-EXCEPTION.txt
 madeira-d3d12/tests/offline/sm51/
 
-# Metal Shader Converter headers extracted by CI from the msc-private release;
-# staged per build, never committed.
+# Former CI staging dir for the Metal Shader Converter headers (now vendored in
+# madeira-d3d12/third_party/metal-shader-converter); kept ignored.
 build/madeira-d3d12/msc-include/
 build/faultrep/out/
 app/Madeira/arm64ec-windows/faultrep.dll
