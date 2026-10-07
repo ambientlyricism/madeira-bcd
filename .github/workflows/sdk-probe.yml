@@ -28,11 +28,14 @@ jobs:
       - name: Installed Xcodes
         shell: bash
         run: |
+          set +e +o pipefail
           sw_vers
           ALL=""
           for X in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V); do
-            V=$(DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version 2>/dev/null | head -1 | sed 's/Xcode //')
-            S=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun swift --version 2>/dev/null | head -1 | sed -E 's/.*Swift version ([0-9.]+).*/\1/')
+            V=$(DEVELOPER_DIR="$X/Contents/Developer" xcodebuild -version 2>/dev/null || true)
+            V=${V%%$'\n'*}; V=${V#Xcode }
+            S=$(DEVELOPER_DIR="$X/Contents/Developer" xcrun swift --version 2>&1 || true)
+            S=$(sed -nE 's/.*Swift version ([0-9.]+).*/\1/p' <<< "$S")
             echo "$X Xcode $V Swift $S"
             ALL="$ALL ${X#/Applications/}=$V/$S;"
           done
