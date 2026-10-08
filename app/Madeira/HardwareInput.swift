@@ -988,7 +988,7 @@ final class HardwareInput: ObservableObject {
             }
         }
         m.scroll.valueChangedHandler = { [weak self] _, x, y in
-            self?.scrolled(Double(-x), Double(-y))
+            self?.scrolled(Double(x), Double(y))
         }
         noteMousePresent()
         if fresh {
@@ -1829,7 +1829,7 @@ final class PointerFallback: NSObject {
         case .changed:
             let d = CGPoint(x: t.x - scrollLast.x, y: t.y - scrollLast.y)
             scrollLast = t
-            HardwareInput.shared.uikitScroll(-d.x, -d.y)
+            HardwareInput.shared.uikitScroll(d.x, d.y)
         default:
             scrollLast = .zero
         }
