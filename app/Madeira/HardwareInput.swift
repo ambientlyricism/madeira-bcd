@@ -988,7 +988,7 @@ final class HardwareInput: ObservableObject {
             }
         }
         m.scroll.valueChangedHandler = { [weak self] _, x, y in
-            self?.scrolled(Double(x), Double(y))
+            self?.scrolled(Double(-x), Double(-y))
         }
         noteMousePresent()
         if fresh {
