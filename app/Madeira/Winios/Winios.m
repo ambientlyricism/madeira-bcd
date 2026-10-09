@@ -1874,7 +1874,7 @@ static UIImage *winios_cursor_image(void) {
             [p moveToPoint:CGPointMake(0.5, 0.5)];
             [p addLineToPoint:CGPointMake(0.5, 15*sr+0.5)];
             [p addLineToPoint:CGPointMake(3.7*sr+0.5, 11.7*sr+0.5)];
-            [p addLineToPoint:CGPointMake(6.5*sr+0.5, 18.5*sr+0,5)];
+            [p addLineToPoint:CGPointMake(6.5*sr+0.5, 18.5*sr+0.5)];
             [p addLineToPoint:CGPointMake(9.1*sr+0.5, 17.3*sr+0.5)];
             [p addLineToPoint:CGPointMake(6.3*sr+0.5, 10.6*sr+0.5)];
             [p addLineToPoint:CGPointMake(11.3*sr+0.5, 10.2*sr+0.5)];
