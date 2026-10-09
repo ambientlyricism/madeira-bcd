@@ -1865,7 +1865,7 @@ static UIImage *winios_cursor_image(void) {
     static UIImage *img;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        double sr = 2.0
+        double sr = 2.0;
         CGSize sz = CGSizeMake(14*sr, 21*sr);
         UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:sz];
         img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx __unused) {
