@@ -1865,19 +1865,18 @@ static UIImage *winios_cursor_image(void) {
     static UIImage *img;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        double sr = 2.0;
-        CGSize sz = CGSizeMake(14*sr, 21*sr);
+        CGSize sz = CGSizeMake(14, 21);
         UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:sz];
         img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx __unused) {
             /* classic arrow: white fill, black outline */
             UIBezierPath *p = [UIBezierPath bezierPath];
             [p moveToPoint:CGPointMake(0.5, 0.5)];
-            [p addLineToPoint:CGPointMake(0.5, 15*sr+0.5)];
-            [p addLineToPoint:CGPointMake(3.7*sr+0.5, 11.7*sr+0.5)];
-            [p addLineToPoint:CGPointMake(6.5*sr+0.5, 18.5*sr+0.5)];
-            [p addLineToPoint:CGPointMake(9.1*sr+0.5, 17.3*sr+0.5)];
-            [p addLineToPoint:CGPointMake(6.3*sr+0.5, 10.6*sr+0.5)];
-            [p addLineToPoint:CGPointMake(11.3*sr+0.5, 10.2*sr+0.5)];
+            [p addLineToPoint:CGPointMake(0.5, 15.5)];
+            [p addLineToPoint:CGPointMake(4.2, 12.2)];
+            [p addLineToPoint:CGPointMake(7.0, 19.0)];
+            [p addLineToPoint:CGPointMake(9.6, 17.8)];
+            [p addLineToPoint:CGPointMake(6.8, 11.1)];
+            [p addLineToPoint:CGPointMake(11.8, 10.7)];
             [p closePath];
             [[UIColor whiteColor] setFill];
             [p fill];
