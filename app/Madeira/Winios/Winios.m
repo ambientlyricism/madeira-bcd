@@ -1975,7 +1975,7 @@ void winios_cursor_set(unsigned int cur_id, int w, int h, int hot_x, int hot_y, 
         winios_ensure_cursor_layer();
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
-        CGImageRef img = CGImageCreate(w, h, 8, 32, w * 4, cs,
+        CGImageRef img = CGImageCreate(w*1.5, h*1.5, 8, 32, w * 4, cs,
                                        kCGBitmapByteOrder32Little | kCGImageAlphaFirst,
                                        dp, NULL, false, kCGRenderingIntentDefault);
         if (img) {
