@@ -1925,7 +1925,7 @@ final class DirectCursorOverlay {
             */
             p.addLine(to: CGPoint(x: 0.5, y: 15*sr+0.5))
             p.addLine(to: CGPoint(x: 3.7*sr+0.5, y: 11.7*sr+0.5))
-            p.addLine(to: CGPoint(x: 6.5*sr+0.5, y: 18.5*sr+0,5))
+            p.addLine(to: CGPoint(x: 6.5*sr+0.5, y: 18.5*sr+0.5))
             p.addLine(to: CGPoint(x: 9.1*sr+0.5, y: 17.3*sr+0.5))
             p.addLine(to: CGPoint(x: 6.3*sr+0.5, y: 10.6*sr+0.5))
             p.addLine(to: CGPoint(x: 11.3*sr+0.5, y: 10.2*sr+0.5))
