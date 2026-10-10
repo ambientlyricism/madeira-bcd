@@ -1898,7 +1898,8 @@ static CGPoint g_cursor_pos_px;
 static CGSize winios_cursor_pixel_size(void) {
     /* if (g_cur_w > 0) return CGSizeMake(g_cur_w, g_cur_h); */
     CGSize shape = winios_cursor_image().size;
-    return CGSizeMake(42.0 * shape.width / shape.height, 42.0);
+    /* return CGSizeMake(42.0 * shape.width / shape.height, 42.0); */
+    return CGSizeMake(28.0, 42.0);
 }
 
 /* The cursor is a sublayer of the compositor view; a dropped view takes it. */
