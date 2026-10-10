@@ -1861,7 +1861,7 @@ final class DirectCursorOverlay {
         }
         guard s != 0, s != serial else { return }
         serial = s
-        let w = Int(image.w*2), h = Int(image.h*2)
+        let w = Int(image.w), h = Int(image.h)
         let info = CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue
                                 | CGImageAlphaInfo.first.rawValue)
         guard let provider = CGDataProvider(data: Data(buffer[0..<(w * h * 4)]) as CFData),
@@ -1883,8 +1883,8 @@ final class DirectCursorOverlay {
         l.isHidden = !visible
         if visible {
             let k = MetalHostView.shared.bounds.width / CGFloat(Self.screenW)
-            let w = serial != 0 ? Int(image.w*2) : Self.arrowSize.w
-            let h = serial != 0 ? Int(image.h*2) : Self.arrowSize.h
+            let w = serial != 0 ? Int(image.w) : Self.arrowSize.w
+            let h = serial != 0 ? Int(image.h) : Self.arrowSize.h
             let hx = serial != 0 ? Int(image.hot_x) : 0
             let hy = serial != 0 ? Int(image.hot_y) : 0
             l.bounds = CGRect(x: 0, y: 0, width: CGFloat(w) * k, height: CGFloat(h) * k)
@@ -1908,27 +1908,18 @@ final class DirectCursorOverlay {
 
     /// Until the program's image arrives (or if it cannot be read): the same
     /// plain arrow the desktop compositor falls back to.
-    private static let sr = Double(2.0)
-    private static let arrowSize = (w: Int(14*sr), h: Int(21*sr))
+    private static let arrowSize = (w: 14, h: 21)
     private static func arrow() -> CGImage? {
         let r = UIGraphicsImageRenderer(size: CGSize(width: arrowSize.w, height: arrowSize.h))
         return r.image { _ in
             let p = UIBezierPath()
             p.move(to: CGPoint(x: 0.5, y: 0.5))
-            /*:
             p.addLine(to: CGPoint(x: 0.5, y: 15.5))
             p.addLine(to: CGPoint(x: 4.2, y: 12.2))
             p.addLine(to: CGPoint(x: 7.0, y: 19.0))
             p.addLine(to: CGPoint(x: 9.6, y: 17.8))
             p.addLine(to: CGPoint(x: 6.8, y: 11.1))
             p.addLine(to: CGPoint(x: 11.8, y: 10.7))
-            */
-            p.addLine(to: CGPoint(x: 0.5, y: 15*sr+0.5))
-            p.addLine(to: CGPoint(x: 3.7*sr+0.5, y: 11.7*sr+0.5))
-            p.addLine(to: CGPoint(x: 6.5*sr+0.5, y: 18.5*sr+0.5))
-            p.addLine(to: CGPoint(x: 9.1*sr+0.5, y: 17.3*sr+0.5))
-            p.addLine(to: CGPoint(x: 6.3*sr+0.5, y: 10.6*sr+0.5))
-            p.addLine(to: CGPoint(x: 11.3*sr+0.5, y: 10.2*sr+0.5))
             p.close()
             UIColor.white.setFill()
             p.fill()
