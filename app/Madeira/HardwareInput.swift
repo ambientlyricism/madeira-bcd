@@ -904,13 +904,13 @@ final class HardwareInput: ObservableObject {
         input.keyChangedHandler = { [weak self] _, _, code, pressed in
             self?.key(code, pressed)
         }
-        let commandIsPressed = keyboardInput.button(
+        let commandIsPressed = input.button(
                 forKeyCode: .leftGUI
-            )?.isPressed ?? false || keyboardInput.button(
+            )?.isPressed ?? false || input.button(
                 forKeyCode: .rightGUI
             )?.isPressed ?? false
         if commandisPressed {
-            keyboard.keyboardInput?.button(forKeyCode: .keyE)?.valueChangedHandler = {
+            kb.keyboardInput?.button(forKeyCode: .keyE)?.valueChangedHandler = {
             (_ button: GCDeviceButtonInput, _ value: Float, _ pressed: Bool) -> Void in
                 winios_pointer(0, 0, 0x0002, 0)
             }
