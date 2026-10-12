@@ -909,7 +909,7 @@ final class HardwareInput: ObservableObject {
             )?.isPressed ?? false || input.button(
                 forKeyCode: .rightGUI
             )?.isPressed ?? false
-        if commandisPressed {
+        if commandIsPressed {
             kb.keyboardInput?.button(forKeyCode: .keyE)?.valueChangedHandler = {
             (_ button: GCDeviceButtonInput, _ value: Float, _ pressed: Bool) -> Void in
                 winios_pointer(0, 0, 0x0002, 0)
